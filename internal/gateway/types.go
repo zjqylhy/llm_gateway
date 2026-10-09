@@ -64,6 +64,7 @@ type Candidate struct {
 	Weight  int    `json:"weight"`
 }
 type Gray struct {
+	RunID        string  `json:"run_id,omitempty"`
 	Percent      int     `json:"percent"`
 	Candidate    string  `json:"candidate"`
 	State        string  `json:"state"`
@@ -89,14 +90,15 @@ type Rule struct {
 	Action  string `json:"action"`
 }
 type Config struct {
-	Version   int64               `json:"version"`
-	Apps      map[string]App      `json:"apps"`
-	Keys      map[string]Key      `json:"keys"`
-	Providers map[string]Provider `json:"providers"`
-	Models    map[string]Model    `json:"models"`
-	Routes    map[string]Route    `json:"routes"`
-	Users     map[string]User     `json:"users"`
-	Rules     []Rule              `json:"rules"`
+	CorrectionRevisions map[string]int64    `json:"correction_revisions,omitempty"`
+	Version             int64               `json:"version"`
+	Apps                map[string]App      `json:"apps"`
+	Keys                map[string]Key      `json:"keys"`
+	Providers           map[string]Provider `json:"providers"`
+	Models              map[string]Model    `json:"models"`
+	Routes              map[string]Route    `json:"routes"`
+	Users               map[string]User     `json:"users"`
+	Rules               []Rule              `json:"rules"`
 }
 
 func EmptyConfig() Config {
@@ -116,6 +118,8 @@ type Usage struct {
 	Cached int64 `json:"cached_tokens,omitempty"`
 }
 type Event struct {
+	PayloadCipher string    `json:"payload_ciphertext,omitempty"`
+	GrayRun       string    `json:"gray_run,omitempty"`
 	ID            string    `json:"id"`
 	RequestID     string    `json:"request_id"`
 	AttemptID     string    `json:"attempt_id"`
@@ -184,6 +188,7 @@ type Reservation struct {
 }
 type Guard interface {
 	Rate(context.Context, string, int64, time.Duration) error
+	Take(context.Context, string, int64, int64, time.Duration) error
 	Reserve(context.Context, App, Reservation) error
 	Settle(context.Context, Event) error
 	Counters(context.Context, string, string) (Counters, error)

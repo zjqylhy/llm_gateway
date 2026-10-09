@@ -13,6 +13,7 @@ type MemoryStore struct {
 	events    map[string]Event
 	audits    []Audit
 	instances map[string]Instance
+	alerts    map[string]Alert
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -110,7 +111,7 @@ func (b LocalBus) Publish(c context.Context, e Event) error {
 	if err := b.Store.Apply(c, e); err != nil {
 		return err
 	}
-	if e.Kind == "completed" {
+	if e.Kind == "completed" && e.Purpose != "request" {
 		return b.Guard.Settle(c, e)
 	}
 	return nil
