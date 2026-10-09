@@ -1,0 +1,11 @@
+.git
+.env
+.env.*
+!.env.example
+web/node_modules
+web/dist
+web/*.tsbuildinfo
+bin
+data
+*.exe
+coverage.out

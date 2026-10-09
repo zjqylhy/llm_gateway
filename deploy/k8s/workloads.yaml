@@ -1,0 +1,185 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: gateway}
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector: {matchLabels: {app: gateway}}
+  strategy: {type: RollingUpdate, rollingUpdate: {maxUnavailable: 0, maxSurge: 1}}
+  template:
+    metadata:
+      labels: {app: gateway}
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: '8080'
+    spec:
+      serviceAccountName: gateway
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 130
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, seccompProfile: {type: RuntimeDefault}}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: {matchLabels: {app: gateway}}
+      containers:
+        - name: gateway
+          image: llm-gateway
+          command: [/app/gateway]
+          envFrom:
+            - configMapRef: {name: gateway-config}
+            - secretRef: {name: gateway-runtime}
+          env:
+            - name: HOSTNAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - name: GW_SERVICE_NAME
+              value: llm-gateway-gateway
+          ports: [{name: http, containerPort: 8080}]
+          startupProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 2, failureThreshold: 30}
+          readinessProbe: {httpGet: {path: /readyz, port: http}, periodSeconds: 2, timeoutSeconds: 2, failureThreshold: 2}
+          livenessProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 10, timeoutSeconds: 2}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          resources:
+            requests: {cpu: 250m, memory: 256Mi}
+            limits: {cpu: '2', memory: 1Gi}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: gateway}
+spec: {minAvailable: 1, selector: {matchLabels: {app: gateway}}}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: gateway}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: gateway}
+  minReplicas: 2
+  maxReplicas: 6
+  behavior: {scaleDown: {stabilizationWindowSeconds: 300}}
+  metrics:
+    - type: Resource
+      resource: {name: cpu, target: {type: Utilization, averageUtilization: 65}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: admin}
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector: {matchLabels: {app: admin}}
+  strategy: {type: RollingUpdate, rollingUpdate: {maxUnavailable: 0, maxSurge: 1}}
+  template:
+    metadata:
+      labels: {app: admin}
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: '8081'
+    spec:
+      serviceAccountName: gateway
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 130
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, seccompProfile: {type: RuntimeDefault}}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: {matchLabels: {app: admin}}
+      containers:
+        - name: admin
+          image: llm-gateway
+          command: [/app/admin]
+          envFrom:
+            - configMapRef: {name: gateway-config}
+            - secretRef: {name: gateway-runtime}
+          env:
+            - name: HOSTNAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - name: GW_SERVICE_NAME
+              value: llm-gateway-admin
+          ports: [{name: http, containerPort: 8081}]
+          startupProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 2, failureThreshold: 30}
+          readinessProbe: {httpGet: {path: /readyz, port: http}, periodSeconds: 2, timeoutSeconds: 2, failureThreshold: 2}
+          livenessProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 10, timeoutSeconds: 2}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: '2', memory: 1Gi}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: admin}
+spec: {minAvailable: 1, selector: {matchLabels: {app: admin}}}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: admin}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: admin}
+  minReplicas: 2
+  maxReplicas: 6
+  behavior: {scaleDown: {stabilizationWindowSeconds: 300}}
+  metrics:
+    - type: Resource
+      resource: {name: cpu, target: {type: Utilization, averageUtilization: 65}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: worker}
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector: {matchLabels: {app: worker}}
+  strategy: {type: RollingUpdate, rollingUpdate: {maxUnavailable: 0, maxSurge: 1}}
+  template:
+    metadata:
+      labels: {app: worker}
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: '8082'
+    spec:
+      serviceAccountName: gateway
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 130
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, seccompProfile: {type: RuntimeDefault}}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: {matchLabels: {app: worker}}
+      containers:
+        - name: worker
+          image: llm-gateway
+          command: [/app/worker]
+          envFrom:
+            - configMapRef: {name: gateway-config}
+            - secretRef: {name: gateway-runtime}
+          env:
+            - name: HOSTNAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - name: GW_SERVICE_NAME
+              value: llm-gateway-worker
+          ports: [{name: http, containerPort: 8082}]
+          startupProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 2, failureThreshold: 30}
+          readinessProbe: {httpGet: {path: /readyz, port: http}, periodSeconds: 2, timeoutSeconds: 2, failureThreshold: 2}
+          livenessProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 10, timeoutSeconds: 2}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          resources:
+            requests: {cpu: 250m, memory: 256Mi}
+            limits: {cpu: '2', memory: 1Gi}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: worker}
+spec: {minAvailable: 1, selector: {matchLabels: {app: worker}}}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: worker}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: worker}
+  minReplicas: 2
+  maxReplicas: 6
+  behavior: {scaleDown: {stabilizationWindowSeconds: 300}}
+  metrics:
+    - type: Resource
+      resource: {name: cpu, target: {type: Utilization, averageUtilization: 65}}

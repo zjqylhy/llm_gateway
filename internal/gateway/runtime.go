@@ -32,6 +32,7 @@ type Runtime struct {
 	Engine        *Engine
 	Admin         *Admin
 	Reader        *kafka.Reader
+	KafkaClient   *kafka.Client
 	Redis         *redis.Client
 	closers       []func()
 	TraceShutdown func(context.Context) error
@@ -155,6 +156,7 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 			dialer.SASLMechanism = mech
 		}
 		writer := &kafka.Writer{Addr: kafka.TCP(brokers...), Topic: env("GW_KAFKA_TOPIC", "gateway-events"), Balancer: &kafka.Hash{}, RequiredAcks: kafka.RequireAll, Async: false, WriteTimeout: 3 * time.Second, ReadTimeout: 3 * time.Second, BatchTimeout: time.Millisecond, Transport: transport}
+		out.KafkaClient = &kafka.Client{Addr: kafka.TCP(brokers...), Transport: transport, Timeout: 3 * time.Second}
 		e.Bus = KafkaBus{writer}
 		out.closers = append(out.closers, func() { _ = writer.Close() })
 		out.Reader = kafka.NewReader(kafka.ReaderConfig{Brokers: brokers, Topic: env("GW_KAFKA_TOPIC", "gateway-events"), GroupID: "gateway-metering", MinBytes: 1, MaxBytes: 10 << 20, CommitInterval: 0, Dialer: dialer})
@@ -294,7 +296,7 @@ func Main(mode string) {
 		handler := http.NewServeMux()
 		handler.Handle("GET /metrics", runtime.Engine.Metrics.Handler())
 		handler.Handle("/", runtime.Engine.Handler())
-		servers = append(servers, &http.Server{Addr: env("GW_GATEWAY_ADDR", ":8080"), Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32768})
+		servers = append(servers, &http.Server{Addr: env("GW_GATEWAY_ADDR", ":8080"), Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32768})
 	}
 	if dev || mode == "admin" {
 		servers = append(servers, &http.Server{Addr: env("GW_ADMIN_ADDR", ":8081"), Handler: runtime.Admin.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32768})
@@ -306,10 +308,12 @@ func Main(mode string) {
 			errCh <- s.ListenAndServe()
 		}(server)
 	}
+	failed := false
 	select {
 	case <-ctx.Done():
 	case e = <-errCh:
 		if !errors.Is(e, http.ErrServerClosed) {
+			failed = true
 			slog.Error("server stopped", "error", e)
 		}
 		stop()
@@ -318,6 +322,10 @@ func Main(mode string) {
 	defer done()
 	for _, s := range servers {
 		_ = s.Shutdown(shutdown)
+	}
+	if failed {
+		runtime.Close()
+		os.Exit(1)
 	}
 }
 func Bootstrap(ctx context.Context, e *Engine) error {

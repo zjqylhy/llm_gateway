@@ -80,8 +80,27 @@ func ValidateURL(raw string, dev bool) error {
 	return nil
 }
 func UnsafeIP(ip net.IP) bool {
-	return ip.IsPrivate() || ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || !ip.IsGlobalUnicast()
+	if ip.IsPrivate() || ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || !ip.IsGlobalUnicast() {
+		return true
+	}
+	// CGNAT 包含部分云元数据地址；这些网段不会被 IsPrivate 识别。
+	for _, network := range reservedNetworks {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
+
+var reservedNetworks = func() []*net.IPNet {
+	out := []*net.IPNet{}
+	for _, cidr := range []string{"100.64.0.0/10", "192.0.0.0/24", "192.0.2.0/24", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "2001:db8::/32"} {
+		_, network, _ := net.ParseCIDR(cidr)
+		out = append(out, network)
+	}
+	return out
+}()
+
 func RedactError(s string) string {
 	if len(s) > 120 {
 		s = s[:120]

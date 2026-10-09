@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 )
 
 var ErrUnavailable = errors.New("dependency unavailable")
 var ErrLimit = errors.New("quota exceeded")
+var ErrProviderLimit = fmt.Errorf("provider rate exceeded: %w", ErrLimit)
 
 type App struct {
 	ID             string   `json:"id"`

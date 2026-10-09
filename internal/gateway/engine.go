@@ -182,7 +182,7 @@ func (e *Engine) handle(w http.ResponseWriter, r *http.Request, kind string) {
 		finalStatus = rejectGuard(w, err)
 		return
 	}
-	sensitive, blocked := Safety(cfg.Rules, req.Text+"\n"+req.System)
+	sensitive, blocked := Safety(cfg.Rules, req.SafetyText)
 	if blocked {
 		finalStatus = "blocked"
 		APIError(w, 400, "safety_blocked", "request matched an application safety rule")
@@ -275,6 +275,9 @@ func (e *Engine) handle(w http.ResponseWriter, r *http.Request, kind string) {
 			finalStatus = "stream_error"
 			return
 		}
+		if ae == ErrProviderLimit {
+			continue
+		}
 		if errors.Is(ae, ErrLimit) || errors.Is(ae, ErrUnavailable) {
 			finalStatus = rejectGuard(w, ae)
 			return
@@ -284,6 +287,10 @@ func (e *Engine) handle(w http.ResponseWriter, r *http.Request, kind string) {
 		}
 	}
 	_ = result
+	if last == ErrProviderLimit {
+		finalStatus = rejectGuard(w, last)
+		return
+	}
 	var up *UpstreamError
 	if errors.As(last, &up) && up.Status == 400 {
 		APIError(w, 400, "upstream_invalid_request", "upstream rejected parameters")
@@ -440,10 +447,17 @@ func (e *Engine) attempt(ctx context.Context, cfg Config, a App, m Model, r Requ
 	if gray {
 		event.GrayRun = cfg.Routes[r.Alias].Gray.RunID
 	}
-	if err = e.Guard.Rate(ctx, "model:"+m.ID, m.RPM, time.Minute); err != nil {
+	limitID := Hash(m.ProviderID + ":" + m.Upstream)
+	if err = e.Guard.Rate(ctx, "model:"+limitID, m.RPM, time.Minute); err != nil {
+		if errors.Is(err, ErrLimit) {
+			err = ErrProviderLimit
+		}
 		return
 	}
-	if err = e.Guard.Take(ctx, "tpm:"+m.ID, m.TPM, event.ReserveTokens, time.Minute); err != nil {
+	if err = e.Guard.Take(ctx, "tpm:"+limitID, m.TPM, event.ReserveTokens, time.Minute); err != nil {
+		if errors.Is(err, ErrLimit) {
+			err = ErrProviderLimit
+		}
 		return
 	}
 	res := Reservation{id, a.ID, event.Month, event.ReserveTokens, event.ReserveMicro}
@@ -542,6 +556,15 @@ func (e *Engine) attempt(ctx context.Context, cfg Config, a App, m Model, r Requ
 		}
 		if !json.Valid(body) {
 			err = errors.New("invalid upstream JSON")
+			return
+		}
+		var response struct {
+			Error   json.RawMessage   `json:"error"`
+			Choices []json.RawMessage `json:"choices"`
+			Data    []json.RawMessage `json:"data"`
+		}
+		if json.Unmarshal(body, &response) != nil || (len(response.Error) > 0 && string(response.Error) != "null") || (r.Kind == "chat" && len(response.Choices) == 0) || (r.Kind == "embedding" && len(response.Data) == 0) {
+			err = errors.New("invalid upstream response envelope")
 			return
 		}
 		if u, exists := ExtractUsage(body); exists {

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-config
+data:
+  GW_ADMIN_ORIGIN: https://console.example.com
+  GW_KAFKA_TOPIC: gateway-events
+  GW_KAFKA_TLS: "true"
+  GW_MILVUS_COLLECTION: gateway_cache
+  GW_WEB_DIR: /app/web/dist
+  GW_ADMIN_USER: admin

@@ -214,7 +214,7 @@ type Aggregator interface {
 
 func (s *SQLStore) Report(c context.Context, f Filter) ([]Report, error) {
 	w, args := where(f)
-	rows, e := s.DB.QueryContext(c, `SELECT app_id,department,model_id,COUNT(*),COALESCE(SUM(tokens),0),COALESCE(SUM(cost_micro),0),SUM(status='started') FROM gw_attempts WHERE purpose<>'request' AND `+w+` GROUP BY app_id,department,model_id`, args...)
+	rows, e := s.DB.QueryContext(c, `SELECT app_id,department,model_id,COUNT(*),COALESCE(SUM(tokens),0),COALESCE(SUM(cost_micro),0),SUM(status='started' OR JSON_UNQUOTE(JSON_EXTRACT(payload,'$.quality'))='estimated') FROM gw_attempts WHERE purpose<>'request' AND `+w+` GROUP BY app_id,department,model_id`, args...)
 	if e != nil {
 		return nil, e
 	}
@@ -248,7 +248,7 @@ func (s *MemoryStore) Report(c context.Context, f Filter) ([]Report, error) {
 		r.Count++
 		r.Tokens += x.Usage.Total
 		r.Micro += x.CostMicro
-		if x.Status == "started" {
+		if x.Status == "started" || x.Quality == "estimated" {
 			r.Pending++
 		}
 		m[k] = r

@@ -26,6 +26,7 @@ type Request struct {
 	InputEstimate int64
 	Text          string
 	System        string
+	SafetyText    string
 	Capabilities  []string
 	Cacheable     bool
 }
@@ -141,6 +142,25 @@ func DecodeRequest(raw []byte, kind string) (Request, error) {
 		}
 	}
 	if kind == "chat" {
+		var rawMessages []map[string]json.RawMessage
+		if json.Unmarshal(r.Raw["messages"], &rawMessages) != nil {
+			return r, errors.New("invalid messages")
+		}
+		for _, message := range rawMessages {
+			for key := range message {
+				if !Contains([]string{"role", "content", "name", "tool_calls", "tool_call_id", "refusal"}, key) {
+					return r, errors.New("unsupported message field: " + key)
+				}
+			}
+			if calls := message["tool_calls"]; len(calls) > 0 && string(calls) != "null" {
+				var tools []json.RawMessage
+				if json.Unmarshal(calls, &tools) != nil || len(tools) == 0 {
+					return r, errors.New("invalid message tool_calls")
+				}
+				r.Capabilities = append(r.Capabilities, "tools")
+				r.Cacheable = false
+			}
+		}
 		var messages []struct {
 			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`
@@ -165,6 +185,7 @@ func DecodeRequest(raw []byte, kind string) (Request, error) {
 				return r, errors.New("only text messages supported")
 			}
 			r.InputEstimate += int64(utf8.RuneCountInString(text)) + 8
+			r.SafetyText += "\n" + text
 			if m.Role == "user" {
 				users++
 				r.Text = text
@@ -193,6 +214,7 @@ func DecodeRequest(raw []byte, kind string) (Request, error) {
 		} else {
 			return r, errors.New("input must be text or text array")
 		}
+		r.SafetyText = r.Text
 	}
 	if r.InputEstimate <= 0 || r.InputEstimate > 1000000 {
 		return r, errors.New("input size out of range")
@@ -229,6 +251,9 @@ type UpstreamError struct {
 
 func (e *UpstreamError) Error() string { return "upstream HTTP " + strconv.Itoa(e.Status) }
 func Retriable(e error) bool {
+	if errors.Is(e, ErrLimit) || errors.Is(e, ErrUnavailable) {
+		return false
+	}
 	var u *UpstreamError
 	if errors.As(e, &u) {
 		return u.Status == 429 || u.Status >= 500
@@ -258,7 +283,18 @@ func NewHTTPClient(dev bool) *http.Client {
 		if len(ips) == 0 {
 			return nil, ErrUnavailable
 		}
-		return d.DialContext(c, network, net.JoinHostPort(ips[0].IP.String(), port))
+		var last error
+		for _, ip := range ips {
+			conn, err := d.DialContext(c, network, net.JoinHostPort(ip.IP.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			last = err
+			if c.Err() != nil {
+				break
+			}
+		}
+		return nil, last
 	}
 	return &http.Client{Transport: t, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }

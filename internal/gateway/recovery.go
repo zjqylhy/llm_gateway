@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/segmentio/kafka-go"
 	"os"
 	"time"
 )
@@ -18,6 +19,14 @@ func InitializeQuota(ctx context.Context, e *Engine) error {
 		return nil
 	}
 	s := e.Store.(*SQLStore)
+	cfg, err := s.Load(ctx)
+	if err != nil {
+		return err
+	}
+	// 未消费的 started 事件可能尚未落库；已有应用或 Key 时不能以空 SQL 表证明没有费用。
+	if len(cfg.Apps) > 0 || len(cfg.Keys) > 0 {
+		return errors.New("existing application configuration requires offline quota-rebuild")
+	}
 	var n int
 	if err := s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM gw_attempts WHERE purpose<>'request'").Scan(&n); err != nil {
 		return err
@@ -90,6 +99,13 @@ func RebuildQuota(ctx context.Context, r *Runtime) error {
 		message, fetchErr := r.Reader.FetchMessage(fetchCtx)
 		cancel()
 		if errors.Is(fetchErr, context.DeadlineExceeded) && ctx.Err() == nil {
+			caughtUp, checkErr := KafkaCaughtUp(ctx, r)
+			if checkErr != nil {
+				return checkErr
+			}
+			if !caughtUp {
+				return errors.New("Kafka partitions not fully drained; quota remains unavailable")
+			}
 			break
 		}
 		if fetchErr != nil {
@@ -118,4 +134,59 @@ func RebuildQuota(ctx context.Context, r *Runtime) error {
 		}
 	}
 	return rc.Set(ctx, "gw:quota:state", "ready", 0).Err()
+}
+func KafkaCaughtUp(ctx context.Context, r *Runtime) (bool, error) {
+	topic := r.Reader.Config().Topic
+	metadata, err := r.KafkaClient.Metadata(ctx, &kafka.MetadataRequest{Topics: []string{topic}})
+	if err != nil {
+		return false, err
+	}
+	parts := []int{}
+	requests := []kafka.OffsetRequest{}
+	for _, t := range metadata.Topics {
+		if t.Error != nil {
+			return false, t.Error
+		}
+		for _, p := range t.Partitions {
+			parts = append(parts, p.ID)
+			requests = append(requests, kafka.LastOffsetOf(p.ID))
+		}
+	}
+	if len(parts) == 0 {
+		return false, errors.New("event topic has no partitions")
+	}
+	ends, err := r.KafkaClient.ListOffsets(ctx, &kafka.ListOffsetsRequest{Topics: map[string][]kafka.OffsetRequest{topic: requests}})
+	if err != nil {
+		return false, err
+	}
+	commits, err := r.KafkaClient.OffsetFetch(ctx, &kafka.OffsetFetchRequest{GroupID: r.Reader.Config().GroupID, Topics: map[string][]int{topic: parts}})
+	if err != nil {
+		return false, err
+	}
+	if commits.Error != nil {
+		return false, commits.Error
+	}
+	return offsetsCaughtUp(ends.Topics[topic], commits.Topics[topic]), nil
+}
+func offsetsCaughtUp(ends []kafka.PartitionOffsets, commits []kafka.OffsetFetchPartition) bool {
+	if len(ends) == 0 {
+		return false
+	}
+	seen := map[int]int64{}
+	for _, p := range commits {
+		if p.Error != nil {
+			return false
+		}
+		seen[p.Partition] = p.CommittedOffset
+	}
+	for _, p := range ends {
+		if p.Error != nil {
+			return false
+		}
+		offset, ok := seen[p.Partition]
+		if p.LastOffset > 0 && (!ok || offset < p.LastOffset) {
+			return false
+		}
+	}
+	return true
 }

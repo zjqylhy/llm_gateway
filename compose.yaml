@@ -1,0 +1,12 @@
+name: llm-gateway-offline
+services:
+  dev:
+    build: .
+    command: ["/app/dev"]
+    ports: ["127.0.0.1:8080:8080", "127.0.0.1:8081:8081"]
+    environment:
+      GW_ADMIN_PASSWORD: ${GW_ADMIN_PASSWORD:-}
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    stop_grace_period: 130s
