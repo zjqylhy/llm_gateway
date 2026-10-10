@@ -29,14 +29,15 @@ import (
 )
 
 type Runtime struct {
-	Engine        *Engine
-	Admin         *Admin
-	Reader        *kafka.Reader
-	readerConfig  kafka.ReaderConfig
-	KafkaClient   *kafka.Client
-	Redis         *redis.Client
-	closers       []func()
-	TraceShutdown func(context.Context) error
+	Engine         *Engine
+	Admin          *Admin
+	Reader         *kafka.Reader
+	readerConfig   kafka.ReaderConfig
+	KafkaClient    *kafka.Client
+	Redis          *redis.Client
+	MaxConnections int
+	closers        []func()
+	TraceShutdown  func(context.Context) error
 }
 
 func env(k, fallback string) string {
@@ -70,6 +71,18 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 		return nil, err
 	}
 	e := &Engine{Vault: vault, Client: NewHTTPClient(dev), Dev: dev, InstanceID: env("HOSTNAME", ID("node_")), Metrics: NewMetrics()}
+	e.MaxConcurrent, err = concurrencyEnv("GW_MAX_CONCURRENT_REQUESTS", defaultGatewayConcurrency)
+	if err != nil {
+		return nil, err
+	}
+	adminConcurrency, err := concurrencyEnv("GW_MAX_ADMIN_REQUESTS", defaultAdminConcurrency)
+	if err != nil {
+		return nil, err
+	}
+	out.MaxConnections, err = concurrencyEnv("GW_MAX_CONNECTIONS", defaultConnectionLimit)
+	if err != nil {
+		return nil, err
+	}
 	out.Engine = e
 	if dev {
 		s := NewMemoryStore()
@@ -117,7 +130,7 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 		}
 		fmt.Println("本地测试应用一次性 API Key：", token)
 	} else {
-		for _, k := range []string{"GW_MYSQL_DSN", "GW_REDIS_URL", "GW_KAFKA_BROKERS", "GW_ETCD_ENDPOINTS", "GW_MILVUS_URL", "GW_ADMIN_ORIGIN"} {
+		for _, k := range []string{"GW_MYSQL_DSN", "GW_REDIS_URL", "GW_CACHE_REDIS_URL", "GW_KAFKA_BROKERS", "GW_ETCD_ENDPOINTS", "GW_MILVUS_URL", "GW_ADMIN_ORIGIN"} {
 			if os.Getenv(k) == "" {
 				return nil, fmt.Errorf("%s is required in production", k)
 			}
@@ -128,18 +141,10 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 		}
 		e.Store = sqlStore
 		out.closers = append(out.closers, func() { _ = sqlStore.DB.Close() })
-		opts, re := redis.ParseURL(os.Getenv("GW_REDIS_URL"))
+		opts, cacheOpts, re := isolatedRedisOptions(os.Getenv("GW_REDIS_URL"), os.Getenv("GW_CACHE_REDIS_URL"))
 		if re != nil {
 			return nil, re
 		}
-		opts.ContextTimeoutEnabled = true
-		// 配额命令有总预算，避免 DNS/建连与命令重试叠加拖满请求期限。
-		opts.DialTimeout = time.Second
-		opts.DialerRetries = 1
-		opts.MaxRetries = 1
-		opts.PoolTimeout = time.Second
-		opts.ReadTimeout = 250 * time.Millisecond
-		opts.WriteTimeout = 250 * time.Millisecond
 		rc := redis.NewClient(opts)
 		if re = rc.Ping(ctx).Err(); re != nil {
 			_ = rc.Close()
@@ -147,7 +152,10 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 		}
 		out.Redis = rc
 		out.closers = append(out.closers, func() { _ = rc.Close() })
-		e.Guard = RedisGuard{Client: rc, RequireReady: true}
+		e.Guard = RedisGuard{Client: rc, RequireReady: true, EnforceMemory: true}
+		// 缓存连接可以失效并绕过；配额与会话绝不能使用可淘汰实例。
+		cacheRedis := redis.NewClient(cacheOpts)
+		out.closers = append(out.closers, func() { _ = cacheRedis.Close() })
 		brokers := strings.Split(os.Getenv("GW_KAFKA_BROKERS"), ",")
 		transport := &kafka.Transport{DialTimeout: 3 * time.Second}
 		dialer := &kafka.Dialer{Timeout: 3 * time.Second}
@@ -164,7 +172,7 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 		out.KafkaClient = &kafka.Client{Addr: kafka.TCP(brokers...), Transport: transport, Timeout: 3 * time.Second}
 		e.Bus = KafkaBus{writer}
 		out.closers = append(out.closers, func() { _ = writer.Close() })
-		out.readerConfig = kafka.ReaderConfig{Brokers: brokers, Topic: env("GW_KAFKA_TOPIC", "gateway-events"), GroupID: env("GW_KAFKA_GROUP", "gateway-metering"), MinBytes: 1, MaxBytes: 10 << 20, CommitInterval: 0, Dialer: dialer}
+		out.readerConfig = kafka.ReaderConfig{Brokers: brokers, Topic: env("GW_KAFKA_TOPIC", "gateway-events"), GroupID: env("GW_KAFKA_GROUP", "gateway-metering"), MinBytes: 1, MaxBytes: 1 << 20, QueueCapacity: 8, CommitInterval: 0, Dialer: dialer}
 		out.closers = append(out.closers, func() {
 			if opened.Reader != nil {
 				_ = opened.Reader.Close()
@@ -180,9 +188,10 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 		}
 		out.closers = append(out.closers, func() { _ = et.Close() })
 		e.Publisher = EtcdPublisher{et, env("GW_ETCD_PREFIX", "/llm-gateway")}
-		e.Cache = MilvusCache{URL: strings.TrimRight(os.Getenv("GW_MILVUS_URL"), "/"), Token: os.Getenv("GW_MILVUS_TOKEN"), Collection: env("GW_MILVUS_COLLECTION", "gateway_cache"), Client: &http.Client{Timeout: 3 * time.Second}, Redis: rc}
+		e.Cache = MilvusCache{URL: strings.TrimRight(os.Getenv("GW_MILVUS_URL"), "/"), Token: os.Getenv("GW_MILVUS_TOKEN"), Collection: env("GW_MILVUS_COLLECTION", "gateway_cache"), Client: &http.Client{Timeout: 3 * time.Second}, Redis: cacheRedis}
 	}
 	out.Admin = NewAdmin(e, !dev, os.Getenv("GW_ADMIN_ORIGIN"))
+	out.Admin.MaxConcurrent = adminConcurrency
 	if out.Redis != nil {
 		out.Admin.Sessions = RedisSessions{out.Redis}
 	}
@@ -291,9 +300,9 @@ func Main(mode string) {
 		health.Handle("GET /healthz", runtime.Engine.Handler())
 		health.Handle("GET /readyz", runtime.Engine.Handler())
 		health.Handle("GET /metrics", runtime.Engine.Metrics.Handler())
-		workerHealth := &http.Server{Addr: env("GW_WORKER_ADDR", ":8082"), Handler: health, ReadHeaderTimeout: 5 * time.Second}
+		workerHealth := &http.Server{Addr: env("GW_WORKER_ADDR", ":8082"), Handler: health, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32768}
 		go func() {
-			if err := workerHealth.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err := serveBounded(workerHealth, runtime.MaxConnections); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				slog.Error("worker health server failed", "error", err)
 				stop()
 			}
@@ -323,7 +332,7 @@ func Main(mode string) {
 	for _, server := range servers {
 		go func(s *http.Server) {
 			slog.Info("server listening", "mode", mode, "address", s.Addr)
-			errCh <- s.ListenAndServe()
+			errCh <- serveBounded(s, runtime.MaxConnections)
 		}(server)
 	}
 	failed := false

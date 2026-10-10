@@ -4,6 +4,8 @@ services:
     ports: ["127.0.0.1:13306:3306"]
   redis:
     ports: ["127.0.0.1:16379:6379"]
+  redis-cache:
+    ports: ["127.0.0.1:16380:6379"]
   kafka:
     ports: ["127.0.0.1:19092:19092"]
     environment:

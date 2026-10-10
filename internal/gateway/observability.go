@@ -24,6 +24,7 @@ type Metrics struct {
 	Active   prometheus.Gauge
 	Config   prometheus.Gauge
 	Overhead *prometheus.HistogramVec
+	Overload *prometheus.CounterVec
 }
 
 func NewMetrics() *Metrics {
@@ -41,11 +42,13 @@ func NewMetrics() *Metrics {
 	m.Active = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_active_requests", Help: "Active authenticated requests"})
 	m.Config = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_config_version", Help: "Applied config version"})
 	m.Overhead = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "gateway_overhead_seconds", Help: "Attempt wall time minus upstream read and forwarding time; includes metering acknowledgements", Buckets: b}, []string{"purpose"})
-	m.Registry.MustRegister(m.Requests, m.Attempts, m.Tokens, m.Cost, m.Latency, m.Upstream, m.First, m.CacheOps, m.Events, m.Active, m.Config, m.Overhead, prometheus.NewGoCollector(), prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+	m.Overload = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_overload_rejections_total", Help: "Requests rejected before processing because instance concurrency is full"}, []string{"role"})
+	m.Registry.MustRegister(m.Requests, m.Attempts, m.Tokens, m.Cost, m.Latency, m.Upstream, m.First, m.CacheOps, m.Events, m.Active, m.Config, m.Overhead, m.Overload, prometheus.NewGoCollector(), prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
 	return m
 }
 func (m *Metrics) Handler() http.Handler {
-	return promhttp.HandlerFor(m.Registry, promhttp.HandlerOpts{})
+	h := promhttp.HandlerFor(m.Registry, promhttp.HandlerOpts{MaxRequestsInFlight: 2, Timeout: 5 * time.Second})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { h.ServeHTTP(&deadlineWriter{w, 5 * time.Second}, r) })
 }
 func (m *Metrics) Request(app, alias, status string, cached bool, t time.Duration) {
 	v := "false"

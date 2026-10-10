@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 	"strings"
 	"time"
 )
@@ -14,7 +14,21 @@ import (
 type SQLStore struct{ DB *sql.DB }
 
 func NewSQLStore(c context.Context, dsn string) (*SQLStore, error) {
-	db, e := sql.Open("mysql", dsn)
+	cfg, e := mysql.ParseDSN(dsn)
+	if e != nil {
+		return nil, errors.New("invalid GW_MYSQL_DSN")
+	}
+	// Context 取消之外保留 socket 超时，覆盖网络半开及无期限后台操作。
+	if cfg.Timeout == 0 {
+		cfg.Timeout = 3 * time.Second
+	}
+	if cfg.ReadTimeout == 0 {
+		cfg.ReadTimeout = 5 * time.Second
+	}
+	if cfg.WriteTimeout == 0 {
+		cfg.WriteTimeout = 5 * time.Second
+	}
+	db, e := sql.Open("mysql", cfg.FormatDSN())
 	if e != nil {
 		return nil, e
 	}
@@ -79,6 +93,9 @@ func (s *SQLStore) Update(c context.Context, actor, action string, fn func(*Conf
 	b, e = json.Marshal(cfg)
 	if e != nil {
 		return cfg, e
+	}
+	if len(b) > maxConfigBytes {
+		return cfg, errors.New("configuration exceeds 1 MiB")
 	}
 	if _, e = tx.ExecContext(c, `UPDATE gw_config SET payload=?,version=? WHERE id=1`, b, cfg.Version); e != nil {
 		return cfg, e
@@ -148,10 +165,15 @@ func (s *SQLStore) Records(c context.Context, f Filter) ([]Event, error) {
 	}
 	defer rows.Close()
 	out := []Event{}
+	bytesRead := 0
 	for rows.Next() {
 		var b []byte
 		if e = rows.Scan(&b); e != nil {
 			return nil, e
+		}
+		bytesRead += len(b)
+		if bytesRead > 16<<20 {
+			return nil, ErrRecordCapacity
 		}
 		var x Event
 		if e = json.Unmarshal(b, &x); e != nil {
@@ -182,7 +204,7 @@ func (s *SQLStore) Heartbeat(c context.Context, id string, v int64) error {
 	return e
 }
 func (s *SQLStore) Instances(c context.Context) (map[string]Instance, error) {
-	rows, e := s.DB.QueryContext(c, `SELECT id,version,seen FROM gw_instances`)
+	rows, e := s.DB.QueryContext(c, `SELECT id,version,seen FROM gw_instances WHERE seen>=? LIMIT 10001`, time.Now().Add(-24*time.Hour))
 	if e != nil {
 		return nil, e
 	}
@@ -195,6 +217,9 @@ func (s *SQLStore) Instances(c context.Context) (map[string]Instance, error) {
 			return nil, e
 		}
 		out[id] = x
+		if len(out) > 10000 {
+			return nil, errors.New("too many live instances")
+		}
 	}
 	return out, rows.Err()
 }
@@ -214,7 +239,7 @@ type Aggregator interface {
 
 func (s *SQLStore) Report(c context.Context, f Filter) ([]Report, error) {
 	w, args := where(f)
-	rows, e := s.DB.QueryContext(c, `SELECT app_id,department,model_id,COUNT(*),COALESCE(SUM(tokens),0),COALESCE(SUM(cost_micro),0),SUM(status='started' OR JSON_UNQUOTE(JSON_EXTRACT(payload,'$.quality'))='estimated') FROM gw_attempts WHERE purpose<>'request' AND `+w+` GROUP BY app_id,department,model_id`, args...)
+	rows, e := s.DB.QueryContext(c, `SELECT app_id,department,model_id,COUNT(*),COALESCE(SUM(tokens),0),COALESCE(SUM(cost_micro),0),SUM(status='started' OR JSON_UNQUOTE(JSON_EXTRACT(payload,'$.quality'))='estimated') FROM gw_attempts WHERE purpose<>'request' AND `+w+` GROUP BY app_id,department,model_id LIMIT 10001`, args...)
 	if e != nil {
 		return nil, e
 	}
@@ -226,6 +251,9 @@ func (s *SQLStore) Report(c context.Context, f Filter) ([]Report, error) {
 			return nil, e
 		}
 		out = append(out, r)
+		if len(out) > 10000 {
+			return nil, ErrReportCapacity
+		}
 	}
 	return out, rows.Err()
 }
@@ -252,6 +280,9 @@ func (s *MemoryStore) Report(c context.Context, f Filter) ([]Report, error) {
 			r.Pending++
 		}
 		m[k] = r
+		if len(m) > 10000 {
+			return nil, ErrReportCapacity
+		}
 	}
 	out := []Report{}
 	for _, x := range m {

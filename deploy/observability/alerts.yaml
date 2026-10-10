@@ -1,6 +1,11 @@
 groups:
   - name: gateway
     rules:
+      - alert: GatewayOverloaded
+        expr: sum(rate(gateway_overload_rejections_total[5m])) > 0
+        for: 1m
+        labels: {severity: warning}
+        annotations: {summary: "实例并发容量不足，请检查慢客户端、上游延迟或扩容"}
       - alert: GatewayUnavailable
         expr: up{job=~"gateway|admin|worker"} == 0
         for: 1m

@@ -11,19 +11,21 @@ import (
 )
 
 type bucket struct {
-	tokens float64
-	at     time.Time
+	tokens  float64
+	at      time.Time
+	expires time.Time
 }
+type settlement struct{ Revision, Tokens, Micro int64 }
 type MemoryGuard struct {
 	mu           sync.Mutex
 	buckets      map[string]bucket
 	counts       map[string]Counters
 	reservations map[string]Reservation
-	settled      map[string]Event
+	settled      map[string]settlement
 }
 
 func NewMemoryGuard() *MemoryGuard {
-	return &MemoryGuard{buckets: map[string]bucket{}, counts: map[string]Counters{}, reservations: map[string]Reservation{}, settled: map[string]Event{}}
+	return &MemoryGuard{buckets: map[string]bucket{}, counts: map[string]Counters{}, reservations: map[string]Reservation{}, settled: map[string]settlement{}}
 }
 func (g *MemoryGuard) Rate(c context.Context, key string, n int64, period time.Duration) error {
 	return g.Take(c, key, n, 1, period)
@@ -37,13 +39,24 @@ func (g *MemoryGuard) Take(_ context.Context, key string, n, units int64, period
 	now := time.Now()
 	b, ok := g.buckets[key]
 	if !ok {
-		b = bucket{float64(n), now}
+		if len(g.buckets) >= 10000 {
+			for id, old := range g.buckets {
+				if now.After(old.expires) {
+					delete(g.buckets, id)
+				}
+			}
+			if len(g.buckets) >= 10000 {
+				return ErrUnavailable
+			}
+		}
+		b = bucket{tokens: float64(n), at: now}
 	}
 	b.tokens += now.Sub(b.at).Seconds() * float64(n) / period.Seconds()
 	if b.tokens > float64(n) {
 		b.tokens = float64(n)
 	}
 	b.at = now
+	b.expires = now.Add(2 * period)
 	if b.tokens < float64(units) {
 		g.buckets[key] = b
 		return ErrLimit
@@ -60,6 +73,9 @@ func (g *MemoryGuard) Reserve(_ context.Context, a App, r Reservation) error {
 	}
 	if _, ok := g.settled[r.ID]; ok {
 		return nil
+	}
+	if len(g.reservations)+len(g.settled) >= maxMemoryAttempts || len(g.counts) >= maxMemoryAttempts {
+		return ErrUnavailable
 	}
 	k := a.ID + ":" + r.Month
 	c := g.counts[k]
@@ -82,6 +98,9 @@ func (g *MemoryGuard) Settle(_ context.Context, e Event) error {
 	if ok && old.Revision >= e.Revision {
 		return nil
 	}
+	if _, reserved := g.reservations[e.AttemptID]; !ok && !reserved && len(g.reservations)+len(g.settled) >= maxMemoryAttempts {
+		return ErrUnavailable
+	}
 	k := e.AppID + ":" + e.Month
 	c := g.counts[k]
 	if !ok {
@@ -90,10 +109,12 @@ func (g *MemoryGuard) Settle(_ context.Context, e Event) error {
 			c.ReservedMicro -= r.Micro
 		}
 	}
-	c.Tokens += e.Usage.Total - old.Usage.Total
-	c.Micro += e.CostMicro - old.CostMicro
+	c.Tokens += e.Usage.Total - old.Tokens
+	c.Micro += e.CostMicro - old.Micro
 	g.counts[k] = c
-	g.settled[e.AttemptID] = e
+	delete(g.reservations, e.AttemptID)
+	// 去重只需版本及已入账金额，避免重复持有完整模型配置和采样正文。
+	g.settled[e.AttemptID] = settlement{e.Revision, e.Usage.Total, e.CostMicro}
 	return nil
 }
 func (g *MemoryGuard) Counters(_ context.Context, a, m string) (Counters, error) {
@@ -103,8 +124,9 @@ func (g *MemoryGuard) Counters(_ context.Context, a, m string) (Counters, error)
 }
 
 type RedisGuard struct {
-	Client       *redis.Client
-	RequireReady bool
+	Client        *redis.Client
+	RequireReady  bool
+	EnforceMemory bool
 }
 
 const rateLua = `local tm=redis.call('TIME');local now=tm[1]*1000+math.floor(tm[2]/1000)
@@ -137,6 +159,11 @@ func quotaKeys(a, m, id string) []string {
 
 const reserveLua = `if ARGV[6]=='true' and redis.call('GET','gw:quota:state')~='ready' then return -1 end
 if redis.call('HEXISTS',KEYS[2],'reserved')==1 or redis.call('HEXISTS',KEYS[2],'revision')==1 then return 1 end
+if ARGV[7]=='true' then
+ local info=redis.call('INFO','memory');local max=tonumber(string.match(info,'\r\nmaxmemory:(%d+)'));local used=tonumber(string.match(info,'\r\nused_memory:(%d+)'));local excluded=tonumber(string.match(info,'\r\nmem_not_counted_for_evict:(%d+)')) or 0
+ local policy=string.match(info,'\r\nmaxmemory_policy:([^\r\n]+)')
+ if not max or max<=0 or not used or policy~='noeviction' or math.max(0,used-excluded)>=max*0.9 then return -1 end
+end
 local v=redis.call('HMGET',KEYS[1],'tokens','micro','rt','rm');local t=tonumber(v[1]) or 0;local m=tonumber(v[2]) or 0;local rt=tonumber(v[3]) or 0;local rm=tonumber(v[4]) or 0
 local limit=tonumber(ARGV[3]);local budget=tonumber(ARGV[4]);if limit>0 and t+rt+tonumber(ARGV[1])>limit then return 0 end
 if budget>0 and ARGV[5]=='reject' and m+rm+tonumber(ARGV[2])>budget then return 0 end
@@ -146,7 +173,8 @@ func (g RedisGuard) Reserve(c context.Context, a App, r Reservation) error {
 	// 连接池、DNS 和网络读写共享一次操作的预算，依赖中断不能拖满整个推理请求。
 	c, cancel := context.WithTimeout(c, time.Second)
 	defer cancel()
-	v, e := g.Client.Eval(c, reserveLua, quotaKeys(a.ID, r.Month, r.ID), r.Tokens, r.Micro, a.MonthlyTokens, a.BudgetMicro, a.BudgetAction, strconv.FormatBool(g.RequireReady)).Int()
+	// 90% 水位拒绝新增预占，余量留给已发生费用的结算；INFO/策略无法核验时失败关闭。
+	v, e := g.Client.Eval(c, reserveLua, quotaKeys(a.ID, r.Month, r.ID), r.Tokens, r.Micro, a.MonthlyTokens, a.BudgetMicro, a.BudgetAction, strconv.FormatBool(g.RequireReady), strconv.FormatBool(g.EnforceMemory)).Int()
 	if e != nil {
 		return ErrUnavailable
 	}

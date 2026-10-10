@@ -41,8 +41,13 @@ $testEnv = @{
     GW_ADMIN_USER = 'admin'
     GW_ADMIN_PASSWORD = 'acceptance-' + [guid]::NewGuid().ToString('N')
     OTEL_EXPORTER_OTLP_ENDPOINT = ''
+    # 历史多实例压力实验使用 128 槽；默认 16 槽的过载行为由独立回归验证。
+    GW_MAX_CONCURRENT_REQUESTS = '128'
+    GW_MAX_ADMIN_REQUESTS = '8'
 }
 $redisCreated = $false
+$cacheRedisCreated = $false
+$cacheRedisName = "$run-cache"
 $databaseCreated = $false
 $topicCreated = $false
 $logDir = Join-Path $root 'data/acceptance'
@@ -66,12 +71,20 @@ try {
         if ($LASTEXITCODE) { throw 'Local Compose network unavailable' }
         $redisArgs += @('--network', $network, '--cpus', '1', '--memory', '256m')
     }
-    & docker @redisArgs redis:7.4 redis-server --appendonly yes --appendfsync always --maxmemory-policy noeviction | Out-Null
+    & docker @redisArgs redis:7.4 redis-server --appendonly yes --appendfsync always --maxmemory 8mb --maxmemory-policy noeviction | Out-Null
     if ($LASTEXITCODE) { throw 'Start temporary Redis failed' }
     $redisCreated = $true
     $binding = & docker port $run 6379/tcp
     if ($LASTEXITCODE -or $binding -notmatch '^127\.0\.0\.1:(\d+)$') { throw 'Unexpected temporary Redis binding' }
     $testEnv['GW_REDIS_URL'] = "redis://127.0.0.1:$($Matches[1])/0"
+    $cacheProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+    try { $cacheProbe.Start(); $cachePort = $cacheProbe.LocalEndpoint.Port } finally { $cacheProbe.Stop() }
+    $cacheArgs = @('run', '--detach', '--name', $cacheRedisName, '--label', "llm-gateway.acceptance=$run", '-p', "127.0.0.1:${cachePort}:6379", '--memory', '128m', '--cpus', '1')
+    if ($Reliability) { $cacheArgs += @('--network', $network) }
+    & docker @cacheArgs redis:7.4 redis-server --save '' --appendonly no --maxmemory 4mb --maxmemory-policy allkeys-lru | Out-Null
+    if ($LASTEXITCODE) { throw 'Start temporary cache Redis failed' }
+    $cacheRedisCreated = $true
+    $testEnv['GW_CACHE_REDIS_URL'] = "redis://127.0.0.1:${cachePort}/0"
     if ($Reliability) {
         New-Item -ItemType Directory -Force -Path $runDir | Out-Null
         $buildEnv = @{}
@@ -87,6 +100,7 @@ try {
         foreach ($name in $testEnv.Keys) { $roleEnv[$name] = $testEnv[$name] }
         $roleEnv['GW_MYSQL_DSN'] = "gateway:$($values['GW_LOCAL_DB_PASSWORD'])@tcp(mysql:3306)/${run}?parseTime=true&charset=utf8mb4"
         $roleEnv['GW_REDIS_URL'] = "redis://${run}:6379/0"
+        $roleEnv['GW_CACHE_REDIS_URL'] = "redis://${cacheRedisName}:6379/0"
         $roleEnv['GW_KAFKA_BROKERS'] = 'kafka:9092'
         $roleEnv['GW_ETCD_ENDPOINTS'] = 'http://etcd:2379'
         $roleEnv['GW_MILVUS_URL'] = 'http://milvus:19530'
@@ -129,6 +143,10 @@ try {
     if ($redisCreated) {
         & docker rm -f -v $run | Out-Null
         if ($LASTEXITCODE) { Write-Warning "Temporary Redis cleanup failed: $run" }
+    }
+    if ($cacheRedisCreated) {
+        & docker rm -f -v $cacheRedisName | Out-Null
+        if ($LASTEXITCODE) { Write-Warning "Temporary cache Redis cleanup failed: $cacheRedisName" }
     }
     if ($topicCreated) {
         # SIGKILL 的成员可能仍在 Kafka 会话有效期内，等待失效后删除专用组。

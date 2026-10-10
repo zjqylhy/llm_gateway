@@ -141,11 +141,20 @@ func RunMaintenance(c context.Context, e *Engine) {
 	defer tick.Stop()
 	last := map[string]int64{}
 	average := map[string]float64{}
+	nextCacheCleanup := time.Now().Add(5 * time.Minute)
 	for {
 		select {
 		case <-c.Done():
 			return
 		case <-tick.C:
+			if cache, ok := e.Cache.(MilvusCache); ok && !time.Now().Before(nextCacheCleanup) {
+				cleanup, done := context.WithTimeout(c, 3*time.Second)
+				if err := cache.Prune(cleanup); err != nil {
+					slog.Warn("expired cache vector cleanup unavailable")
+				}
+				done()
+				nextCacheCleanup = time.Now().Add(5 * time.Minute)
+			}
 			ctx, cancel := context.WithTimeout(c, 5*time.Second)
 			cfg, err := e.Store.Load(ctx)
 			if err == nil {

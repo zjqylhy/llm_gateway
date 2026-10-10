@@ -22,21 +22,23 @@ type snapshot struct {
 	keys map[string]Key
 }
 type Engine struct {
-	Store      Store
-	Bus        Bus
-	Guard      Guard
-	Cache      Cache
-	Publisher  Publisher
-	Vault      *Vault
-	Client     *http.Client
-	Dev        bool
-	InstanceID string
-	state      atomic.Pointer[snapshot]
-	refreshed  atomic.Int64
-	breakerMu  sync.Mutex
-	breakers   map[string]breaker
-	latencies  map[string]float64
-	Metrics    *Metrics
+	Store         Store
+	Bus           Bus
+	Guard         Guard
+	Cache         Cache
+	Publisher     Publisher
+	Vault         *Vault
+	Client        *http.Client
+	Dev           bool
+	InstanceID    string
+	state         atomic.Pointer[snapshot]
+	refreshed     atomic.Int64
+	breakerMu     sync.Mutex
+	breakers      map[string]breaker
+	latencies     map[string]float64
+	Metrics       *Metrics
+	MaxConcurrent int
+	admission     admission
 }
 type breaker struct {
 	Failures int
@@ -126,7 +128,7 @@ func (e *Engine) Handler() http.Handler {
 	})
 	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) { e.handle(w, r, "chat") })
 	mux.HandleFunc("POST /v1/embeddings", func(w http.ResponseWriter, r *http.Request) { e.handle(w, r, "embedding") })
-	return mux
+	return protectedHandler(mux, &e.admission, e.MaxConcurrent, defaultGatewayConcurrency, "/v1/", "gateway", e.Metrics)
 }
 func (e *Engine) handle(w http.ResponseWriter, r *http.Request, kind string) {
 	start := time.Now()

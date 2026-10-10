@@ -82,3 +82,17 @@ k6 run loadtest/gateway.js
 
 
 
+
+## 2026-10-11 资源防护验证
+
+本轮 Go 全量回归（count=1）、go vet、go build、部署结构验证（27 份 YAML、24 个监控面板）、Docker Compose config --quiet 和 git diff --check 均通过。新增回归覆盖：32 个过载请求在读取正文前拒绝且无上游调用；释放槽位后恢复；慢客户端写入/flush 超时；SSE 多行事件总大小；缓存字节预算与缓冲所有权；离线账本/去重容量；Redis DB 编号不能代替实例隔离；超大配置回滚；TCP 连接上限及释放。
+
+真实 MySQL、两台独立 Redis、Kafka、etcd、Milvus 的 12 个隔离验收通过，最终运行 gw_acceptance_4065989ebcbf，约 58 秒。新增验收证明缓存确实触发淘汰而配额不变；90% 水位拒绝新调用，已有预占可重放并留出结算余量；错误配额淘汰策略拒绝预占；硬限额 OOM 后仍可读取配额、无新增上游调用；超大 SQL 配置回滚；10,001 组报表明确拒绝；包含大正文的记录页超过 16MiB 拒绝，缩小分页可用；过期 Milvus 实体确实删除。
+
+初次容量验收 gw_acceptance_f2e8ca469d9b 失败：大块 SET 返回 OOM，但小型预占脚本仍可利用剩余空间，未达到测试期待的提前拒绝。补入 INFO memory/90% 水位核验后重新通过；未把该失败记录覆盖或列为通过。
+
+多实例故障回归 gw_acceptance_899786912ee0 通过约 48 秒：仅 worker 入消费组；100 并发在两实例争抢 Token/预算，各恰好允许 5 次；强杀 worker 后补账；Redis 停止拒绝调用并由 AOF 恢复；网关流中崩溃保留 pending。该次明确使用 -Reliability -SkipPressure，6 项通过、压力项跳过，不能作为性能达标证据。之前记录的 overhead 和计量积压问题仍待性能优化。
+
+验收数据库、topic/组、配置前缀、collection、角色容器、两台测试 Redis 及临时凭据文件均隔离并清理。现有应用容器未重建、现有配额未变；只读检查当前 Redis used_memory 1,281,544 字节、maxmemory=0、noeviction。新配置需按 deployment.md 升级才生效，不执行 down -v。
+
+Linux race、真实厂商、最大报文持续压力、云预发、入口代理连接治理、监控标签长期累积及财务元数据归档仍待专项验证/治理。本轮不宣称所有 OOM 风险已消除，也不宣称云容量和 SLO 达标。

@@ -25,7 +25,7 @@ GW_BUILD_GOPROXY=https://goproxy.cn,direct
 从仓库根目录依次运行：
 
 ```powershell
-docker compose --env-file .env -f deploy/compose/compose.yaml up -d mysql redis kafka kafka-init etcd minio milvus
+docker compose --env-file .env -f deploy/compose/compose.yaml up -d mysql redis redis-cache kafka kafka-init etcd minio milvus
 docker compose --env-file .env -f deploy/compose/compose.yaml build gateway
 docker compose --env-file .env -f deploy/compose/compose.yaml run --rm migrate
 docker compose --env-file .env -f deploy/compose/compose.yaml run --rm bootstrap
@@ -42,12 +42,12 @@ docker compose --env-file .env -f deploy/compose/compose.yaml up -d gateway admi
 
 ```powershell
 $composeArgs = @('--env-file', '.env', '-f', 'deploy/compose/compose.yaml', '-f', 'deploy/compose/integration-ports.yaml')
-docker compose @composeArgs pull mysql redis kafka etcd minio milvus
-docker compose @composeArgs up -d mysql redis kafka kafka-init etcd minio milvus
+docker compose @composeArgs pull mysql redis redis-cache kafka etcd minio milvus
+docker compose @composeArgs up -d mysql redis redis-cache kafka kafka-init etcd minio milvus
 docker compose @composeArgs ps
 ```
 
-本机连接地址分别为 MySQL `127.0.0.1:13306`、Redis `127.0.0.1:16379`、Kafka `127.0.0.1:19092`、etcd `http://127.0.0.1:12379`、Milvus `http://127.0.0.1:19530`。容器内应用仍使用 `.env.example` 中的服务名称。Go 命令不会自动加载 `.env`，需要在各进程启动前注入环境变量；管理页面仍需 HTTPS 反向代理以支持 Secure Cookie。
+本机连接地址分别为 MySQL `127.0.0.1:13306`、配额 Redis `127.0.0.1:16379`、缓存 Redis `127.0.0.1:16380`、Kafka `127.0.0.1:19092`、etcd `http://127.0.0.1:12379`、Milvus `http://127.0.0.1:19530`。容器内应用使用服务名称。Go 命令不会自动加载 `.env`，需要在各进程启动前注入环境变量；管理页面仍需 HTTPS 反向代理以支持 Secure Cookie。
 
 依赖启动后，从项目根目录执行以下命令可验收真实数据链路和配额恢复：
 
@@ -75,13 +75,31 @@ MinIO 使用 [Milvus 官方部署配置](https://github.com/milvus-io/milvus/blo
 
 注册向量模型后设置真实输出维度及 `GW_CACHE_DIMENSIONS`，运行 `cache-init` 创建 Milvus collection。collection 中只使用一种维度；需要不同维度时配置新的 collection 和相应网关部署。缓存默认关闭，未创建 collection 时会绕过并记录缓存错误。
 
-线上 Kafka 至少 3 个 broker，事件 topic 建议 6 个以上分区、3 副本、`min.insync.replicas=2`、禁用非同步副本选主。保留期覆盖最大离线对账窗口，示例为 7 天；按吞吐和数据政策调整。配额 Redis 使用独立数据库、持久化和 noeviction，使用单主 HA endpoint；当前客户端没有 Redis Cluster/Sentinel 自动发现适配。
+线上 Kafka 至少 3 个 broker，事件 topic 建议 6 个以上分区、3 副本、`min.insync.replicas=2`、禁用非同步副本选主。保留期覆盖最大离线对账窗口，示例为 7 天；按吞吐和数据政策调整。配额 Redis 与缓存 Redis 必须是独立实例，使用单主 HA endpoint；当前客户端没有 Redis Cluster/Sentinel 自动发现适配。
+
+### Redis 容量与既有部署升级
+
+`GW_REDIS_URL` 保存配额、计量去重及会话，须开启持久化、设置正数 `maxmemory` 并使用 `noeviction`；`GW_CACHE_REDIS_URL` 只保存缓存响应，使用 `allkeys-lru` 或 `allkeys-lfu`。不同 DB 编号不隔离 Redis 的内存和淘汰策略；运行时拒绝相同地址，不得以不同 DNS 别名指向同一个服务。生产预占脚本必须有 `INFO memory` 权限，用它核验配额实例的限额和策略，并在计入淘汰判断的内存达到 90% 时拒绝新增付费调用。剩余空间用于已发生费用的结算，不能保证任意积压规模下结算永远成功。
+
+本地模板配额 Redis 为 `128mb / noeviction`，容器限制 `512m`；缓存 Redis 为 `64mb / allkeys-lru`，容器限制 `192m`，不持久化。额外空间用于客户端、碎片和持久化重写，需按实际负载调整。[Redis 官方说明](https://redis.io/docs/latest/develop/reference/eviction/)指出 AOF/复制缓冲不计入淘汰限额，因此 `maxmemory` 不能直接等于容器内存。
+
+Compose 自动给应用注入缓存服务 URL，默认复用本机 Redis 密码；若密码含 URL 特殊字符，显式设置经过 URL 编码的 `GW_CACHE_REDIS_URL`。在 Windows 直接运行 Go 时也必须显式设置该变量，使用 `127.0.0.1:16380`。云部署为两个托管实例分别配置凭据和 TLS URL，不使用本地默认地址。
+
+已有部署先核验配额 Redis 数据量和 AOF 备份；若接近或超过新限额，先扩容并调整 Compose 中的限额及容器内存。重建 Redis 容器保留现有 `redis` 命名卷，不执行 `down -v`。新增 `redis-cache` 后重建应用，旧响应缓存自然到期，新缓存按需填充，不搬迁配额或去重键。检查两台 Redis 的 `INFO memory`，确认限额及策略，并核对当前月份配额。
+
+```powershell
+docker compose --env-file .env -f deploy/compose/compose.yaml build gateway
+docker compose --env-file .env -f deploy/compose/compose.yaml up -d redis redis-cache
+docker compose --env-file .env -f deploy/compose/compose.yaml up -d --force-recreate gateway admin worker
+```
+
+应用容器限制 1GiB，`GOMEMLIMIT=768MiB` 为 Go 软内存预算；Kubernetes ConfigMap 提供相同默认值。配置 `GW_MAX_CONCURRENT_REQUESTS=16`、`GW_MAX_ADMIN_REQUESTS=8`，实例过载立即返回 `503 gateway_overloaded` 和 `Retry-After: 1`。提高并发前须测量最大请求/响应下的内存，不应只提高容器限制；离线 Compose 为 512MiB、软预算 384MiB、业务 8 槽和管理 4 槽。Kafka 本地堆上限 512MiB、容器限制 1536MiB；这些是联调默认值，不是云容量承诺。
 
 ## 云 Kubernetes
 
 模板位于 `deploy/k8s`，使用外部 MySQL、Redis、Kafka、etcd、Milvus，不创建云资源。替换 `kustomization.yaml` 镜像仓库和提交标签，替换域名、Ingress class、TLS Secret、网络出口范围和资源配额。
 
-1. 使用云 Secret Manager 或 External Secrets 创建 `gateway-runtime`，键名与 `.env.example` 一致。至少包含主密钥、DSN、Redis URL、Kafka broker、etcd endpoint、Milvus URL，按实际服务补齐认证和 OTLP。不要把初始管理员密码放入长期运行的 Secret。
+1. 使用云 Secret Manager 或 External Secrets 创建 `gateway-runtime`，键名与 `.env.example` 一致。至少包含主密钥、DSN、两个独立 Redis URL（`GW_REDIS_URL` 与 `GW_CACHE_REDIS_URL`）、Kafka broker、etcd endpoint、Milvus URL，按实际服务补齐认证和 OTLP。不要把初始管理员密码放入长期运行的 Secret。
 2. 单独创建 `gateway-bootstrap` 存放初始管理员密码，以及 `gateway-tls` 保存域名证书。
 3. 应用 namespace、service account 和 ConfigMap，然后使用 `setup-job.yaml` 依次执行 migrate、bootstrap、可选 cache-init；每个 Job 使用不同名称。初始化完成后再应用全部 workload。
 4. 执行 `kubectl apply -k deploy/k8s`，检查 Deployment、Pod readiness、实例配置版本及 Kafka lag。需要 metrics-server 使 HPA 生效，CNI 必须支持 NetworkPolicy。

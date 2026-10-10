@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -34,7 +36,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 	if os.Getenv("GW_KAFKA_GROUP") != run || os.Getenv("GW_ETCD_PREFIX") != "/"+run {
 		t.Fatal("consumer group and configuration prefix must match the dedicated run ID")
 	}
-	for _, name := range []string{"GW_MYSQL_DSN", "GW_REDIS_URL", "GW_KAFKA_BROKERS", "GW_ETCD_ENDPOINTS", "GW_MILVUS_URL"} {
+	for _, name := range []string{"GW_MYSQL_DSN", "GW_REDIS_URL", "GW_CACHE_REDIS_URL", "GW_KAFKA_BROKERS", "GW_ETCD_ENDPOINTS", "GW_MILVUS_URL"} {
 		if !strings.Contains(os.Getenv(name), "127.0.0.1") {
 			t.Fatalf("%s must point to local services", name)
 		}
@@ -57,6 +59,9 @@ func TestInfrastructureIntegration(t *testing.T) {
 	readerConfig := r.OpenMeteringReader().Config()
 	defer func() { _ = r.Reader.Close() }()
 	cache := r.Engine.Cache.(MilvusCache)
+	if cache.Redis.Options().Addr == r.Redis.Options().Addr {
+		t.Fatal("acceptance cache and quota must use separate Redis instances")
+	}
 	defer func() {
 		cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
 		defer done()
@@ -420,6 +425,218 @@ func TestInfrastructureIntegration(t *testing.T) {
 		}
 		drain()
 		reconcile("app")
+	})
+	runCase("bounded_configuration_and_report", func(t *testing.T) {
+		before, err := s.Load(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = s.Update(ctx, "acceptance", "oversized", func(c *Config) error {
+			c.Apps["large"] = App{ID: "large", Name: strings.Repeat("x", maxConfigBytes)}
+			return nil
+		})
+		if err == nil {
+			t.Fatal("oversized SQL configuration accepted")
+		}
+		after, err := s.Load(ctx)
+		if err != nil || after.Version != before.Version || len(after.Apps) != len(before.Apps) {
+			t.Fatal("failed update changed SQL configuration", err)
+		}
+		defer func() {
+			_, err := s.DB.ExecContext(ctx, `DELETE FROM gw_attempts WHERE model_id IN ('acceptance-capacity','acceptance-record-capacity')`)
+			if err != nil {
+				t.Error(err)
+			}
+		}()
+		for base := 0; base < 10001; base += 250 {
+			values := []string{}
+			args := []any{}
+			for i := base; i < base+250 && i < 10001; i++ {
+				id := fmt.Sprintf("capacity-%d", i)
+				values = append(values, `(?,?,?,'capacity','acceptance-capacity','success','inference',2,1,1,?,JSON_OBJECT('quality','reported'))`)
+				args = append(args, id, id, id, time.Now().UTC())
+			}
+			if _, err := s.DB.ExecContext(ctx, `INSERT INTO gw_attempts(attempt_id,request_id,app_id,department,model_id,status,purpose,revision,tokens,cost_micro,at,payload) VALUES `+strings.Join(values, ","), args...); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if rows, err := s.Report(ctx, Filter{ModelID: "acceptance-capacity"}); !errors.Is(err, ErrReportCapacity) || rows != nil {
+			t.Fatal("oversized report silently truncated or retained", len(rows), err)
+		}
+		if rows, err := s.Report(ctx, Filter{AppID: "capacity-0"}); err != nil || len(rows) != 1 || rows[0].Tokens != 1 {
+			t.Fatal("filtered report unavailable", rows, err)
+		}
+		_, err = s.DB.ExecContext(ctx, `INSERT INTO gw_attempts(attempt_id,request_id,app_id,department,model_id,status,purpose,revision,tokens,cost_micro,at,payload) SELECT CONCAT('large-',attempt_id),request_id,app_id,department,'acceptance-record-capacity',status,purpose,revision,tokens,cost_micro,at,JSON_OBJECT('payload_ciphertext',REPEAT('x',900*1024)) FROM gw_attempts WHERE model_id='acceptance-capacity' LIMIT 20`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rows, err := s.Records(ctx, Filter{ModelID: "acceptance-record-capacity", Limit: 20}); !errors.Is(err, ErrRecordCapacity) || rows != nil {
+			t.Fatal("large record page was not bounded", len(rows), err)
+		}
+		if rows, err := s.Records(ctx, Filter{ModelID: "acceptance-record-capacity", Limit: 1}); err != nil || len(rows) != 1 {
+			t.Fatal("small record page unavailable", len(rows), err)
+		}
+	})
+	runCase("expired_vector_cleanup", func(t *testing.T) {
+		vector := make([]float32, 32)
+		vector[0] = 1
+		if err := cache.call(ctx, "entities/upsert", map[string]any{"collectionName": run, "data": []map[string]any{{"id": "expired-acceptance", "vector": vector, "scope": "expired", "expire": time.Now().Add(-time.Hour).Unix()}}}, nil); err != nil {
+			t.Fatal(err)
+		}
+		query := func() int {
+			var out struct {
+				Data []map[string]any `json:"data"`
+			}
+			if err := cache.call(ctx, "entities/query", map[string]any{"collectionName": run, "filter": `id == "expired-acceptance"`, "outputFields": []string{"id"}, "limit": 1, "consistencyLevel": "Strong"}, &out); err != nil {
+				t.Fatal(err)
+			}
+			return len(out.Data)
+		}
+		wait("expired entity stored", func() bool { return query() == 1 })
+		if err := cache.Prune(ctx); err != nil {
+			t.Fatal(err)
+		}
+		wait("expired entity deleted", func() bool { return query() == 0 })
+	})
+	runCase("cache_eviction_preserves_quota", func(t *testing.T) {
+		drain()
+		before, err := e.Guard.Counters(ctx, "app", month(time.Now()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload := strings.Repeat("x", 64<<10)
+		for i := 0; i < 256; i++ {
+			if err := cache.Redis.Set(ctx, fmt.Sprintf("acceptance:pressure:%d", i), payload, time.Minute).Err(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		stats, err := cache.Redis.Info(ctx, "stats").Result()
+		if err != nil {
+			t.Fatal(err)
+		}
+		evicted := false
+		for _, line := range strings.Split(stats, "\n") {
+			if strings.HasPrefix(line, "evicted_keys:") && strings.TrimSpace(strings.TrimPrefix(line, "evicted_keys:")) != "0" {
+				evicted = true
+			}
+		}
+		if !evicted {
+			t.Fatal("cache pressure did not trigger real Redis eviction")
+		}
+		after, err := e.Guard.Counters(ctx, "app", month(time.Now()))
+		if err != nil || before != after {
+			t.Fatal("cache eviction changed quota", before, after, err)
+		}
+		if state, err := r.Redis.Get(ctx, "gw:quota:state").Result(); err != nil || state != "ready" {
+			t.Fatal("cache eviction lost quota ready state", err)
+		}
+		if w := chat("app", "after eviction", false); w.Code != 200 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+		drain()
+		reconcile("app")
+	})
+	runCase("quota_watermark_preserves_completion_and_replay", func(t *testing.T) {
+		drain()
+		app := App{ID: "acceptance-headroom", BudgetAction: "warn"}
+		reservation := Reservation{ID: "headroom", AppID: app.ID, Month: month(time.Now()), Tokens: 10, Micro: 10}
+		if err := e.Guard.Reserve(ctx, app, reservation); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := r.Redis.ConfigSet(ctx, "maxmemory", "8mb").Err(); err != nil {
+				t.Error(err)
+			}
+			if err := r.Redis.ConfigSet(ctx, "maxmemory-policy", "noeviction").Err(); err != nil {
+				t.Error(err)
+			}
+			keys := quotaKeys(app.ID, reservation.Month, reservation.ID)
+			if err := r.Redis.Del(ctx, keys...).Err(); err != nil {
+				t.Error(err)
+			}
+		}()
+		info, err := r.Redis.Info(ctx, "memory").Result()
+		if err != nil {
+			t.Fatal(err)
+		}
+		used := int64(0)
+		for _, line := range strings.Split(info, "\n") {
+			if strings.HasPrefix(line, "used_memory:") {
+				used, err = strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(line, "used_memory:")), 10, 64)
+			}
+		}
+		if err != nil || used <= 0 {
+			t.Fatal("memory not measured", err)
+		}
+		if err := r.Redis.ConfigSet(ctx, "maxmemory", strconv.FormatInt(used*105/100, 10)).Err(); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.Guard.Reserve(ctx, app, reservation); err != nil {
+			t.Fatal("existing reserve replay blocked at watermark", err)
+		}
+		calls := upstreamCalls.Load()
+		if w := chat("app", "watermark", false); w.Code != 503 || upstreamCalls.Load() != calls {
+			t.Fatal("watermark allowed paid call", w.Code)
+		}
+		complete := Event{AttemptID: reservation.ID, AppID: app.ID, Month: reservation.Month, Revision: 2, Usage: Usage{Total: 5}, CostMicro: 7}
+		if err := e.Guard.Settle(ctx, complete); err != nil {
+			t.Fatal("completion lost headroom", err)
+		}
+		if counts, err := e.Guard.Counters(ctx, app.ID, reservation.Month); err != nil || counts.Tokens != 5 || counts.Micro != 7 || counts.ReservedTokens != 0 || counts.ReservedMicro != 0 {
+			t.Fatal("headroom settlement incorrect", counts, err)
+		}
+		if err := r.Redis.ConfigSet(ctx, "maxmemory", "8mb").Err(); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Redis.ConfigSet(ctx, "maxmemory-policy", "allkeys-lru").Err(); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.Guard.Reserve(ctx, app, Reservation{ID: "unsafe-policy", AppID: app.ID, Month: reservation.Month, Tokens: 1}); !errors.Is(err, ErrUnavailable) {
+			t.Fatal("unsafe quota eviction policy accepted", err)
+		}
+	})
+	runCase("quota_memory_exhaustion_fails_closed", func(t *testing.T) {
+		drain()
+		stopWorker()
+		before, err := e.Guard.Counters(ctx, "app", month(time.Now()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys := []string{}
+		defer func() {
+			if len(keys) > 0 {
+				if err := r.Redis.Del(ctx, keys...).Err(); err != nil {
+					t.Error("pressure cleanup", err)
+				}
+			}
+			startWorker()
+		}()
+		exhausted := false
+		for i := 0; i < 2048; i++ {
+			key := fmt.Sprintf("acceptance:pressure:%d", i)
+			keys = append(keys, key)
+			if err := r.Redis.Set(ctx, key, strings.Repeat("x", 64<<10), 0).Err(); err != nil {
+				if !strings.Contains(err.Error(), "OOM") {
+					t.Fatal(err)
+				}
+				exhausted = true
+				break
+			}
+		}
+		if !exhausted {
+			t.Fatal("quota Redis did not enforce maxmemory")
+		}
+		calls := upstreamCalls.Load()
+		if w := chat("app", "memory exhausted", false); w.Code != 503 || upstreamCalls.Load() != calls {
+			t.Fatal("OOM permitted a paid request", w.Code, w.Body.String())
+		}
+		after, err := e.Guard.Counters(ctx, "app", month(time.Now()))
+		if err != nil || before != after {
+			t.Fatal("OOM corrupted quota", before, after, err)
+		}
+		if err := r.Redis.Ping(ctx).Err(); err != nil {
+			t.Fatal("Redis process unavailable after OOM", err)
+		}
 	})
 	t.Logf("isolated acceptance completed: %s, upstream calls=%d", run, upstreamCalls.Load())
 }

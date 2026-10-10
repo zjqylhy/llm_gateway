@@ -9,6 +9,8 @@ import (
 )
 
 var ErrUnavailable = errors.New("dependency unavailable")
+var ErrReportCapacity = errors.New("report exceeds 10000 groups; narrow the filters")
+var ErrRecordCapacity = errors.New("records exceed 16 MiB; lower the page limit or narrow the filters")
 var ErrLimit = errors.New("quota exceeded")
 var ErrProviderLimit = fmt.Errorf("provider rate exceeded: %w", ErrLimit)
 

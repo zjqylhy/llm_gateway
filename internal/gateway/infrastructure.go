@@ -27,6 +27,9 @@ func (b KafkaBus) Publish(c context.Context, e Event) error {
 	if err != nil {
 		return err
 	}
+	if len(raw) > 1<<20 {
+		return errors.New("metering event exceeds 1 MiB")
+	}
 	return b.Writer.WriteMessages(c, kafka.Message{Key: []byte(e.AppID), Value: raw})
 }
 func (b KafkaBus) Close() error { return b.Writer.Close() }
@@ -115,6 +118,7 @@ func (p EtcdPublisher) Current(c context.Context) (Config, error) {
 type MemoryCache struct {
 	mu    sync.Mutex
 	items map[string]CacheItem
+	bytes int
 }
 
 func NewMemoryCache() *MemoryCache { return &MemoryCache{items: map[string]CacheItem{}} }
@@ -125,6 +129,7 @@ func (c *MemoryCache) Find(_ context.Context, scope string, v []float32, thresho
 	score := threshold
 	for id, x := range c.items {
 		if x.Expire <= time.Now().Unix() {
+			c.bytes -= cacheItemSize(x)
 			delete(c.items, id)
 			continue
 		}
@@ -141,16 +146,32 @@ func (c *MemoryCache) Find(_ context.Context, scope string, v []float32, thresho
 	return best, nil
 }
 func (c *MemoryCache) Put(_ context.Context, x CacheItem) error {
+	size := cacheItemSize(x)
+	if size > maxCacheItemBytes || x.Expire <= time.Now().Unix() {
+		return nil
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.items) >= 10000 {
+	if old, ok := c.items[x.ID]; ok {
+		c.bytes -= cacheItemSize(old)
+		delete(c.items, x.ID)
+	}
+	for len(c.items) >= 10000 || c.bytes+size > maxMemoryCacheBytes {
 		for k := range c.items {
+			c.bytes -= cacheItemSize(c.items[k])
 			delete(c.items, k)
 			break
 		}
 	}
+	// 拷贝实际数据，避免短切片长期持有远大于记录大小的底层缓冲区。
+	x.Response = bytes.Clone(x.Response)
+	x.Vector = append([]float32(nil), x.Vector...)
 	c.items[x.ID] = x
+	c.bytes += size
 	return nil
+}
+func cacheItemSize(x CacheItem) int {
+	return len(x.ID) + len(x.Scope) + len(x.Response) + len(x.Vector)*4 + 256
 }
 func cosine(a, b []float32) float64 {
 	if len(a) != len(b) || len(a) == 0 {
@@ -247,6 +268,9 @@ func (c MilvusCache) Find(ctx context.Context, scope string, v []float32, thresh
 	return &item, nil
 }
 func (c MilvusCache) Put(ctx context.Context, x CacheItem) error {
+	if cacheItemSize(x) > maxCacheItemBytes {
+		return nil
+	}
 	b, e := json.Marshal(x)
 	if e != nil {
 		return e
@@ -259,4 +283,9 @@ func (c MilvusCache) Put(ctx context.Context, x CacheItem) error {
 		return e
 	}
 	return c.call(ctx, "entities/upsert", map[string]any{"collectionName": c.Collection, "data": []map[string]any{{"id": x.ID, "vector": x.Vector, "scope": x.Scope, "expire": x.Expire}}}, nil)
+}
+
+// Redis 淘汰响应不会同步删除向量，定期删除过期实体供 Milvus 后台压缩回收。
+func (c MilvusCache) Prune(ctx context.Context) error {
+	return c.call(ctx, "entities/delete", map[string]any{"collectionName": c.Collection, "filter": "expire <= " + strconv.FormatInt(time.Now().Unix(), 10)}, nil)
 }

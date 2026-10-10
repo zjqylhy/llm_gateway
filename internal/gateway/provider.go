@@ -366,10 +366,19 @@ func NewSSEReader(r io.Reader) *SSEReader {
 }
 func (s *SSEReader) Next() ([]byte, error) {
 	var data []string
+	eventBytes := 0
 	for s.scanner.Scan() {
 		line := s.scanner.Text()
+		// 单行 Scanner 上限不能约束无限多行的同一个 SSE 事件。
+		eventBytes += len(line) + 1
+		if eventBytes > 2<<20 {
+			return nil, errors.New("SSE event exceeds 2 MiB")
+		}
 		if line == "" && len(data) > 0 {
 			return []byte(strings.Join(data, "\n")), nil
+		}
+		if line == "" {
+			eventBytes = 0
 		}
 		if strings.HasPrefix(line, "data:") {
 			data = append(data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))

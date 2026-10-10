@@ -2,18 +2,21 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"sort"
 	"sync"
 	"time"
 )
 
 type MemoryStore struct {
-	mu        sync.Mutex
-	config    Config
-	events    map[string]Event
-	audits    []Audit
-	instances map[string]Instance
-	alerts    map[string]Alert
+	mu         sync.Mutex
+	config     Config
+	events     map[string]Event
+	audits     []Audit
+	instances  map[string]Instance
+	alerts     map[string]Alert
+	eventBytes int
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -32,8 +35,14 @@ func (s *MemoryStore) Update(_ context.Context, actor, action string, fn func(*C
 		return Config{}, e
 	}
 	c.Version++
+	if b, err := json.Marshal(c); err != nil || len(b) > maxConfigBytes {
+		return Config{}, errors.New("configuration exceeds 1 MiB")
+	}
 	s.config = c
 	s.audits = append(s.audits, Audit{ID: ID("aud_"), Actor: actor, Action: action, At: time.Now().UTC(), Version: c.Version})
+	if len(s.audits) > 10000 {
+		s.audits = append([]Audit(nil), s.audits[len(s.audits)-10000:]...)
+	}
 	return Clone(c), nil
 }
 func (s *MemoryStore) Apply(_ context.Context, e Event) error {
@@ -41,6 +50,20 @@ func (s *MemoryStore) Apply(_ context.Context, e Event) error {
 	defer s.mu.Unlock()
 	old, ok := s.events[e.AttemptID]
 	if !ok || old.Revision < e.Revision {
+		raw, err := json.Marshal(e)
+		if err != nil {
+			return err
+		}
+		oldBytes := 0
+		if ok {
+			b, _ := json.Marshal(old)
+			oldBytes = len(b)
+		}
+		// 离线账本不能删除旧记录换取新额度；达到上限后停止接收新事件。
+		if (!ok && len(s.events) >= 2*maxMemoryAttempts) || s.eventBytes-oldBytes+len(raw) > 64<<20 {
+			return ErrUnavailable
+		}
+		s.eventBytes += len(raw) - oldBytes
 		s.events[e.AttemptID] = e
 	}
 	return nil

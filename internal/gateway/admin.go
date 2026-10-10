@@ -24,13 +24,15 @@ type session struct {
 	Expires time.Time
 }
 type Admin struct {
-	Engine   *Engine
-	Secure   bool
-	Origin   string
-	mu       sync.Mutex
-	sessions map[string]session
-	Assets   http.Handler
-	Sessions SessionStore
+	Engine        *Engine
+	Secure        bool
+	Origin        string
+	mu            sync.Mutex
+	sessions      map[string]session
+	Assets        http.Handler
+	Sessions      SessionStore
+	MaxConcurrent int
+	admission     admission
 }
 
 func NewAdmin(e *Engine, secure bool, origin string) *Admin {
@@ -116,7 +118,7 @@ func (a *Admin) Handler() http.Handler {
 	if a.Assets != nil {
 		mux.Handle("GET /", a.Assets)
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -138,6 +140,7 @@ func (a *Admin) Handler() http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
+	return protectedHandler(handler, &a.admission, a.MaxConcurrent, defaultAdminConcurrency, "/admin/", "admin", a.Engine.Metrics)
 }
 func readJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
@@ -664,6 +667,10 @@ func (a *Admin) records(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, e := a.Engine.Store.Records(r.Context(), f)
 	if e != nil {
+		if errors.Is(e, ErrRecordCapacity) {
+			APIError(w, 413, "records_too_large", e.Error())
+			return
+		}
 		APIError(w, 503, "storage_unavailable", "cannot query records")
 		return
 	}
@@ -685,6 +692,10 @@ func (a *Admin) cost(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, e := agg.Report(r.Context(), f)
 	if e != nil {
+		if errors.Is(e, ErrReportCapacity) {
+			APIError(w, 413, "report_too_large", e.Error())
+			return
+		}
 		APIError(w, 503, "storage_unavailable", "report unavailable")
 		return
 	}
