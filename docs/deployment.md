@@ -6,6 +6,18 @@
 
 Dockerfile 使用多阶段 Go/Node 构建，最终镜像包含所有命令和控制台静态资源，以非 root 用户运行。镜像没有 shell，不在镜像中写入凭据。修改配置后须重启应用进程；业务配置由 etcd 动态同步。
 
+构建若在访问 `auth.docker.io` 获取匿名令牌时超时，应检查主机 DNS 和 Docker Desktop 的代理链路。可在本地 `.env` 设置以下构建参数，选择 [Docker 官方 AWS 公共仓库](https://gallery.ecr.aws/docker/)中的同版本基础镜像，然后重新执行 `docker compose ... build gateway`：
+
+```dotenv
+GW_BUILD_NODE_IMAGE=public.ecr.aws/docker/library/node:24.21.0-bookworm-slim
+GW_BUILD_GO_IMAGE=public.ecr.aws/docker/library/golang:1.27.1-bookworm
+GW_BUILD_GOPROXY=https://goproxy.cn,direct
+```
+
+`GW_BUILD_GOPROXY` 仅用于构建时下载 Go 依赖，按网络情况选择；模块校验机制保留。独立 `docker build` 可分别用 `--build-arg NODE_IMAGE=...`、`--build-arg GO_IMAGE=...`、`--build-arg GO_PROXY=...`。这些参数不影响运行时的数据库、模型厂商或云部署配置。
+
+若备用仓库的镜像层下载仍然缓慢，也可使用本机已有的官方镜像缓存：先用 `docker run --rm --network none --entrypoint /usr/local/go/bin/go <Go镜像> version` 和相应 Node 命令核实版本，再用 `docker image inspect <镜像> --format '{{json .RepoDigests}}'` 获取摘要。将构建镜像参数设置为已缓存的 `镜像名@sha256:摘要`，以固定实际内容；Go 版本须满足 `go.mod`，Node 须满足前端依赖。同一 Docker 构建器已有对应缓存时，可避免重复下载镜像层，构建仍需访问依赖包仓库。
+
 ## 本机容器基础设施联调
 
 复制根目录 `.env.example` 为 `.env`，设置随机主密钥、管理员密码、各本机中间件密码和 Grafana 密码。用随机生成的 32 字节 base64 设置 `GW_MASTER_KEY`，不要发送到聊天或提交 Git。DSN 中的数据库密码及 Redis URL 密码必须与本机初始化密码一致，URL 特殊字符需编码。

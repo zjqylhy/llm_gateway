@@ -2,6 +2,10 @@ name: llm-gateway-integration
 x-app: &app
   build:
     context: ../..
+    args:
+      NODE_IMAGE: ${GW_BUILD_NODE_IMAGE:-node:24.21.0-bookworm-slim}
+      GO_IMAGE: ${GW_BUILD_GO_IMAGE:-golang:1.27.1-bookworm}
+      GO_PROXY: ${GW_BUILD_GOPROXY:-https://proxy.golang.org,direct}
   image: llm-gateway:local
   env_file: ../../.env
   read_only: true
