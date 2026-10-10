@@ -13,12 +13,13 @@
 - 浏览器人工链路：本地登录、创建应用、保存发布、Playground 主模型故障后流式降级、成本页展示多次尝试；页面布局已查看。
 - 部署 YAML 校验、24 项 Grafana dashboard JSON 校验：通过。Linux amd64 交叉编译：通过。
 - Docker Desktop 本地构建：`docker compose --env-file .env -f deploy/compose/compose.yaml build gateway` 通过，生成 `llm-gateway:local`。Docker Hub 认证域名连通性异常，使用已核实版本并固定摘要的官方镜像缓存（Go 1.27.2 Alpine、Node 24.21.0 Alpine），Go 模块通过 goproxy.cn 下载并保留校验；八个 Go 命令编译及前端生产打包通过。构建参数只写入未提交的本地 `.env`，默认镜像来源保持不变。
+- 本地容器启动验证：依赖容器运行，MySQL、Redis、Kafka、etcd、Milvus 健康检查通过，topic 初始化退出码 0；显式 `migrate`、`bootstrap` 退出码 0。`gateway`、`admin`、`worker`、`edge` 均运行。因本机 8080 被占用，网关映射到 18080，HTTPS 控制台为 localhost:8443；控制台首页、管理端及网关 `/readyz` 均返回 HTTP 200。HTTPS 诊断请求仅对本机临时跳过证书校验，Windows 尚未信任本地 CA，未验证 HTTPS 浏览器登录。
 
 已运行覆盖率统计，Go 核心包覆盖率约 45%，SQL/Kafka/etcd/Milvus 及进程启动路径未由离线测试覆盖，不把覆盖率当作正确性证明。
 
 ## 待执行
 
-1. MySQL/Redis/Kafka/etcd/Milvus 容器启动与实际联调：依赖镜像已下载，应用镜像已构建，服务联调尚未执行。`TestInfrastructureIntegration` 已提供显式开关，默认跳过，防止误访问生产服务。
+1. MySQL/Redis/Kafka/etcd/Milvus 完整计量、配额和向量缓存联调：容器启动、初始化与 HTTP 就绪检查已通过，完整数据链路尚未执行。`TestInfrastructureIntegration` 已提供显式开关，默认跳过，防止误访问生产服务。
 2. Linux `go test -race`：当前 Windows CGO=0，未安装 C 编译器；GitHub Actions 已配置，但尚未推送执行。
 3. DeepSeek、Qwen、OpenAI 真实协议回归：待配置账号、准确模型名称、价格和 Qwen 地域。不能用 mock 工具或 JSON 响应证明厂商具备对应能力。
 4. 可控上游 10,000 并发、延迟目标、长连接及故障恢复演练；k6 脚本已提供，尚未执行。当前不宣称 P50/P99、缓存 P95 或 99.95% 达标。

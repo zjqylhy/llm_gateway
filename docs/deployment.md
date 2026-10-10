@@ -34,6 +34,10 @@ docker compose --env-file .env -f deploy/compose/compose.yaml up -d gateway admi
 
 等待各依赖健康后再运行迁移。首次 bootstrap 初始化管理员及空账本的配额标记；再次运行只重发配置，不覆盖已有密码。DDL 由显式 migrate 命令执行。云端应使用单独迁移账号，运行账号只授予必要 DML 权限。
 
+启动 Docker Desktop 或只启动依赖容器不会启动管理页面。执行 `migrate` 和 `bootstrap` 后，还需 `up -d gateway admin worker edge`，其中 `edge` 对外提供 `https://localhost:8443`。用 `docker compose ... ps` 确认这四个应用服务均已运行。
+
+若本机 8080 被其他进程占用，在 `.env` 设置 `GW_LOCAL_GATEWAY_PORT=18080`，重新运行应用启动命令即可；只改变宿主机映射，容器内仍为 8080。Docker Hub 认证不可达时，可设置 `GW_LOCAL_EDGE_IMAGE=public.ecr.aws/docker/library/caddy:2.10` 使用 Docker 官方的 AWS 分发地址；已下载并核实的镜像可进一步固定摘要。
+
 若只启动依赖、在 Windows 上运行 Go 进程，可加上本机端口覆盖文件：
 
 ```powershell

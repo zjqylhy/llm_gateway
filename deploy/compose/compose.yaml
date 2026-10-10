@@ -101,7 +101,7 @@ services:
   gateway:
     <<: *app
     command: [/app/gateway]
-    ports: ["127.0.0.1:8080:8080"]
+    ports: ["127.0.0.1:${GW_LOCAL_GATEWAY_PORT:-8080}:8080"]
   admin:
     <<: *app
     command: [/app/admin]
@@ -124,7 +124,7 @@ services:
     restart: "no"
     profiles: [setup]
   edge:
-    image: caddy:2.10
+    image: ${GW_LOCAL_EDGE_IMAGE:-caddy:2.10}
     ports: ["127.0.0.1:8443:443"]
     volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro", "caddy:/data"]
     depends_on: [admin]
