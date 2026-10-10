@@ -16,6 +16,8 @@ Redis 预占与结算使用原子操作和 attempt 幂等键；已完成事件�
 
 Redis 治理操作有 1 秒总期限；建连及池等待各上限 1 秒，读取/写入各 250 毫秒，并显式限制建连和命令重试次数。操作期限覆盖叠加的 DNS/连接/重试等待，防止 Redis 停止后 HTTP 请求长时间挂起。首次启动和离线恢复的整体期限另行控制。
 
+计量故障恢复的下一阶段方案见 [metering-recovery-spec.md](metering-recovery-spec.md)，状态为待确认，尚未替代上述现有实现。
+
 ## 安全与边界
 
 管理 Cookie 为 HttpOnly、SameSite=Strict，生产环境 Secure；写操作校验 CSRF 和 Origin。凭据用 AES-GCM，加密主密钥由部署 Secret 提供。日志不打印 token、请求正文或上游完整错误体。厂商地址在管理时校验 HTTPS，生产禁止内网及重定向，以降低 SSRF 风险。
