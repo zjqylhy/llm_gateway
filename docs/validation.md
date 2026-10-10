@@ -96,3 +96,9 @@ k6 run loadtest/gateway.js
 验收数据库、topic/组、配置前缀、collection、角色容器、两台测试 Redis 及临时凭据文件均隔离并清理。现有应用容器未重建、现有配额未变；只读检查当前 Redis used_memory 1,281,544 字节、maxmemory=0、noeviction。新配置需按 deployment.md 升级才生效，不执行 down -v。
 
 Linux race、真实厂商、最大报文持续压力、云预发、入口代理连接治理、监控标签长期累积及财务元数据归档仍待专项验证/治理。本轮不宣称所有 OOM 风险已消除，也不宣称云容量和 SLO 达标。
+
+## 2026-10-11 配额存储对比
+
+用户要求比较使用与不使用 Redis 的配额性能，新增测试专用 SQL 基线及独立容器脚本，生产代码和既有服务未切换。最终 gw_quota_491965d693b7 完成 36 组采样，约 171 秒；所有无错误组逐应用账本/配额一致且无预占残留，前置验证重复事件、递增修正和并发争抢额度。MySQL 单应用 64 并发发生 31% 超时及未完成预占，作为饱和结果保留，不算性能通过。其他组和 Redis 全部组无错误；全部组已结算数值与 SQL 最新账本一致。
+
+方法、完整结果、局限及前置失败记录见 [quota-comparison-report.md](quota-comparison-report.md) 和 [quota-comparison-results.json](quota-comparison-results.json)。这是存储周期短时对比，未覆盖端到端 Kafka/HTTP/真实厂商及云长时间实验，不能替代既有网关压力/SLO 验收。
