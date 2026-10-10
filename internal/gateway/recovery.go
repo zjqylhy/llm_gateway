@@ -44,6 +44,7 @@ func RebuildQuota(ctx context.Context, r *Runtime) error {
 	if !ok {
 		return errors.New("SQL ledger required")
 	}
+	r.OpenMeteringReader()
 	rc := r.Redis
 	if err := rc.Set(ctx, "gw:quota:state", "rebuilding", 0).Err(); err != nil {
 		return err
@@ -136,7 +137,11 @@ func RebuildQuota(ctx context.Context, r *Runtime) error {
 	return rc.Set(ctx, "gw:quota:state", "ready", 0).Err()
 }
 func KafkaCaughtUp(ctx context.Context, r *Runtime) (bool, error) {
-	topic := r.Reader.Config().Topic
+	config := r.readerConfig
+	if r.Reader != nil {
+		config = r.Reader.Config()
+	}
+	topic := config.Topic
 	metadata, err := r.KafkaClient.Metadata(ctx, &kafka.MetadataRequest{Topics: []string{topic}})
 	if err != nil {
 		return false, err
@@ -159,7 +164,7 @@ func KafkaCaughtUp(ctx context.Context, r *Runtime) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	commits, err := r.KafkaClient.OffsetFetch(ctx, &kafka.OffsetFetchRequest{GroupID: r.Reader.Config().GroupID, Topics: map[string][]int{topic: parts}})
+	commits, err := r.KafkaClient.OffsetFetch(ctx, &kafka.OffsetFetchRequest{GroupID: config.GroupID, Topics: map[string][]int{topic: parts}})
 	if err != nil {
 		return false, err
 	}

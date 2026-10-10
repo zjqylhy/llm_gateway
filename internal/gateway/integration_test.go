@@ -51,7 +51,10 @@ func TestInfrastructureIntegration(t *testing.T) {
 	}
 	s := r.Engine.Store.(*SQLStore)
 	publisher := r.Engine.Publisher.(EtcdPublisher)
-	readerConfig := r.Reader.Config()
+	if r.Reader != nil {
+		t.Fatal("runtime without metering must not join the consumer group")
+	}
+	readerConfig := r.OpenMeteringReader().Config()
 	defer func() { _ = r.Reader.Close() }()
 	cache := r.Engine.Cache.(MilvusCache)
 	defer func() {

@@ -119,6 +119,8 @@ func (g RedisGuard) Take(c context.Context, k string, n, units int64, p time.Dur
 	if n <= 0 {
 		return nil
 	}
+	c, cancel := context.WithTimeout(c, time.Second)
+	defer cancel()
 	v, e := g.Client.Eval(c, rateLua, []string{"gw:rate:" + k}, n, p.Milliseconds(), units).Int()
 	if e != nil {
 		return ErrUnavailable
@@ -141,6 +143,9 @@ if budget>0 and ARGV[5]=='reject' and m+rm+tonumber(ARGV[2])>budget then return 
 redis.call('HINCRBY',KEYS[1],'rt',ARGV[1]);redis.call('HINCRBY',KEYS[1],'rm',ARGV[2]);redis.call('HSET',KEYS[2],'reserved',1,'rt',ARGV[1],'rm',ARGV[2]);return 1`
 
 func (g RedisGuard) Reserve(c context.Context, a App, r Reservation) error {
+	// 连接池、DNS 和网络读写共享一次操作的预算，依赖中断不能拖满整个推理请求。
+	c, cancel := context.WithTimeout(c, time.Second)
+	defer cancel()
 	v, e := g.Client.Eval(c, reserveLua, quotaKeys(a.ID, r.Month, r.ID), r.Tokens, r.Micro, a.MonthlyTokens, a.BudgetMicro, a.BudgetAction, strconv.FormatBool(g.RequireReady)).Int()
 	if e != nil {
 		return ErrUnavailable
@@ -160,6 +165,8 @@ if rev==0 then redis.call('HINCRBY',KEYS[1],'rt',-(tonumber(old[4]) or 0));redis
 redis.call('HINCRBY',KEYS[1],'tokens',tonumber(ARGV[2])-(tonumber(old[2]) or 0));redis.call('HINCRBY',KEYS[1],'micro',tonumber(ARGV[3])-(tonumber(old[3]) or 0));redis.call('HSET',KEYS[2],'revision',ARGV[1],'tokens',ARGV[2],'micro',ARGV[3]);return 1`
 
 func (g RedisGuard) Settle(c context.Context, e Event) error {
+	c, cancel := context.WithTimeout(c, time.Second)
+	defer cancel()
 	if e.Revision < 2 {
 		return errors.New("completed event requires revision >= 2")
 	}
@@ -170,6 +177,8 @@ func (g RedisGuard) Settle(c context.Context, e Event) error {
 	return nil
 }
 func (g RedisGuard) Counters(c context.Context, a, m string) (Counters, error) {
+	c, cancel := context.WithTimeout(c, time.Second)
+	defer cancel()
 	v, e := g.Client.HMGet(c, quotaKeys(a, m, "")[0], "tokens", "micro", "rt", "rm").Result()
 	if e != nil {
 		return Counters{}, e

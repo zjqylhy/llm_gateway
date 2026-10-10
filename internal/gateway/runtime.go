@@ -32,6 +32,7 @@ type Runtime struct {
 	Engine        *Engine
 	Admin         *Admin
 	Reader        *kafka.Reader
+	readerConfig  kafka.ReaderConfig
 	KafkaClient   *kafka.Client
 	Redis         *redis.Client
 	closers       []func()
@@ -132,7 +133,11 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 			return nil, re
 		}
 		opts.ContextTimeoutEnabled = true
-		opts.DialTimeout = 2 * time.Second
+		// 配额命令有总预算，避免 DNS/建连与命令重试叠加拖满请求期限。
+		opts.DialTimeout = time.Second
+		opts.DialerRetries = 1
+		opts.MaxRetries = 1
+		opts.PoolTimeout = time.Second
 		opts.ReadTimeout = 250 * time.Millisecond
 		opts.WriteTimeout = 250 * time.Millisecond
 		rc := redis.NewClient(opts)
@@ -159,9 +164,12 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 		out.KafkaClient = &kafka.Client{Addr: kafka.TCP(brokers...), Transport: transport, Timeout: 3 * time.Second}
 		e.Bus = KafkaBus{writer}
 		out.closers = append(out.closers, func() { _ = writer.Close() })
-		// 共享 broker 的不同环境使用独立消费组，避免 topic 订阅引起跨环境重平衡。
-		out.Reader = kafka.NewReader(kafka.ReaderConfig{Brokers: brokers, Topic: env("GW_KAFKA_TOPIC", "gateway-events"), GroupID: env("GW_KAFKA_GROUP", "gateway-metering"), MinBytes: 1, MaxBytes: 10 << 20, CommitInterval: 0, Dialer: dialer})
-		out.closers = append(out.closers, func() { _ = out.Reader.Close() })
+		out.readerConfig = kafka.ReaderConfig{Brokers: brokers, Topic: env("GW_KAFKA_TOPIC", "gateway-events"), GroupID: env("GW_KAFKA_GROUP", "gateway-metering"), MinBytes: 1, MaxBytes: 10 << 20, CommitInterval: 0, Dialer: dialer}
+		out.closers = append(out.closers, func() {
+			if opened.Reader != nil {
+				_ = opened.Reader.Close()
+			}
+		})
 		etConfig := clientv3.Config{Endpoints: strings.Split(os.Getenv("GW_ETCD_ENDPOINTS"), ","), DialTimeout: 3 * time.Second, Username: os.Getenv("GW_ETCD_USER"), Password: os.Getenv("GW_ETCD_PASSWORD")}
 		if strings.HasPrefix(etConfig.Endpoints[0], "https://") {
 			etConfig.TLS = &tls.Config{MinVersion: tls.VersionTLS12}
@@ -192,6 +200,15 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 	}
 	return out, nil
 }
+
+// NewReader 会加入消费组；只有实际执行计量消费的角色才能创建它，避免空闲网关占用分区。
+func (r *Runtime) OpenMeteringReader() *kafka.Reader {
+	if r.Reader == nil {
+		r.Reader = kafka.NewReader(r.readerConfig)
+	}
+	return r.Reader
+}
+
 func (r *Runtime) Close() {
 	if r == nil {
 		return
@@ -283,7 +300,7 @@ func Main(mode string) {
 		}()
 		defer workerHealth.Close()
 		go RunMaintenance(ctx, runtime.Engine)
-		if e = Consume(ctx, runtime.Reader, runtime.Engine.Store, runtime.Engine.Guard); e != nil && !errors.Is(e, context.Canceled) {
+		if e = Consume(ctx, runtime.OpenMeteringReader(), runtime.Engine.Store, runtime.Engine.Guard); e != nil && !errors.Is(e, context.Canceled) {
 			slog.Error("worker stopped", "error", e)
 			os.Exit(1)
 		}

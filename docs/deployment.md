@@ -57,6 +57,18 @@ docker compose @composeArgs ps
 
 脚本从本地 `.env` 读取数据库密码和主密钥，临时注入测试环境变量，不调用真实厂商。它创建专用数据库、Kafka topic/消费组、etcd 配置前缀、Milvus collection 及临时 Redis；结束后清理，日志保存在 `data/acceptance`，现有应用容器继续运行。测试只对该 Redis 执行数据清空。此脚本使用上述默认 loopback 端口，需要本机 Go 和 Docker，结果边界见 `docs/validation.md`。
 
+多实例及容器故障验收使用：
+
+```powershell
+./scripts/verify-infrastructure.ps1 -Reliability
+```
+
+此模式交叉编译 Linux amd64 测试二进制，使用已缓存的 distroless 镜像启动两份测试网关、worker 和模拟上游，连接独立测试数据库/topic/配置前缀及 AOF Redis。生产命令不包含模拟上游开关。网关各限制 2 CPU/256 MiB，worker 1 CPU/256 MiB，上游 1 CPU/128 MiB，Redis 1 CPU/256 MiB；测试端口显式绑定本机空闲端口，重启后保持一致。仅强杀本次带验收标签的容器，清理时删除测试匿名卷；临时凭据文件随后删除。JSON 压力摘要、Prometheus 指标、容器日志及资源快照保存到 `data/acceptance/<验收名称>/`。
+
+压力是有限请求的短批次实验，同时记录账本追平耗时，不将短时 RPS 作为可持续容量。模拟上游及依赖位于本机，不能替代真实网络、真实厂商、长时间压测或云节点故障验收。
+
+调试故障场景时可加 `-SkipPressure` 明确跳过压力阶段；该结果不作为完整验收通过。清理会等待强杀消费者的 Kafka 会话失效，再删除专用消费组；若仍有清理警告，按随机验收名称检查遗留资源。
+
 MinIO 使用 [Milvus 官方部署配置](https://github.com/milvus-io/milvus/blob/master/deployments/docker/standalone/docker-compose.yml)中的 `milvusdb/minio` 同版本镜像，原 `minio/minio` 地址在本机拉取时返回仓库访问错误。普通停止、重建容器保留命名卷中的数据。
 
 本机管理页面为 `https://localhost:8443`，Caddy 使用本地证书。应导入 Caddy 根证书建立本机信任，浏览器证书警告需用户处理。该 Compose 中间件配置仅供本机联调，不能作为公网生产服务。

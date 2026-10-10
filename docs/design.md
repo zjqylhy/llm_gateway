@@ -2,6 +2,8 @@
 
 同一 Go 代码库提供 gateway、admin、worker 三个进程。开发模式在一个进程中组合运行，使用内存存储和确定性的本地 provider；生产模式要求 MySQL、Redis、Kafka、etcd、Milvus 配置，不允许自动回退到内存。
 
+Kafka Reader 在 worker 消费或 quota-rebuild 开始时创建，gateway、admin 和初始化命令只配置消息生产端，不加入计量消费组。Kafka Reader 构造会加入消费组，即使没有调用 FetchMessage；在公共运行时中提前创建会让非消费者占用分区并阻塞账本。
+
 ## 模块
 
 domain 定义应用、凭据、模型、路由、调用事件和账本。store 使用版本化配置快照，MySQL 事务防止并发管理操作丢失。config 发布至 etcd 并记录实例版本。security 管理摘要、加密、会话和权限。governance 实施全局额度、预占和熔断。provider 负责协议转换及增量读取。cache 隔离向量和响应。eventbus 持久化事件；worker 使用唯一键和事务实现账本幂等。
@@ -11,6 +13,8 @@ domain 定义应用、凭据、模型、路由、调用事件和账本。store �
 started 事件持久化后才能调用厂商，completed 事件在正常结束响应之前持久化。Kafka 至少一次投递，MySQL 以事件键去重。usage 修正使用版本递增的事件，账本按差额更新而非再次加总。未完成调用保留 started 记录并进入对账视图。
 
 Redis 预占与结算使用原子操作和 attempt 幂等键；已完成事件先入账后结算预占。预占失效不能直接抹除潜在费用，需转为 pending。数据库与 Redis 不使用跨系统事务，依靠可重放事件及幂等结算恢复。
+
+Redis 治理操作有 1 秒总期限；建连及池等待各上限 1 秒，读取/写入各 250 毫秒，并显式限制建连和命令重试次数。操作期限覆盖叠加的 DNS/连接/重试等待，防止 Redis 停止后 HTTP 请求长时间挂起。首次启动和离线恢复的整体期限另行控制。
 
 ## 安全与边界
 
