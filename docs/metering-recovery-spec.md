@@ -2,7 +2,7 @@
 
 日期：2026-10-11。状态：用户已确认按后续讨论实施，分阶段验证；具体完成范围以 validation.md 为准。最终分工为网关保存 outbox，消费者统一入账。现有行为与验收见 [design.md](design.md)、[operations.md](operations.md)、[validation.md](validation.md)。
 
-阶段 1 已实现 outbox、容量预留、修正事务、冻结和离线核验/恢复接单；代码及测试结果待人工确认。下文的分区检查点、旧备份回放、短期许可/Redis 代次与在线周期对账仍为阶段 2/3 设计，不是当前能力。当前冻结使用 SQL 控制状态、Redis 标记和实例闩锁，离线核验需要操作者确认停写，不具备恢复独占锁。
+阶段 1 已完成并获人工确认。阶段 2 实现分区 ownership/checkpoint、存量离线初始化、只读恢复计划与显式回放，验证记录见 validation.md；代码及测试结果待人工确认。恢复、基线初始化、核验和解冻命令共用数据库级独占锁。短期许可、Redis 代次强制校验与在线周期对账仍为阶段 3 设计。当前冻结使用 SQL 控制状态、Redis 标记和实例闩锁。
 
 ## 1. 目标与保证边界
 
@@ -75,7 +75,7 @@ consumer 将事件入账与分区 next_offset 放在同一 SQL 事务，再结�
 
 组位置落后 SQL checkpoint 可幂等重放补 Redis；领先时停止消费/接单，要求明确恢复，不能默认为已处理。存量迁移须停写、排空、核验后在一致屏障下初始化检查点，禁止在线猜一个 offset。
 
-新增命令提案（当前不可执行）：
+已实现的维护命令：
 
 - metering-recover plan：只读核验备份代次、SQL checkpoint、Kafka 来源/分区、earliest/end 与 outbox，输出脱敏 manifest、缺口和工作量。
 - metering-recover apply：指定 manifest 哈希与 writers-stopped 确认，独占恢复锁、置 recovering，按分区回放并保存进度。
@@ -92,6 +92,12 @@ consumer 将事件入账与分区 next_offset 放在同一 SQL 事务，再结�
 7. 对齐正常消费组位置，审计变更前后值；无未解决缺口后发布恢复代次与接单许可，最后启动入口。
 
 Kafka 超过保留窗口后旧位置可能不存在，自动位置重置无法补回删除的数据。[Kafka 消费位置说明](https://kafka.apache.org/41/configuration/consumer-configs/)。Go 实现须显式核验范围，不能直接套用 Java 客户端参数名。
+
+当前 kafka-go 0.4.51 Metadata API 最高 v8，没有 topic UUID。实现核验 cluster ID、topic/group、分区集合、SQL stream ID，以及检查点最后一条消息的键/载荷/headers 指纹。新消息必须带 gw-stream-id；显式存量基线之前的旧消息允许原格式。来源指纹失效或锚点被保留策略删除时拒绝自动恢复，即使 next_offset 仍在保留区间；这比仅检查 next_offset 更严格。它不是 broker topic UUID 的等价替代，也不防止具有 Kafka 写权限者伪造同源消息。恢复依赖受控的计量 topic，cleanup.policy 必须为 delete，不允许 compaction。
+
+apply 保存 replay/outbox/rebuild/complete 阶段；账本与检查点是持久化进度。同一个 manifest 可续跑，未完成任务禁止用新 manifest 绕过或解冻。补发后重新捕获有限终点，失败重试可能重复补发，账本幂等处理。恢复读者不加入消费组，执行前和 offset 对齐前检查正常组没有活跃成员。独占锁连接同时承载恢复事务；连接丢失会中断写账，重建 Redis 每批检查该连接。操作者仍须停止网关/admin/其他写入者，SQL 锁不能替代全系统维护窗口。
+
+完成后核验账本、Redis 和分区位置，审计记录关联 manifest 哈希，控制状态保留 frozen。quota-rebuild 复用同一回放/重建流程，不再从当前组 offset 盲目消费；完成也不自动解冻。pending 仍需已核实的 usage 修正，再运行 metering-resume 并重启有本地冻结闩锁的实例。Redis generation 发布与 Lua 强制校验留到阶段 3，不能把本轮视为完整代次门禁。
 
 当前本地 topic 保留 7 天、单副本，不具备云多副本容灾保证。可恢复备份窗口须短于事件保留窗口并留出发现/恢复时间。云环境需多副本、ACK/min ISR、SQL 备份/PITR 和演练；本轮不自动扩大保留期，不声称通过云容灾验收。
 

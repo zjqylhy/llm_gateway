@@ -119,6 +119,8 @@ Ingress 必须关闭响应缓冲，读取/发送超时至少 130 秒，负载均
 
 ## outbox 版本升级
 
+检查点版本还新增 stream、checkpoint、recovery 表。存量升级先用旧 worker/sender 排空，摘流量并停止所有写入者，保留一致性备份，执行新 migrate；确认停写后用 `/app/metering-checkpoint-init` 建基线、核验并显式恢复接单，再启新角色。新 worker 遇到缺失检查点不会在线猜位置。新部署 bootstrap 只对空 SQL/Kafka 自动初始化。已具备检查点的旧备份通过 metering-recover plan/apply 回放，详见 operations.md。
+
 新增 outbox、容量、冻结控制与修正幂等表，运行服务不会自动执行 DDL。首次升级在维护窗口摘流量，停止 gateway/admin/worker 和其他计量写入者，备份 SQL/Redis 并记录 Kafka 位置；构建新镜像，用迁移凭据执行 `/app/migrate`，再更新角色。已有账本/配额不清空，不执行 down -v。
 
 Compose 与云 ConfigMap 均提供 `GW_OUTBOX_GLOBAL_BYTES=536870912`、`GW_OUTBOX_APP_BYTES=67108864`。应用可配置 `outbox_bytes` 覆盖默认，每应用逻辑限额与全局共享限额同时生效；这不是物理磁盘隔离。新接单与 completed 保存各最多 8 个 SQL 保存槽，后台发送按最多 32 条/4MiB 领取，数据库总连接数仍需按角色副本数核算。

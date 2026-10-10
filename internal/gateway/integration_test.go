@@ -54,11 +54,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 	}
 	s := r.Engine.Store.(*SQLStore)
 	publisher := r.Engine.Publisher.(EtcdPublisher)
-	if r.Reader != nil {
-		t.Fatal("runtime without metering must not join the consumer group")
-	}
-	readerConfig := r.OpenMeteringReader().Config()
-	defer func() { _ = r.Reader.Close() }()
+
 	cache := r.Engine.Cache.(MilvusCache)
 	if cache.Redis.Options().Addr == r.Redis.Options().Addr {
 		t.Fatal("acceptance cache and quota must use separate Redis instances")
@@ -74,6 +70,9 @@ func TestInfrastructureIntegration(t *testing.T) {
 		}
 	}()
 	if err = s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = InitializeCheckpoints(ctx, r, false); err != nil {
 		t.Fatal(err)
 	}
 	if err = Bootstrap(ctx, r.Engine); err != nil {
@@ -132,7 +131,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 	startWorker := func() {
 		workerCtx, stop := context.WithCancel(ctx)
 		workerCancel, workerDone = stop, make(chan error, 1)
-		go func() { workerDone <- Consume(workerCtx, r.Reader, s, e.Guard) }()
+		go func() { workerDone <- r.ConsumeMetering(workerCtx) }()
 	}
 	stopWorker := func() {
 		checkT.Helper()
@@ -140,12 +139,12 @@ func TestInfrastructureIntegration(t *testing.T) {
 			return
 		}
 		workerCancel()
-		if err := <-workerDone; err != nil && !errors.Is(err, context.Canceled) {
+		workerErr := <-workerDone
+		workerCancel = nil
+		if err := workerErr; err != nil && !errors.Is(err, context.Canceled) {
 			checkT.Fatal("worker failed", err)
 		}
-		workerCancel = nil
-		_ = r.Reader.Close()
-		r.Reader = kafka.NewReader(readerConfig)
+
 	}
 	startWorker()
 	defer func() {
@@ -431,6 +430,11 @@ func TestInfrastructureIntegration(t *testing.T) {
 		if state, err := r.Redis.Get(ctx, "gw:quota:state").Result(); err != nil || state != "ready" {
 			t.Fatal("quota did not become ready", state, err)
 		}
+		t.Setenv("GW_METERING_RECOVERY_ACK", "writers-stopped")
+		if _, err := ResumeMetering(ctx, r); err != nil {
+			t.Fatal("audited quota resume", err)
+		}
+		e.Bus.(*DurableBus).stopped.Store(false)
 		startWorker()
 		w = chat("app", "after recovery", false)
 		if w.Code != 200 {
@@ -996,7 +1000,324 @@ func TestInfrastructureIntegration(t *testing.T) {
 		if _, err := AuditMetering(ctx, r); err != nil {
 			t.Fatal("rebuild did not leave a consistent snapshot", err)
 		}
+		if _, err := ResumeMetering(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		e.Bus.(*DurableBus).stopped.Store(false)
 		startWorker()
+	})
+	runCase("checkpoint_atomicity_and_old_owner_fencing", func(t *testing.T) {
+		drain()
+		stopWorker()
+		_, before, err := s.Checkpoints(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		old, err := s.ClaimPartition(ctx, 0, before[0].Generation+100, "old-owner", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		current, err := s.ClaimPartition(ctx, 0, old.Generation+1, "new-owner", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = s.ClaimPartition(ctx, 0, old.Generation, "old-owner", false); !errors.Is(err, ErrFenced) {
+			t.Fatal("late old generation reclaimed ownership", err)
+		}
+		event := Event{ID: "checkpoint-test:2", AttemptID: "checkpoint-test", RequestID: "checkpoint-request", AppID: "checkpoint-app", Kind: "completed", Revision: 2, Purpose: "inference", At: time.Now().UTC(), Month: month(time.Now()), Usage: Usage{Total: 5}, CostMicro: 7}
+		raw, _ := eventBytes(event)
+		msg := kafka.Message{Partition: 0, Offset: current.Next, Value: raw}
+		if err = s.ApplyPartition(ctx, old, old.Next, msg, event, false); !errors.Is(err, ErrFenced) {
+			t.Fatal("old owner wrote ledger", err)
+		}
+		var n int
+		_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_events WHERE id=?`, event.ID).Scan(&n)
+		if n != 0 {
+			t.Fatal("fenced event persisted")
+		}
+		// 制造已有 ID 的载荷矛盾，确认回滚事件和检查点，而非提前推进水位。
+		if err = s.Apply(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+		event.Usage.Total++
+		raw, _ = eventBytes(event)
+		msg.Value = raw
+		if err = s.ApplyPartition(ctx, current, current.Next, msg, event, false); !errors.Is(err, ErrEventConflict) {
+			t.Fatal("payload conflict not rejected", err)
+		}
+		_, after, err := s.Checkpoints(ctx)
+		if err != nil || after[0].Next != before[0].Next {
+			t.Fatal("failed transaction advanced checkpoint", after, err)
+		}
+		if _, err = s.DB.ExecContext(ctx, `DELETE FROM gw_events WHERE id=?`, event.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = s.DB.ExecContext(ctx, `DELETE FROM gw_attempts WHERE attempt_id=?`, event.AttemptID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = s.DB.ExecContext(ctx, `UPDATE gw_metering_checkpoint SET kafka_generation=-1,owner_id='' WHERE partition_id=0`); err != nil {
+			t.Fatal(err)
+		}
+		startWorker()
+	})
+	runCase("old_sql_backup_replays_before_current_group_offset", func(t *testing.T) {
+		drain()
+		stopWorker()
+		_, backup, err := s.Checkpoints(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		startWorker()
+		completed := Event{ID: "backup-replay:2", AttemptID: "backup-replay", RequestID: "backup-replay-request", AppID: "backup-replay-app", Kind: "completed", Revision: 2, Purpose: "inference", At: time.Now().UTC(), Month: month(time.Now()), Usage: Usage{Input: 31, Output: 11, Total: 42}, CostMicro: 53}
+		publish(completed)
+		drain()
+		stopWorker()
+		_, latest, err := s.Checkpoints(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		partition := -1
+		for i, p := range latest {
+			if p.Next != backup[i].Next {
+				partition = i
+			}
+		}
+		if partition < 0 {
+			t.Fatal("event did not advance a checkpoint")
+		}
+		// 专用测试库回滚该次消息涉及的账本和 SQL checkpoint，Kafka/Redis 保持最新。
+		tx, err := s.DB.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM gw_events WHERE id=?`, completed.ID); err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM gw_attempts WHERE attempt_id=?`, completed.AttemptID); err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+		p := backup[partition]
+		if _, err = tx.ExecContext(ctx, `UPDATE gw_metering_checkpoint SET next_offset=?,anchor_offset=?,anchor_hash=? WHERE partition_id=?`, p.Next, p.Anchor, p.Hash, partition); err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+		if err = tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if err = r.ConsumeMetering(ctx); !errors.Is(err, ErrCheckpoint) {
+			t.Fatal("normal worker accepted group ahead of restored SQL", err)
+		}
+		t.Setenv("GW_METERING_RECOVERY_ACK", "writers-stopped")
+		plan, err := PlanMeteringRecovery(ctx, r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.Ranges[partition].Committed <= plan.Checkpoints[partition].Next {
+			t.Fatal("restore fixture lacks offset gap")
+		}
+		_, release, err := s.maintenanceLock(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = ApplyMeteringRecovery(ctx, r, plan); err == nil {
+			release()
+			t.Fatal("parallel recovery bypassed exclusive lock")
+		}
+		release()
+		// 在回放事务前中断，任务与 recovering 已持久化；同 manifest 可继续。
+		conn, err := s.DB.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = conn.ExecContext(ctx, `LOCK TABLES gw_metering_checkpoint READ`); err != nil {
+			conn.Close()
+			t.Fatal(err)
+		}
+		interrupt, done := context.WithTimeout(ctx, 1500*time.Millisecond)
+		_, err = ApplyMeteringRecovery(interrupt, r, plan)
+		done()
+		_, _ = conn.ExecContext(ctx, `UNLOCK TABLES`)
+		conn.Close()
+		if err == nil {
+			t.Fatal("blocked checkpoint write unexpectedly succeeded")
+		}
+		if _, err = ResumeMetering(ctx, r); err == nil {
+			t.Fatal("unfinished recovery resumed admission")
+		}
+		newPlan, err := PlanMeteringRecovery(ctx, r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if newPlan.Hash != plan.Hash {
+			if _, err = ApplyMeteringRecovery(ctx, r, newPlan); err == nil {
+				t.Fatal("new manifest bypassed unfinished recovery")
+			}
+		}
+		if _, err = ApplyMeteringRecovery(ctx, r, plan); err != nil {
+			t.Fatal("recovery retry failed", err)
+		}
+		if counts := reconcile(completed.AppID); counts.Tokens != 42 || counts.Micro != 53 {
+			t.Fatal("old backup lost usage", counts)
+		}
+		if _, err = ApplyMeteringRecovery(ctx, r, plan); err != nil {
+			t.Fatal("completed recovery not idempotent", err)
+		}
+		if err = s.MeteringHealthy(ctx); err == nil {
+			t.Fatal("recovery silently resumed admission")
+		}
+		if _, err = ResumeMetering(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		e.Bus.(*DurableBus).stopped.Store(false)
+		startWorker()
+	})
+	runCase("recovery_source_retention_and_stale_plan_rejected", func(t *testing.T) {
+		drain()
+		stopWorker()
+		t.Setenv("GW_METERING_RECOVERY_ACK", "writers-stopped")
+		plan, err := PlanMeteringRecovery(ctx, r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		partition := 0
+		for i, p := range plan.Checkpoints {
+			if p.Anchor >= 0 {
+				partition = i
+				break
+			}
+		}
+		p := plan.Checkpoints[partition]
+		if _, err = s.DB.ExecContext(ctx, `UPDATE gw_metering_checkpoint SET anchor_hash=? WHERE partition_id=?`, Hash("different-topic-record"), partition); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = PlanMeteringRecovery(ctx, r); !errors.Is(err, ErrCheckpoint) {
+			t.Fatal("changed source anchor accepted", err)
+		}
+		if _, err = s.DB.ExecContext(ctx, `UPDATE gw_metering_checkpoint SET anchor_hash=?,next_offset=? WHERE partition_id=?`, p.Hash, plan.Ranges[partition].End+1, partition); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = PlanMeteringRecovery(ctx, r); !errors.Is(err, ErrCheckpoint) {
+			t.Fatal("checkpoint outside retention accepted", err)
+		}
+		if _, err = s.DB.ExecContext(ctx, `UPDATE gw_metering_checkpoint SET next_offset=? WHERE partition_id=?`, p.Next, partition); err != nil {
+			t.Fatal(err)
+		}
+		publish(Event{ID: "stale-plan:2", AttemptID: "stale-plan", RequestID: "stale-request", AppID: "stale-app", Kind: "completed", Revision: 2, Purpose: "inference", At: time.Now().UTC(), Month: month(time.Now())})
+		if _, err = ApplyMeteringRecovery(ctx, r, plan); err == nil {
+			t.Fatal("stale fixed-tail plan accepted")
+		}
+		fresh, err := PlanMeteringRecovery(ctx, r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = ApplyMeteringRecovery(ctx, r, fresh); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = ResumeMetering(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		e.Bus.(*DurableBus).stopped.Store(false)
+		startWorker()
+	})
+	runCase("existing_checkpoint_initialization_requires_audited_barrier", func(t *testing.T) {
+		drain()
+		stopWorker()
+		t.Setenv("GW_METERING_RECOVERY_ACK", "writers-stopped")
+		if _, err := s.DB.ExecContext(ctx, `DELETE FROM gw_metering_checkpoint`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.DB.ExecContext(ctx, `DELETE FROM gw_metering_stream`); err != nil {
+			t.Fatal(err)
+		}
+		if err := InitializeCheckpoints(ctx, r, false); err == nil {
+			t.Fatal("nonempty ledger silently initialized")
+		}
+		if err := InitializeCheckpoints(ctx, r, true); err != nil {
+			t.Fatal("audited legacy baseline failed", err)
+		}
+		_, parts, err := s.Checkpoints(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range parts {
+			if p.Base != p.Next {
+				t.Fatal("legacy baseline has wrong header boundary", p)
+			}
+		}
+		if err = s.MeteringHealthy(ctx); err == nil {
+			t.Fatal("baseline initialization reopened admission")
+		}
+		if _, err = ResumeMetering(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		e.Bus.(*DurableBus).Transport.(*KafkaBus).stream.Store(nil)
+		e.Bus.(*DurableBus).stopped.Store(false)
+		startWorker()
+	})
+	runCase("live_rebalance_preserves_partition_checkpoints", func(t *testing.T) {
+		drain()
+		second, err := OpenRuntime(ctx, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer second.Close()
+		secondCtx, secondCancel := context.WithCancel(ctx)
+		secondDone := make(chan error, 1)
+		go func() { secondDone <- second.ConsumeMetering(secondCtx) }()
+		defer func() {
+			secondCancel()
+			if err := <-secondDone; err != nil && !errors.Is(err, context.Canceled) {
+				t.Errorf("rebalanced worker failed: %v", err)
+			}
+		}()
+		for i := 0; i < 24; i++ {
+			e := Event{ID: fmt.Sprintf("rebalance-%d:2", i), AttemptID: fmt.Sprintf("rebalance-%d", i), RequestID: fmt.Sprintf("rebalance-request-%d", i), AppID: fmt.Sprintf("rebalance-app-%d", i%6), Kind: "completed", Revision: 2, Purpose: "inference", At: time.Now().UTC(), Month: month(time.Now()), Usage: Usage{Total: 3}, CostMicro: 5}
+			publish(e)
+		}
+		drain()
+		for i := 0; i < 6; i++ {
+			if counts := reconcile(fmt.Sprintf("rebalance-app-%d", i)); counts.Tokens != 12 || counts.Micro != 20 {
+				t.Fatal("rebalance lost billing", i, counts)
+			}
+		}
+		stopWorker()
+		publish(Event{ID: "rebalance-survivor:2", AttemptID: "rebalance-survivor", RequestID: "rebalance-survivor-request", AppID: "rebalance-app-0", Kind: "completed", Revision: 2, Purpose: "inference", At: time.Now().UTC(), Month: month(time.Now()), Usage: Usage{Total: 7}, CostMicro: 11})
+		drain()
+		if counts := reconcile("rebalance-app-0"); counts.Tokens != 19 || counts.Micro != 31 {
+			t.Fatal("surviving owner lost billing", counts)
+		}
+	})
+	runCase("recreated_topic_refuses_old_source_replay", func(t *testing.T) {
+		t.Setenv("GW_METERING_RECOVERY_ACK", "writers-stopped")
+		plan, err := PlanMeteringRecovery(ctx, r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		deleted, err := r.KafkaClient.DeleteTopics(ctx, &kafka.DeleteTopicsRequest{Topics: []string{run}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if deleted.Errors[run] != nil {
+			t.Fatal(deleted.Errors[run])
+		}
+		created, err := r.KafkaClient.CreateTopics(ctx, &kafka.CreateTopicsRequest{Topics: []kafka.TopicConfig{{Topic: run, NumPartitions: 6, ReplicationFactor: 1}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if created.Errors[run] != nil {
+			t.Fatal(created.Errors[run])
+		}
+		if _, err = PlanMeteringRecovery(ctx, r); err == nil {
+			t.Fatal("recreated topic accepted old checkpoint")
+		}
+		if _, err = ApplyMeteringRecovery(ctx, r, plan); err == nil {
+			t.Fatal("recreated topic was replayed")
+		}
+		if err = s.MeteringHealthy(ctx); err == nil {
+			t.Fatal("source gap recovery left admission healthy")
+		}
 	})
 	t.Logf("isolated acceptance completed: %s, upstream calls=%d", run, upstreamCalls.Load())
 }

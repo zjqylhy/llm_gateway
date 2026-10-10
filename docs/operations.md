@@ -30,7 +30,7 @@ worker 按事件 ID 去重、按 attempt revision 更新账本和配额。MySQL 
 
 生产模式启动前需完成新迁移。网关保存 outbox，不更新账本；worker 后台重试，消费入账并结算 Redis 后清除冗余载荷、释放逻辑容量。未交付容量默认全局 512MiB、每应用 64MiB，环境变量为 `GW_OUTBOX_GLOBAL_BYTES`、`GW_OUTBOX_APP_BYTES`；应用 `outbox_bytes` 可覆盖默认，每个新调用为 completed 预留 1MiB。限额不覆盖索引、已交付元数据及其他 SQL 表，不能代替磁盘、备份和连接池监控。
 
-网关保存/发布计量失败及消费者事件冲突会触发 SQL/Redis 冻结并使 readyz 返回 503；启动新网关也要检查 SQL 控制状态。已有结算继续，新付费调用停止。worker 静默停止、消费积压或其他消费失败的自动健康门禁仍待后续许可/进度方案，不应把本轮当作实时检测全部依赖异常。两路 completed 保存都失败或上游未返回 usage 时，精确费用仍可能需要厂商记录核实；不自动释放 pending。普通计量失败返回 `metering_unavailable`，可能已经产生费用，请按 X-Request-Id 检查记录再决定重试。
+网关保存/发布计量失败及消费者事件冲突会触发 SQL/Redis 冻结并使 readyz 返回 503；启动新网关也要检查 SQL 控制状态。已有结算继续，新付费调用停止。worker 静默停止和消费积压的自动健康门禁仍待后续许可/进度方案；消费处理故障与来源/检查点异常会冻结，不应把本轮当作实时检测全部依赖异常。两路 completed 保存都失败或上游未返回 usage 时，精确费用仍可能需要厂商记录核实；不自动释放 pending。普通计量失败返回 `metering_unavailable`，可能已经产生费用，请按 X-Request-Id 检查记录再决定重试。
 
 以下命令仅用于确认所有写入者已停止后的维护窗口，不要在正常 consumer/outbox sender/管理员修正仍运行时执行：
 
@@ -45,9 +45,34 @@ go run ./cmd/metering-resume
 
 命令使用当前环境中的生产模式连接配置。容器对应 `/app/quota-rebuild`、`/app/metering-audit`、`/app/metering-resume`，同样传入上述确认变量。audit 校验 SQL/Redis 月度结算与预占、attempt/revision、未交付 outbox 和消费位置；最多 10,000 个应用月份及 100,000 个 Redis 键，超限明确失败，不截断为成功。resume 要求无未解决 started，并记录审计，清除 SQL/Redis 冻结后重启业务进程以清除本实例故障闩锁。
 
-有未知 started 时先核实费用、通过管理修正保存持久事件，再停止写入者、排空与重新核验；不能为恢复接单把未知用量改零。CLI 的 writers-stopped 是操作者承诺，当前没有跨命令分布式恢复独占锁。MySQL 恢复旧备份后的历史回放、在线周期对账和任意 Redis 损坏检测尚未实现，不能把本轮命令用作完整灾备工具。
+有未知 started 时先核实费用、通过管理修正保存持久事件，再停止写入者、排空与重新核验；不能为恢复接单把未知用量改零。CLI 的 writers-stopped 是操作者承诺；恢复、核验、解冻与基线初始化共用 SQL GET_LOCK 独占锁，恢复事务复用该连接，且检查正常消费组没有活跃成员。在线周期对账、短期接单许可和任意 Redis 损坏检测留到阶段 3。
 
 恢复结束后核对各应用当前月份的 token、金额、预占及待核实记录，再重新启动服务和开放入口。恢复命令需要独占消费组；不得在生产 worker 同时运行时执行。历史数据被清理、Kafka 超出保留窗口或账本损坏时，需要备份恢复或人工对账，不能只运行重建命令。
+
+## 分区检查点与旧 SQL 备份恢复
+
+新部署 bootstrap 仅在 SQL 账本/outbox 和 Kafka topic 均为空时自动初始化检查点。存量升级必须先用旧版 worker/sender 排空，停写备份并记录 Kafka 位置，执行新迁移后运行 `metering-checkpoint-init`。该命令核验配额、全部保留事件与 SQL 内容，建立明确基线并保持冻结；已有未入账消息会拒绝初始化，不猜组 offset。基线以前已经删除的 Kafka 历史无法借此验证，保留原备份/账单核验材料。
+
+```powershell
+# 使用当前环境的连接配置；先停 gateway/admin/worker/sender，保留一致性备份。
+$env:GW_METERING_RECOVERY_ACK='writers-stopped'
+go run ./cmd/metering-checkpoint-init  # 仅存量升级首次建立基线时执行
+
+# 恢复已有 checkpoint 的一致性 SQL 备份后，从备份水位回放，而非最新组 offset。
+go run ./cmd/metering-recover plan --output recovery-plan.json
+$manifestHash='替换为已核验的manifest_hash'
+go run ./cmd/metering-recover apply --manifest recovery-plan.json --hash $manifestHash
+go run ./cmd/metering-audit
+go run ./cmd/metering-resume  # 未知 started 必须先核实并修正，禁止直接改零
+```
+
+容器分别执行 `/app/metering-checkpoint-init`、`/app/metering-recover plan/apply`。manifest 文件须保留以便同哈希重试，容器运行时挂载到维护实例；无本地 WAL 或长期 PVC 要求。单次 CLI 最长 10 分钟，分区逐条处理、查询/发送有界；超时后保留 SQL 检查点和任务阶段，不自动解冻。quota-rebuild 同样走该流程，已有未完成任务时复用其 manifest，不创建新任务绕过。
+
+消费事务同时写事件/最新账本和 next_offset；随后结算 Redis，最后提交 Kafka offset。SQL checkpoint 不证明 Redis 已结算。旧 owner 的 epoch 或 Kafka generation 不匹配时拒绝写账。恢复 reader 不加入正常组；apply 检查正常组没有活跃成员，持有数据库独占锁，复用该连接写恢复事务。SQL 锁无法阻止所有外部程序，请确保整个维护窗口停写。
+
+来源核验包含集群、分区集合、stream ID、新消息 header 和上条已入账消息指纹。客户端未暴露 topic UUID，这些核验不能等同 UUID，不能防止授权写入者伪造源消息。锚点或检查点超出保留区间、topic 被重建后位置/指纹变化、拓扑变化会拒绝回放，保持冻结。计量 topic 要求 `cleanup.policy=delete`，Kafka ACL 需允许读取 topic 配置、DescribeGroup 和维护时提交组 offset。超过保留窗口需要一致性备份、binlog 或人工核账，禁止静默 earliest/latest reset。
+
+恢复补发 outbox 后重新捕获终点，按 SQL 最新账本重建 Redis 结算/预占/幂等记录，再对齐组位置并核验；未解决 pending 不释放。审计记录关联 manifest 哈希，恢复任务完成仍保持 frozen。显式 resume 后重启故障闩锁实例，再启动入口。Redis generation 的 Lua 校验、短期许可和在线周期核验仍待阶段 3。
 
 ## 缓存与灰度
 
@@ -73,7 +98,7 @@ Redis 限流键随限流周期自动过期；配额和 attempt 幂等键不自�
 
 网关和管理 API 有实例并发上限，槽位满时立即拒绝，不排队；健康探针不占业务槽。每个 HTTP 监听器默认最多接纳 256 条 TCP 连接（`GW_MAX_CONNECTIONS`），包括慢请求头和空闲连接；满额时连接留在内核等待队列，健康检查也可能等待，需配合入口连接限额和超时。SSE 单事件（包含所有行）最多 2MiB，单行限制同样保留。普通响应/SSE 每次写入或 flush 最多阻塞 5 秒，超时中断且释放槽位；上游 60/120 秒期限不因持续读写而延长。普通管理 API 总期限 30 秒，playground 使用业务期限。超载计数为 `gateway_overload_rejections_total{role}`，已添加对应 Prometheus 告警；指标抓取也限制为两条并发和 5 秒处理期限。
 
-MySQL 默认 socket 建连/读/写超时为 3/5/5 秒，可通过 DSN 显式调整。配置快照最大 1MiB，超限更新回滚；生产记录查询累计 JSON 超过 16MiB 返回 `413 records_too_large`，需减少分页数量或缩小筛选。成本报表超过 10,000 组返回 `413 report_too_large`，不返回不完整账单。实例列表只展示最近 24 小时心跳且最多 10,000 个。Kafka 单事件最多 1MiB、读取预取队列 8 项/批次上限 1MiB，避免大批次预取挤占业务内存。
+MySQL 默认 socket 建连/读/写超时为 3/5/5 秒，可通过 DSN 显式调整。配置快照最大 1MiB，超限更新回滚；生产记录查询累计 JSON 超过 16MiB 返回 `413 records_too_large`，需减少分页数量或缩小筛选。成本报表超过 10,000 组返回 `413 report_too_large`，不返回不完整账单。实例列表只展示最近 24 小时心跳且最多 10,000 个。Kafka 单事件最多 1MiB、每分区读取预取队列 1 项/批次上限 1MiB，最多支持 128 个分区，避免大批次预取挤占业务内存。
 
 离线内存缓存总数据预算 64MiB、最多 10,000 项；账本最多 20,000 个 attempt、序列化数据预算 64MiB，配额去重最多 10,000 次尝试。达到上限后拒绝新增事件/付费预占，已有去重记录仍保留；采样正文可能使账本提前达到预算，失败结算保留待核实状态。离线审计只保留最近 10,000 条。需要长期运行时切换真实基础设施，离线重启仍会丢失所有数据。
 

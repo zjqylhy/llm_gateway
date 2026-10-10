@@ -2,7 +2,7 @@
 
 同一 Go 代码库提供 gateway、admin、worker 三个进程。开发模式在一个进程中组合运行，使用内存存储和确定性的本地 provider；生产模式要求 MySQL、Redis、Kafka、etcd、Milvus 配置，不允许自动回退到内存。
 
-Kafka Reader 在 worker 消费或 quota-rebuild 开始时创建，gateway、admin 和初始化命令只配置消息生产端，不加入计量消费组。Kafka Reader 构造会加入消费组，即使没有调用 FetchMessage；在公共运行时中提前创建会让非消费者占用分区并阻塞账本。
+worker 显式使用 Kafka ConsumerGroup generation 获取分区分配，再创建不带 GroupID 的分区 reader。gateway/admin/初始化命令与恢复 reader 不加入计量组；恢复以 SQL checkpoint 定位，不沿用最新组 offset。每分区按读取顺序处理，所有权代次/epoch 拒绝旧 worker 写账。
 
 ## 模块
 
@@ -20,7 +20,7 @@ Redis 治理操作有 1 秒总期限；建连及池等待各上限 1 秒，读�
 
 usage 修正事务合并版本分配、审计与 outbox，支持 Idempotency-Key 重试。计量依赖故障通过 SQL 控制状态和 Redis 冻结标记停止新增付费调用，既有重放及结算继续；readyz 同时核验计量状态。清除冻结需停写核验，未知 started 必须核实用量后修正。
 
-当前提供 outbox、离线 metering-audit/metering-resume 及 quota-rebuild 排空补偿事件。分区恢复检查点、旧 SQL 备份回放、短期许可/代次校验和在线周期对账仍属于后续阶段，完整规格见 [metering-recovery-spec.md](metering-recovery-spec.md)。
+消费者在同一 SQL 事务写账本与分区 next_offset，再结算 Redis、确认 outbox 交付，最后提交 Kafka offset。已实现只读 metering-recover plan、显式 apply、存量 checkpoint-init 及共用独占维护锁；恢复可中断续跑，完成保持冻结。来源核验使用集群/分区、stream header 与消息指纹，当前客户端不提供 topic UUID。短期接单许可、Redis generation 强制校验和在线周期对账仍属于阶段 3，完整规格见 [metering-recovery-spec.md](metering-recovery-spec.md)。
 
 ## 安全与边界
 

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"github.com/segmentio/kafka-go"
 	"os"
-	"time"
 )
 
 // Redis 配额不能在数据丢失后静默归零。首次初始化只允许空账本。
@@ -44,118 +43,49 @@ func InitializeQuota(ctx context.Context, e *Engine) error {
 }
 func RebuildQuota(ctx context.Context, r *Runtime) error {
 	if os.Getenv("GW_QUOTA_REBUILD_ACK") != "writers-stopped" {
-		return errors.New("stop gateway/admin/worker writers, then set GW_QUOTA_REBUILD_ACK=writers-stopped")
+		return errors.New("stop all writers and set GW_QUOTA_REBUILD_ACK=writers-stopped")
 	}
-	s, ok := r.Engine.Store.(*SQLStore)
-	if !ok {
-		return errors.New("SQL ledger required")
-	}
-	r.OpenMeteringReader()
-	rc := r.Redis
-	if err := rc.Set(ctx, "gw:quota:state", "rebuilding", 0).Err(); err != nil {
-		return err
-	}
-	// Kafka 中尚不存在的补偿事件也属于恢复来源，先排空再重建/消费。
-	if bus, ok := r.Engine.Bus.(*DurableBus); ok {
-		if err := DrainOutbox(ctx, s, bus); err != nil {
-			return err
-		}
-	}
-	var cursor uint64
-	for {
-		keys, next, err := rc.Scan(ctx, cursor, "gw:{app:*}:*", 500).Result()
-		if err != nil {
-			return err
-		}
-		if len(keys) > 0 {
-			if err = rc.Del(ctx, keys...).Err(); err != nil {
-				return err
-			}
-		}
-		cursor = next
-		if cursor == 0 {
-			break
-		}
-	}
-	// 先从 MySQL 最新 revision 重建，再让 Kafka 从原消费位置继续；幂等键防止重复结算。
-	rows, err := s.DB.QueryContext(ctx, "SELECT payload FROM gw_attempts WHERE purpose<>'request'")
+	// SQL 检查点领先于组位置也从账本水位回放；旧 SQL 备份禁止沿用组 offset。
+	s := r.Engine.Store.(*SQLStore)
+	rows, err := s.DB.QueryContext(ctx, `SELECT manifest FROM gw_metering_recovery WHERE phase<>'complete' LIMIT 2`)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	g := RedisGuard{Client: rc}
+	var pending []RecoveryManifest
 	for rows.Next() {
 		var raw []byte
-		var event Event
+		var m RecoveryManifest
 		if err = rows.Scan(&raw); err != nil {
+			rows.Close()
 			return err
 		}
-		if err = json.Unmarshal(raw, &event); err != nil {
+		if err = json.Unmarshal(raw, &m); err != nil {
+			rows.Close()
 			return err
 		}
-		if event.Kind == "started" {
-			err = g.Reserve(ctx, App{ID: event.AppID}, Reservation{ID: event.AttemptID, AppID: event.AppID, Month: event.Month, Tokens: event.ReserveTokens, Micro: event.ReserveMicro})
-		} else {
-			err = g.Settle(ctx, event)
-		}
-		if err != nil {
-			return err
-		}
+		pending = append(pending, m)
 	}
-	if err = rows.Err(); err != nil {
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
 		return err
 	}
-	_ = rows.Close()
-	// 停止写入时排空已持久化、尚未落库的事件，避免仅重建数据库造成漏算。
-	for {
-		fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		message, fetchErr := r.Reader.FetchMessage(fetchCtx)
-		cancel()
-		if errors.Is(fetchErr, context.DeadlineExceeded) && ctx.Err() == nil {
-			caughtUp, checkErr := KafkaCaughtUp(ctx, r)
-			if checkErr != nil {
-				return checkErr
-			}
-			if !caughtUp {
-				return errors.New("Kafka partitions not fully drained; quota remains unavailable")
-			}
-			break
-		}
-		if fetchErr != nil {
-			return fetchErr
-		}
-		var event Event
-		if err = json.Unmarshal(message.Value, &event); err != nil {
-			return err
-		}
-		if err = CheckEvent(event); err != nil {
-			return err
-		}
-		if err = s.Apply(ctx, event); err != nil {
-			return err
-		}
-		if event.Kind == "started" {
-			err = g.Reserve(ctx, App{ID: event.AppID}, Reservation{ID: event.AttemptID, AppID: event.AppID, Month: event.Month, Tokens: event.ReserveTokens, Micro: event.ReserveMicro})
-		} else if event.Purpose != "request" {
-			err = g.Settle(ctx, event)
-		}
-		if err != nil {
-			return err
-		}
-		if err = s.DeliveredOutbox(ctx, event); err != nil {
-			return err
-		}
-		if err = r.Reader.CommitMessages(ctx, message); err != nil {
-			return err
-		}
+	if len(pending) > 1 {
+		return errors.New("multiple unfinished recoveries require manual review")
 	}
-	return rc.Set(ctx, "gw:quota:state", "ready", 0).Err()
+	if len(pending) == 1 {
+		_, err = applyMeteringRecovery(ctx, r, pending[0])
+		return err
+	}
+	plan, err := PlanMeteringRecovery(ctx, r)
+	if err != nil {
+		return err
+	}
+	_, err = applyMeteringRecovery(ctx, r, plan)
+	return err
 }
 func KafkaCaughtUp(ctx context.Context, r *Runtime) (bool, error) {
 	config := r.readerConfig
-	if r.Reader != nil {
-		config = r.Reader.Config()
-	}
 	topic := config.Topic
 	metadata, err := r.KafkaClient.Metadata(ctx, &kafka.MetadataRequest{Topics: []string{topic}})
 	if err != nil {

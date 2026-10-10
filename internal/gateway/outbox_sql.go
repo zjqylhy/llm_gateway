@@ -11,7 +11,7 @@ import (
 )
 
 func (s *SQLStore) FreezeMetering(c context.Context, reason string) error {
-	_, err := s.DB.ExecContext(c, `UPDATE gw_metering_control SET state='frozen',reason=?,updated_at=UTC_TIMESTAMP(6) WHERE id=1`, reason)
+	_, err := s.execMetering(c, `UPDATE gw_metering_control SET state='frozen',reason=?,updated_at=UTC_TIMESTAMP(6) WHERE id=1`, reason)
 	return err
 }
 
@@ -131,7 +131,7 @@ func (s *SQLStore) SaveOutbox(c context.Context, e Event, globalLimit, appLimit 
 			appLimit = n
 		}
 	}
-	tx, err := s.DB.BeginTx(c, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	tx, err := s.beginMeteringTx(c, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return err
 	}
@@ -144,7 +144,7 @@ func (s *SQLStore) SaveOutbox(c context.Context, e Event, globalLimit, appLimit 
 
 // 修正版本、审计与补偿同事务提交；调用方重试同一操作不会再分配版本。
 func (s *SQLStore) CorrectOutbox(c context.Context, actor, key string, e Event, globalLimit, appLimit int64) (Event, error) {
-	tx, err := s.DB.BeginTx(c, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	tx, err := s.beginMeteringTx(c, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return Event{}, err
 	}
@@ -214,15 +214,15 @@ func (s *SQLStore) CorrectOutbox(c context.Context, actor, key string, e Event, 
 
 func (s *SQLStore) PublishedOutbox(c context.Context, e Event, epoch int64, success bool) error {
 	if success {
-		_, err := s.DB.ExecContext(c, `UPDATE gw_metering_outbox SET published=1,lease_until=NULL WHERE event_id=? AND (?=0 OR claim_epoch=?)`, e.ID, epoch, epoch)
+		_, err := s.execMetering(c, `UPDATE gw_metering_outbox SET published=1,lease_until=NULL WHERE event_id=? AND (?=0 OR claim_epoch=?)`, e.ID, epoch, epoch)
 		return err
 	}
-	_, err := s.DB.ExecContext(c, `UPDATE gw_metering_outbox SET retry_count=retry_count+1,lease_until=NULL,next_retry_at=TIMESTAMPADD(SECOND,LEAST(30,POW(2,LEAST(retry_count,5)))+MOD(claim_epoch,3),UTC_TIMESTAMP(6)) WHERE event_id=? AND claim_epoch=? AND published=0`, e.ID, epoch)
+	_, err := s.execMetering(c, `UPDATE gw_metering_outbox SET retry_count=retry_count+1,lease_until=NULL,next_retry_at=TIMESTAMPADD(SECOND,LEAST(30,POW(2,LEAST(retry_count,5)))+MOD(claim_epoch,3),UTC_TIMESTAMP(6)) WHERE event_id=? AND claim_epoch=? AND published=0`, e.ID, epoch)
 	return err
 }
 
 func (s *SQLStore) ClaimOutbox(c context.Context) ([]OutboxDelivery, error) {
-	tx, err := s.DB.BeginTx(c, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	tx, err := s.beginMeteringTx(c, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +270,7 @@ func (s *SQLStore) ClaimOutbox(c context.Context) ([]OutboxDelivery, error) {
 
 // 消费者实际读到事件并完成结算，足以证明交付；ACK 标记丢失不会泄漏容量。
 func (s *SQLStore) DeliveredOutbox(c context.Context, e Event) error {
-	tx, err := s.DB.BeginTx(c, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	tx, err := s.beginMeteringTx(c, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return err
 	}

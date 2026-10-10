@@ -15,7 +15,7 @@ COPY go.mod go.sum ./
 RUN GOPROXY="${GO_PROXY}" go mod download
 COPY cmd/ cmd/
 COPY internal/ internal/
-RUN set -eu; for target in gateway admin worker migrate bootstrap cache-init quota-rebuild metering-audit metering-resume dev; do \
+RUN set -eu; for target in gateway admin worker migrate bootstrap cache-init quota-rebuild metering-audit metering-resume metering-checkpoint-init metering-recover dev; do \
     CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/$target ./cmd/$target; \
     done
 

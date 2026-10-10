@@ -31,7 +31,6 @@ import (
 type Runtime struct {
 	Engine         *Engine
 	Admin          *Admin
-	Reader         *kafka.Reader
 	readerConfig   kafka.ReaderConfig
 	KafkaClient    *kafka.Client
 	Redis          *redis.Client
@@ -178,7 +177,7 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 		if be != nil {
 			return nil, be
 		}
-		e.Bus = &DurableBus{Store: sqlStore, Transport: KafkaBus{writer}, GlobalBytes: globalBytes, AppBytes: appBytes, OnFreeze: func(c context.Context) { _ = rc.Set(c, "gw:metering:frozen", "delivery_failure", 0).Err() }}
+		e.Bus = &DurableBus{Store: sqlStore, Transport: &KafkaBus{Writer: writer, Store: sqlStore}, GlobalBytes: globalBytes, AppBytes: appBytes, OnFreeze: func(c context.Context) { _ = rc.Set(c, "gw:metering:frozen", "delivery_failure", 0).Err() }}
 		e.Bus.(*DurableBus).CheckFrozen = func(c context.Context) error {
 			n, err := rc.Exists(c, "gw:metering:frozen").Result()
 			if err != nil {
@@ -191,11 +190,6 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 		}
 		out.closers = append(out.closers, func() { _ = writer.Close() })
 		out.readerConfig = kafka.ReaderConfig{Brokers: brokers, Topic: env("GW_KAFKA_TOPIC", "gateway-events"), GroupID: env("GW_KAFKA_GROUP", "gateway-metering"), MinBytes: 1, MaxBytes: 1 << 20, QueueCapacity: 8, CommitInterval: 0, Dialer: dialer}
-		out.closers = append(out.closers, func() {
-			if opened.Reader != nil {
-				_ = opened.Reader.Close()
-			}
-		})
 		etConfig := clientv3.Config{Endpoints: strings.Split(os.Getenv("GW_ETCD_ENDPOINTS"), ","), DialTimeout: 3 * time.Second, Username: os.Getenv("GW_ETCD_USER"), Password: os.Getenv("GW_ETCD_PASSWORD")}
 		if strings.HasPrefix(etConfig.Endpoints[0], "https://") {
 			etConfig.TLS = &tls.Config{MinVersion: tls.VersionTLS12}
@@ -226,14 +220,6 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 		out.TraceShutdown = tp.Shutdown
 	}
 	return out, nil
-}
-
-// NewReader 会加入消费组；只有实际执行计量消费的角色才能创建它，避免空闲网关占用分区。
-func (r *Runtime) OpenMeteringReader() *kafka.Reader {
-	if r.Reader == nil {
-		r.Reader = kafka.NewReader(r.readerConfig)
-	}
-	return r.Reader
 }
 
 func (r *Runtime) Close() {
@@ -272,8 +258,25 @@ func Main(mode string) {
 		return
 	}
 	if mode == "bootstrap" {
-		if e = Bootstrap(startup, runtime.Engine); e != nil {
+		if e = InitializeCheckpoints(startup, runtime, false); e == nil {
+			e = Bootstrap(startup, runtime.Engine)
+		}
+		if e != nil {
 			slog.Error("bootstrap failed", "error", e)
+			os.Exit(1)
+		}
+		return
+	}
+	if mode == "metering-checkpoint-init" || mode == "metering-recover" {
+		maintenance, finish := context.WithTimeout(ctx, 10*time.Minute)
+		defer finish()
+		if mode == "metering-checkpoint-init" {
+			e = InitializeCheckpoints(maintenance, runtime, true)
+		} else {
+			e = RunRecoveryCommand(maintenance, runtime, os.Args[1:])
+		}
+		if e != nil {
+			slog.Error("metering recovery failed", "error", e)
 			os.Exit(1)
 		}
 		return
@@ -346,7 +349,7 @@ func Main(mode string) {
 		if bus, ok := runtime.Engine.Bus.(*DurableBus); ok {
 			go bus.RunRelay(ctx)
 		}
-		if e = Consume(ctx, runtime.OpenMeteringReader(), runtime.Engine.Store, runtime.Engine.Guard); e != nil && !errors.Is(e, context.Canceled) {
+		if e = runtime.ConsumeMetering(ctx); e != nil && !errors.Is(e, context.Canceled) {
 			slog.Error("worker stopped", "error", e)
 			os.Exit(1)
 		}

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -14,73 +13,33 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-type KafkaBus struct{ Writer *kafka.Writer }
+type KafkaBus struct {
+	Writer *kafka.Writer
+	Store  *SQLStore
+	stream atomic.Pointer[string]
+}
 
-func (b KafkaBus) Publish(c context.Context, e Event) error {
+func (b *KafkaBus) Publish(c context.Context, e Event) error {
 	raw, err := eventBytes(e)
 	if err != nil {
 		return err
 	}
-	return b.Writer.WriteMessages(c, kafka.Message{Key: []byte(e.AppID), Value: raw})
-}
-func (b KafkaBus) Close() error { return b.Writer.Close() }
-func Consume(c context.Context, r *kafka.Reader, s Store, g Guard) error {
-	if redisGuard, ok := g.(RedisGuard); ok {
-		redisGuard.Replay = true
-		g = redisGuard
+	source := b.stream.Load()
+	if source == nil {
+		var id string
+		if err = b.Store.DB.QueryRowContext(c, `SELECT stream_id FROM gw_metering_stream WHERE id=1`).Scan(&id); err != nil || id == "" {
+			return ErrCheckpoint
+		}
+		b.stream.CompareAndSwap(nil, &id)
+		source = b.stream.Load()
 	}
-	for {
-		m, e := r.FetchMessage(c)
-		if e != nil {
-			return e
-		}
-		var event Event
-		if e = json.Unmarshal(m.Value, &event); e != nil {
-			return fmt.Errorf("invalid event at offset %d", m.Offset)
-		}
-		if e = CheckEvent(event); e != nil {
-			return e
-		}
-		if e = s.Apply(c, event); e != nil {
-			if errors.Is(e, ErrEventConflict) {
-				freeze, done := context.WithTimeout(context.WithoutCancel(c), time.Second)
-				if store, ok := s.(*SQLStore); ok {
-					_ = store.FreezeMetering(freeze, "event_conflict")
-				}
-				done()
-				if guard, ok := g.(RedisGuard); ok {
-					freeze, done = context.WithTimeout(context.WithoutCancel(c), time.Second)
-					_ = guard.Client.Set(freeze, "gw:metering:frozen", "event_conflict", 0).Err()
-					done()
-				}
-			}
-			return e
-		}
-		if event.Kind == "started" {
-			if e = g.Reserve(c, App{ID: event.AppID}, Reservation{ID: event.AttemptID, AppID: event.AppID, Month: event.Month, Tokens: event.ReserveTokens, Micro: event.ReserveMicro}); e != nil {
-				return e
-			}
-		}
-		if event.Kind == "completed" && event.Purpose != "request" {
-			if e = g.Settle(c, event); e != nil {
-				return e
-			}
-		}
-		if outbox, ok := s.(interface {
-			DeliveredOutbox(context.Context, Event) error
-		}); ok {
-			if e = outbox.DeliveredOutbox(c, event); e != nil {
-				return e
-			}
-		}
-		if e = r.CommitMessages(c, m); e != nil {
-			return e
-		}
-	}
+	return b.Writer.WriteMessages(c, kafka.Message{Key: []byte(e.AppID), Value: raw, Headers: []kafka.Header{{Key: "gw-stream-id", Value: []byte(*source)}}})
 }
+func (b *KafkaBus) Close() error { return b.Writer.Close() }
 
 type EtcdPublisher struct {
 	Client *clientv3.Client

@@ -120,3 +120,19 @@ Linux race、真实厂商、最大报文持续压力、云预发、入口代理�
 本阶段不包含 Kafka 分区 SQL 检查点/旧 SQL 备份回放、自动周期对账与代次许可、云预发、真实厂商、SQL/Kafka 容器断网或整节点损坏、完整端到端压测/SLO。completed SQL/Kafka 双路径失败由方法/传输边界注入；不能据此宣称真实存储整节点故障已演练。Windows CGO=0 且无 GCC，本轮未执行 race。全局容量行、同步 SQL 保存与更多消费事务增加成本，旧性能结果不能沿用。
 
 代码与本阶段结果需按 AGENTS.md 人工确认，再进入检查点与旧备份恢复阶段。运行与升级步骤见 operations.md、deployment.md。
+
+## 2026-10-11 计量恢复阶段 2
+
+阶段 1 代码及测试结果已获用户确认。阶段 2 新增显式 Kafka generation/分区所有权 fencing、账本与 SQL checkpoint 原子提交、stream 来源身份及消息指纹、只读 manifest 计划、显式有锁回放和持久化任务阶段。恢复直接从 SQL 检查点定位，不加入正常组；旧 SQL 快照遇到更靠前的 Kafka 组 offset 会停止正常消费，恢复后重建 Redis、对齐位置、核验并保持冻结。存量基线必须停写核验，未完成恢复禁止换 manifest 绕过或解冻。
+
+最终基础设施验收 gw_acceptance_1605a57eaa82：25 项通过，约 67.5 秒。除阶段 1 回归，验证 checkpoint 事务失败不推进、旧 generation/epoch 拒绝写账、SQL 账本及 checkpoint 回滚而 Kafka/Redis 保持最新后补回 42 tokens/53 micro、表写锁中断后的同 manifest 续跑、独占锁拒绝并行恢复、未完成任务禁止解冻/换新计划、消息指纹与位置异常/过期计划拒绝、存量离线基线、双 worker 真实重平衡及存活 worker 接续、真实删除并重建隔离 topic 后旧检查点拒绝回放。旧备份由测试库事务回滚对应账本和检查点模拟，不是完整 SQL 物理备份/PITR 演练；位置范围和指纹失效测试不等于真实 retention 定时清理演练。
+
+最终容器故障验收 gw_acceptance_3b74c044ce61：6 项通过，约 57.2 秒；完整压力阶段显式跳过。覆盖仅 worker 加入组、双网关争抢 token/金额、专用 worker SIGKILL 后补账、测试 Redis SIGKILL/AOF 恢复、测试网关 SIGKILL 中断流式并保留 pending。角色测试使用最新 Go 源码编译的 Linux 二进制；现有应用容器未升级。此前故障轮 gw_acceptance_7c75f288401f 也通过，不替代最终结果。
+
+全量 Go test(count=1)、vet、所有命令 build、gofmt、git diff --check、27 份 YAML/24 面板校验及 Compose config --quiet 通过。新增单元验证 manifest 篡改、区间缺口、尾随内容、来源 header 缺失/重复与消息指纹变化。并发构建多个 CLI 时 Go 工具链曾耗尽 Windows 主机内存；以 GOMAXPROCS=4、-p 1 串行执行全量验证后通过，不将该次构建失败计作应用压力或运行时 OOM 验证。
+
+保留前置失败：gw_acceptance_fd2b072fdb6f 编译失败，补齐 Reader 重构后的引用/导入；gw_acceptance_03114856c5aa 旧测试假定 rebuild 自动解冻，改为明确核验/解冻；gw_acceptance_91ddf9d3c537 发现 Kafka generation 已结束而取消传播未到 SQL 的竞态，事务回滚被误判故障，修正代次/父上下文检查。该失败轮测试清理还重复等待已取走的 workerDone，结束已核验路径的测试进程并修复清理后，脚本释放隔离资源。中间 22/24 项成功轮不替代最终 25 项。
+
+客户端 Metadata 不提供 broker topic UUID，采用集群/分区、SQL stream ID、消息 header 和锚点指纹；不声称等价 UUID 或防恶意同源伪造。锚点被删除会更严格地拒绝回放，需保留窗口内一致性备份或人工核账。只读计划最多支持 128 分区/10,000 未交付 outbox 项；超限失败，不输出部分成功结果。未测试真实厂商、物理 SQL/Kafka 整节点灾难、云预发、Linux race 或全链路容量/SLO。
+
+本轮未迁移或更新现有应用，不操作其账本/配额。初始化、恢复、审计与解冻均须停写；SQL 独占锁与消费组检查不能替代停止全部外部写入者。短期接单许可、Redis generation/Lua 强制校验、在线周期对账及新增同步 SQL 链路完整压测仍为阶段 3；代码及本阶段结果需人工确认后继续。

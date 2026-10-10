@@ -42,10 +42,26 @@ type MeteringAudit struct {
 
 // 财务核验只允许停写执行，动态 SQL/Redis 快照不能直接比较。
 func AuditMetering(c context.Context, r *Runtime) (MeteringAudit, error) {
-	var result MeteringAudit
 	if os.Getenv("GW_METERING_RECOVERY_ACK") != "writers-stopped" {
-		return result, errors.New("stop all metering writers, then set GW_METERING_RECOVERY_ACK=writers-stopped")
+		return MeteringAudit{}, errors.New("stop all metering writers, then set GW_METERING_RECOVERY_ACK=writers-stopped")
 	}
+	s, ok := r.Engine.Store.(*SQLStore)
+	if !ok {
+		return MeteringAudit{}, errors.New("SQL required")
+	}
+	lock, release, err := s.maintenanceLock(c)
+	if err != nil {
+		return MeteringAudit{}, err
+	}
+	defer release()
+	c = context.WithValue(c, recoveryConnectionKey{}, lock)
+	if err = r.ensureGroupStopped(c); err != nil {
+		return MeteringAudit{}, err
+	}
+	return auditMetering(c, r, false)
+}
+func auditMetering(c context.Context, r *Runtime, initializing bool) (MeteringAudit, error) {
+	var result MeteringAudit
 	s, ok := r.Engine.Store.(*SQLStore)
 	if !ok || r.Redis == nil {
 		return result, errors.New("SQL and Redis required")
@@ -66,6 +82,17 @@ func AuditMetering(c context.Context, r *Runtime) (MeteringAudit, error) {
 	}
 	if !caught {
 		return result, errors.New("Kafka has unconsumed events")
+	}
+	if !initializing {
+		manifest, err := PlanMeteringRecovery(c, r)
+		if err != nil {
+			return result, err
+		}
+		for i, p := range manifest.Checkpoints {
+			if p.Next != manifest.Ranges[i].End || manifest.Ranges[i].Committed != p.Next {
+				return result, ErrCheckpoint
+			}
+		}
 	}
 	rows, err := s.DB.QueryContext(c, `SELECT app_id,JSON_UNQUOTE(JSON_EXTRACT(payload,'$.month')),SUM(IF(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.kind'))='started',0,tokens)),SUM(IF(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.kind'))='started',0,cost_micro)),SUM(IF(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.kind'))='started',JSON_EXTRACT(payload,'$.reserve_tokens'),0)),SUM(IF(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.kind'))='started',JSON_EXTRACT(payload,'$.reserve_micro'),0)),SUM(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.kind'))='started') FROM gw_attempts WHERE purpose<>'request' GROUP BY app_id,JSON_UNQUOTE(JSON_EXTRACT(payload,'$.month')) LIMIT 10001`)
 	if err != nil {
@@ -101,12 +128,17 @@ func AuditMetering(c context.Context, r *Runtime) (MeteringAudit, error) {
 	// 双向检查，识别 SQL 中没有的 Redis 月度计数、预占或已结算记录。
 	var cursor uint64
 	visited := 0
+	seen := make(map[string]struct{})
 	for {
 		keys, next, scanErr := r.Redis.Scan(c, cursor, "gw:{app:*}:*", 500).Result()
 		if scanErr != nil {
 			return result, scanErr
 		}
 		for _, key := range keys {
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
 			visited++
 			if visited > 100000 {
 				return result, errors.New("audit exceeds 100000 Redis keys")
@@ -167,15 +199,34 @@ func AuditMetering(c context.Context, r *Runtime) (MeteringAudit, error) {
 }
 
 func ResumeMetering(c context.Context, r *Runtime) (MeteringAudit, error) {
-	result, err := AuditMetering(c, r)
+	if os.Getenv("GW_METERING_RECOVERY_ACK") != "writers-stopped" {
+		return MeteringAudit{}, errors.New("resume requires stopped writers")
+	}
+	s := r.Engine.Store.(*SQLStore)
+	lock, release, err := s.maintenanceLock(c)
+	if err != nil {
+		return MeteringAudit{}, err
+	}
+	defer release()
+	c = context.WithValue(c, recoveryConnectionKey{}, lock)
+	if err = r.ensureGroupStopped(c); err != nil {
+		return MeteringAudit{}, err
+	}
+	var unfinished int
+	if err = s.DB.QueryRowContext(c, `SELECT COUNT(*) FROM gw_metering_recovery WHERE phase<>'complete'`).Scan(&unfinished); err != nil {
+		return MeteringAudit{}, err
+	}
+	if unfinished > 0 {
+		return MeteringAudit{}, errors.New("finish recovery apply before resuming admission")
+	}
+	result, err := auditMetering(c, r, false)
 	if err != nil {
 		return result, err
 	}
 	if result.Pending > 0 {
 		return result, errors.New("unresolved started attempts require verified usage corrections before resume")
 	}
-	s := r.Engine.Store.(*SQLStore)
-	tx, err := s.DB.BeginTx(c, nil)
+	tx, err := s.beginMeteringTx(c, nil)
 	if err != nil {
 		return result, err
 	}

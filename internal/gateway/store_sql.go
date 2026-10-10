@@ -53,6 +53,9 @@ func (s *SQLStore) Migrate(c context.Context) error {
 		`CREATE TABLE IF NOT EXISTS gw_instances (id VARCHAR(128) PRIMARY KEY, version BIGINT NOT NULL, seen DATETIME(6) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS gw_alerts (id VARCHAR(128) PRIMARY KEY, app_id VARCHAR(64) NOT NULL, active BOOLEAN NOT NULL, at DATETIME(6) NOT NULL, payload JSON NOT NULL, INDEX(app_id,at))`,
 		`CREATE TABLE IF NOT EXISTS gw_metering_control (id INT PRIMARY KEY, state VARCHAR(16) NOT NULL, reason VARCHAR(64) NOT NULL, generation VARCHAR(64) NOT NULL, updated_at DATETIME(6) NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS gw_metering_stream (id INT PRIMARY KEY, cluster_id VARCHAR(128) NOT NULL, topic VARCHAR(249) NOT NULL, group_id VARCHAR(249) NOT NULL, stream_id VARCHAR(64) NOT NULL, partitions INT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS gw_metering_checkpoint (partition_id INT PRIMARY KEY, base_offset BIGINT NOT NULL, next_offset BIGINT NOT NULL, anchor_offset BIGINT NOT NULL, anchor_hash CHAR(64) NOT NULL, owner_epoch BIGINT NOT NULL, kafka_generation INT NOT NULL, owner_id VARCHAR(256) NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS gw_metering_recovery (id CHAR(64) PRIMARY KEY, manifest MEDIUMBLOB NOT NULL, phase VARCHAR(32) NOT NULL, updated_at DATETIME(6) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS gw_metering_capacity (id VARCHAR(80) PRIMARY KEY, used_bytes BIGINT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS gw_outbox_slots (attempt_id VARCHAR(64) PRIMARY KEY, app_id VARCHAR(64) NOT NULL, remaining_bytes BIGINT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS gw_usage_corrections (operation_id CHAR(64) PRIMARY KEY, input_hash CHAR(64) NOT NULL, payload MEDIUMBLOB NOT NULL)`,
@@ -119,6 +122,14 @@ func (s *SQLStore) Apply(c context.Context, e Event) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err = applyEventTx(c, tx, e); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// 账本更新可与 Kafka 检查点共享事务，不能让恢复水位先于账本提交。
+func applyEventTx(c context.Context, tx *sql.Tx, e Event) error {
 	b, err := json.Marshal(e)
 	if err != nil {
 		return err
@@ -175,7 +186,7 @@ func (s *SQLStore) Apply(c context.Context, e Event) error {
 	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	return nil
 }
 func where(f Filter) (string, []any) {
 	parts := []string{"1=1"}

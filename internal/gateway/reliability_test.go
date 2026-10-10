@@ -71,7 +71,7 @@ func TestReliabilityProcess(t *testing.T) {
 				cancel()
 			}
 		}()
-		if err = Consume(ctx, r.OpenMeteringReader(), e.Store, e.Guard); err != nil && ctx.Err() == nil {
+		if err = r.ConsumeMetering(ctx); err != nil && ctx.Err() == nil {
 			t.Fatal(err)
 		}
 		return
@@ -209,6 +209,9 @@ func TestReliabilityIntegration(t *testing.T) {
 		t.Fatal("fresh Redis required", err)
 	}
 	if err = s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = InitializeCheckpoints(ctx, r, false); err != nil {
 		t.Fatal(err)
 	}
 	if err = Bootstrap(ctx, r.Engine); err != nil {
