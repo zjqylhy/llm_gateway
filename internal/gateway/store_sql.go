@@ -52,11 +52,19 @@ func (s *SQLStore) Migrate(c context.Context) error {
 		`CREATE TABLE IF NOT EXISTS gw_attempts (attempt_id VARCHAR(64) PRIMARY KEY, request_id VARCHAR(64) NOT NULL, app_id VARCHAR(64) NOT NULL, department VARCHAR(128) NOT NULL, model_id VARCHAR(64) NOT NULL, status VARCHAR(32) NOT NULL, purpose VARCHAR(32) NOT NULL, revision BIGINT NOT NULL, tokens BIGINT NOT NULL, cost_micro BIGINT NOT NULL, at DATETIME(6) NOT NULL, payload JSON NOT NULL, INDEX(app_id,at), INDEX(request_id), INDEX(model_id,at), INDEX(status,at))`,
 		`CREATE TABLE IF NOT EXISTS gw_instances (id VARCHAR(128) PRIMARY KEY, version BIGINT NOT NULL, seen DATETIME(6) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS gw_alerts (id VARCHAR(128) PRIMARY KEY, app_id VARCHAR(64) NOT NULL, active BOOLEAN NOT NULL, at DATETIME(6) NOT NULL, payload JSON NOT NULL, INDEX(app_id,at))`,
+		`CREATE TABLE IF NOT EXISTS gw_metering_control (id INT PRIMARY KEY, state VARCHAR(16) NOT NULL, reason VARCHAR(64) NOT NULL, generation VARCHAR(64) NOT NULL, updated_at DATETIME(6) NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS gw_metering_capacity (id VARCHAR(80) PRIMARY KEY, used_bytes BIGINT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS gw_outbox_slots (attempt_id VARCHAR(64) PRIMARY KEY, app_id VARCHAR(64) NOT NULL, remaining_bytes BIGINT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS gw_usage_corrections (operation_id CHAR(64) PRIMARY KEY, input_hash CHAR(64) NOT NULL, payload MEDIUMBLOB NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS gw_metering_outbox (event_id VARCHAR(128) PRIMARY KEY, attempt_id VARCHAR(64) NOT NULL, app_id VARCHAR(64) NOT NULL, revision BIGINT NOT NULL, payload MEDIUMBLOB NULL, payload_hash CHAR(64) NOT NULL, charged_bytes BIGINT NOT NULL, published BOOLEAN NOT NULL DEFAULT 0, delivered BOOLEAN NOT NULL DEFAULT 0, claim_epoch BIGINT NOT NULL DEFAULT 0, retry_count INT NOT NULL DEFAULT 0, lease_until DATETIME(6) NULL, next_retry_at DATETIME(6) NOT NULL, INDEX(published,delivered,next_retry_at), INDEX(attempt_id))`,
 	}
 	for _, q := range statements {
 		if _, e := s.DB.ExecContext(c, q); e != nil {
 			return e
 		}
+	}
+	if _, err := s.DB.ExecContext(c, `INSERT IGNORE INTO gw_metering_control(id,state,reason,generation,updated_at) VALUES(1,'healthy','',?,UTC_TIMESTAMP(6))`, ID("gen_")); err != nil {
+		return err
 	}
 	b, _ := json.Marshal(EmptyConfig())
 	_, e := s.DB.ExecContext(c, `INSERT IGNORE INTO gw_config(id,version,payload) VALUES(1,0,?)`, b)
@@ -118,9 +126,50 @@ func (s *SQLStore) Apply(c context.Context, e Event) error {
 	if _, err = tx.ExecContext(c, `INSERT IGNORE INTO gw_events(id,attempt_id,revision,payload,at) VALUES(?,?,?,?,?)`, e.ID, e.AttemptID, e.Revision, b, e.At); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(c, `INSERT IGNORE INTO gw_attempts(attempt_id,request_id,app_id,department,model_id,status,purpose,revision,tokens,cost_micro,at,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, e.AttemptID, e.RequestID, e.AppID, e.Department, e.Model.ID, e.Status, e.Purpose, e.Revision, e.Usage.Total, e.CostMicro, e.At, b)
+	// INSERT IGNORE 只允许相同内容重放，不能吞掉同 ID 的矛盾计量。
+	var existing []byte
+	if err = tx.QueryRowContext(c, `SELECT payload FROM gw_events WHERE id=?`, e.ID).Scan(&existing); err != nil {
+		return err
+	}
+	var previous Event
+	if err = json.Unmarshal(existing, &previous); err != nil {
+		return err
+	}
+	oldRaw, err := eventBytes(previous)
 	if err != nil {
 		return err
+	}
+	newRaw, err := eventBytes(e)
+	if err != nil {
+		return err
+	}
+	if Hash(string(oldRaw)) != Hash(string(newRaw)) {
+		return ErrEventConflict
+	}
+	_, err = tx.ExecContext(c, `INSERT INTO gw_attempts(attempt_id,request_id,app_id,department,model_id,status,purpose,revision,tokens,cost_micro,at,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE attempt_id=attempt_id`, e.AttemptID, e.RequestID, e.AppID, e.Department, e.Model.ID, e.Status, e.Purpose, e.Revision, e.Usage.Total, e.CostMicro, e.At, b)
+	if err != nil {
+		return err
+	}
+	var latestRaw []byte
+	var latestRevision int64
+	if err = tx.QueryRowContext(c, `SELECT payload,revision FROM gw_attempts WHERE attempt_id=? FOR UPDATE`, e.AttemptID).Scan(&latestRaw, &latestRevision); err != nil {
+		return err
+	}
+	var latest Event
+	if err = json.Unmarshal(latestRaw, &latest); err != nil {
+		return err
+	}
+	if latest.AppID != e.AppID || latest.RequestID != e.RequestID || latest.Purpose != e.Purpose || latest.Month != e.Month {
+		return ErrEventConflict
+	}
+	if latestRevision == e.Revision {
+		latestBytes, encodeErr := eventBytes(latest)
+		if encodeErr != nil {
+			return encodeErr
+		}
+		if Hash(string(latestBytes)) != Hash(string(newRaw)) {
+			return ErrEventConflict
+		}
 	}
 	_, err = tx.ExecContext(c, `UPDATE gw_attempts SET status=?,revision=?,tokens=?,cost_micro=?,payload=? WHERE attempt_id=? AND revision<?`, e.Status, e.Revision, e.Usage.Total, e.CostMicro, b, e.AttemptID, e.Revision)
 	if err != nil {

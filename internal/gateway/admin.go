@@ -292,7 +292,7 @@ func (a *Admin) saveApp(w http.ResponseWriter, r *http.Request) {
 	} else {
 		app.ID = ID("app_")
 	}
-	if app.QPS < 0 || app.QPS > 1000000 || app.MonthlyTokens < 0 || app.BudgetMicro < 0 || app.BudgetMicro > 1000000000000 || app.LogSample < 0 || app.LogSample > 1 {
+	if app.QPS < 0 || app.QPS > 1000000 || app.MonthlyTokens < 0 || app.BudgetMicro < 0 || app.BudgetMicro > 1000000000000 || app.LogSample < 0 || app.LogSample > 1 || app.OutboxBytes != 0 && (app.OutboxBytes < 2*maxEventBytes || app.OutboxBytes > 1<<40) {
 		APIError(w, 400, "invalid_app", "invalid limits")
 		return
 	}
@@ -816,6 +816,37 @@ func (a *Admin) correct(w http.ResponseWriter, r *http.Request) {
 	fixed.Quality = "reconciled"
 	fixed.Status = "reconciled"
 	fixed.CostMicro = Cost(fixed.Model, fixed.Usage)
+	if bus, ok := a.Engine.Bus.(*DurableBus); ok {
+		key := r.Header.Get("Idempotency-Key")
+		if len(key) > 128 {
+			APIError(w, 400, "invalid_idempotency_key", "key exceeds 128 bytes")
+			return
+		}
+		if key == "" {
+			key = ID("correct_")
+		}
+		w.Header().Set("Idempotency-Key", key)
+		s, ok := a.Engine.Store.(*SQLStore)
+		if !ok {
+			APIError(w, 503, "storage_unavailable", "durable correction requires SQL")
+			return
+		}
+		fixed, e = s.CorrectOutbox(r.Context(), uName(a, r), key, fixed, bus.GlobalBytes, bus.AppBytes)
+		if e != nil {
+			if errors.Is(e, ErrEventConflict) {
+				APIError(w, 409, "idempotency_conflict", "key was used for another correction")
+				return
+			}
+			APIError(w, 503, "audit_unavailable", "correction not persisted")
+			return
+		}
+		if e = bus.Publish(r.Context(), fixed); e != nil {
+			APIError(w, 503, "metering_unavailable", "correction queued; publication not acknowledged")
+			return
+		}
+		JSON(w, fixed)
+		return
+	}
 	// 管理实例共享事务版本分配，避免异步入账期间并发修正使用相同 revision。
 	_, e = a.Engine.Store.Update(r.Context(), uName(a, r), "usage.correct.reserve", func(c *Config) error {
 		if c.CorrectionRevisions == nil {

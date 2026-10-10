@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -403,8 +404,20 @@ func TestInfrastructureIntegration(t *testing.T) {
 		publish(pending)
 		publish(pending)
 		t.Setenv("GW_QUOTA_REBUILD_ACK", "writers-stopped")
+		if err := r.Redis.Set(ctx, "gw:{app:rebuild-orphan}:attempt:orphan", "corrupt", 0).Err(); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Redis.Set(ctx, "acceptance:preserve", "unrelated", 0).Err(); err != nil {
+			t.Fatal(err)
+		}
 		if err := RebuildQuota(ctx, r); err != nil {
 			t.Fatal("quota recovery failed", err)
+		}
+		if n, err := r.Redis.Exists(ctx, "gw:{app:rebuild-orphan}:attempt:orphan").Result(); err != nil || n != 0 {
+			t.Fatal("rebuild retained orphan quota key", n, err)
+		}
+		if v, err := r.Redis.Get(ctx, "acceptance:preserve").Result(); err != nil || v != "unrelated" {
+			t.Fatal("rebuild removed unrelated key", v, err)
 		}
 		for _, app := range []string{"app", "cache-a", "cache-b", "budget", "integration"} {
 			reconcile(app)
@@ -637,6 +650,353 @@ func TestInfrastructureIntegration(t *testing.T) {
 		if err := r.Redis.Ping(ctx).Err(); err != nil {
 			t.Fatal("Redis process unavailable after OOM", err)
 		}
+	})
+	runCase("outbox_capacity_and_consumer_ownership", func(t *testing.T) {
+		drain()
+		stopWorker()
+		defer startWorker()
+		base := Event{ID: "outbox-a:1", AttemptID: "outbox-a", RequestID: "outbox-request", AppID: "outbox-capacity", Kind: "started", Revision: 1, Purpose: "inference", At: time.Now().UTC(), Month: month(time.Now()), ReserveTokens: 100, ReserveMicro: 100}
+		if err := s.SaveOutbox(ctx, base, 8<<20, 2<<20); err != nil {
+			t.Fatal(err)
+		}
+		var n int
+		if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_attempts WHERE attempt_id=?`, base.AttemptID).Scan(&n); err != nil || n != 0 {
+			t.Fatal("producer wrote ledger", n, err)
+		}
+		another := base
+		another.ID = "outbox-a2:1"
+		another.AttemptID = "outbox-a2"
+		if err := s.SaveOutbox(ctx, another, 8<<20, 2<<20); !errors.Is(err, ErrOutboxCapacity) {
+			t.Fatal("application capacity not enforced", err)
+		}
+		other := base
+		other.ID = "outbox-b:1"
+		other.AttemptID = "outbox-b"
+		other.AppID = "outbox-other"
+		if err := e.Guard.Reserve(ctx, App{ID: other.AppID}, Reservation{other.AttemptID, other.AppID, other.Month, 100, 100}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SaveOutbox(ctx, other, 8<<20, 2<<20); err != nil {
+			t.Fatal("one application blocked another", err)
+		}
+		completed := base
+		completed.ID = "outbox-a:2"
+		completed.Kind = "completed"
+		completed.Revision = 2
+		completed.Usage = Usage{Input: 10, Output: 20, Total: 30}
+		completed.CostMicro = 40
+		if err := s.SaveOutbox(ctx, completed, 8<<20, 2<<20); err != nil {
+			t.Fatal("reserved completion was rejected", err)
+		}
+		if err := s.SaveOutbox(ctx, completed, 8<<20, 2<<20); err != nil {
+			t.Fatal("duplicate completion consumed capacity", err)
+		}
+		conflict := completed
+		conflict.CostMicro++
+		if err := s.SaveOutbox(ctx, conflict, 8<<20, 2<<20); !errors.Is(err, ErrEventConflict) {
+			t.Fatal("outbox conflict ignored", err)
+		}
+		if err := e.Guard.Reserve(ctx, App{ID: base.AppID}, Reservation{base.AttemptID, base.AppID, base.Month, 100, 100}); err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range []Event{base, completed, other} {
+			if err := s.Apply(ctx, item); err != nil {
+				t.Fatal(err)
+			}
+			if item.Kind == "completed" {
+				if err := e.Guard.Settle(ctx, item); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := s.DeliveredOutbox(ctx, item); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.DeliveredOutbox(ctx, item); err != nil {
+				t.Fatal("capacity release not idempotent", err)
+			}
+		}
+		if err := s.Apply(ctx, conflict); !errors.Is(err, ErrEventConflict) {
+			t.Fatal("ledger conflict ignored", err)
+		}
+		if err := s.DB.QueryRowContext(ctx, `SELECT used_bytes FROM gw_metering_capacity WHERE id='app:outbox-capacity'`).Scan(&n); err != nil || n != 0 {
+			t.Fatal("capacity leaked", n, err)
+		}
+		// 未完成 other 仍保留完整 completed 空间，不把 started 消费当成已结算。
+		if err := s.DB.QueryRowContext(ctx, `SELECT used_bytes FROM gw_metering_capacity WHERE id='app:outbox-other'`).Scan(&n); err != nil || n != maxEventBytes {
+			t.Fatal("pending completion space released", n, err)
+		}
+	})
+	runCase("outbox_restart_and_lost_ACK", func(t *testing.T) {
+		drain()
+		stopWorker()
+		original := e.Bus.(*DurableBus)
+		bus := &DurableBus{Store: s, Transport: failedBus{original.Transport, true}, GlobalBytes: 512 << 20, AppBytes: 64 << 20}
+		started := Event{ID: "relay-attempt:1", AttemptID: "relay-attempt", RequestID: "relay-request", AppID: "relay-app", Kind: "started", Revision: 1, Purpose: "inference", At: time.Now().UTC(), Month: month(time.Now()), ReserveTokens: 100, ReserveMicro: 100}
+		if err := e.Guard.Reserve(ctx, App{ID: started.AppID}, Reservation{started.AttemptID, started.AppID, started.Month, 100, 100}); err != nil {
+			t.Fatal(err)
+		}
+		if err := bus.Publish(ctx, started); err != nil {
+			t.Fatal(err)
+		}
+		completed := started
+		completed.ID = "relay-attempt:2"
+		completed.Kind = "completed"
+		completed.Revision = 2
+		completed.Usage = Usage{Input: 10, Output: 20, Total: 30}
+		completed.CostMicro = 40
+		if err := bus.Publish(ctx, completed); err == nil {
+			t.Fatal("failed publication reported success")
+		}
+		restarted := &DurableBus{Store: s, Transport: original.Transport}
+		if err := restarted.RelayOnce(ctx); err != nil {
+			t.Fatal("persistent compensation failed", err)
+		}
+		// 模拟 ACK 后、标记发送前崩溃，重新领取同一事件。
+		if _, err := s.DB.ExecContext(ctx, `UPDATE gw_metering_outbox SET published=0,next_retry_at=UTC_TIMESTAMP(6),lease_until=NULL WHERE event_id=?`, completed.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := restarted.RelayOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+		startWorker()
+		drain()
+		counts := reconcile(started.AppID)
+		if counts.Tokens != 30 || counts.Micro != 40 {
+			t.Fatal("relay duplicated cost", counts)
+		}
+		var charged int64
+		if err := s.DB.QueryRowContext(ctx, `SELECT used_bytes FROM gw_metering_capacity WHERE id=?`, "app:"+started.AppID).Scan(&charged); err != nil || charged != 0 {
+			t.Fatal("relay capacity leaked", charged, err)
+		}
+		// 仅测试资源恢复；故障已完整核验，不修改现有部署的控制状态。
+		if _, err := s.DB.ExecContext(ctx, `UPDATE gw_metering_control SET state='healthy',reason='' WHERE id=1`); err != nil {
+			t.Fatal(err)
+		}
+	})
+	runCase("outbox_correction_atomic_idempotency", func(t *testing.T) {
+		rows, err := s.Records(ctx, Filter{RequestID: "relay-request"})
+		if err != nil || len(rows) != 1 {
+			t.Fatal(rows, err)
+		}
+		fixed := rows[0]
+		fixed.Revision = 3
+		fixed.Usage = Usage{Input: 20, Output: 30, Total: 50}
+		fixed.CostMicro = 70
+		fixed.Status = "reconciled"
+		fixed.Quality = "reconciled"
+		a, err := s.CorrectOutbox(ctx, "acceptance", "same-operation", fixed, 512<<20, 64<<20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := s.CorrectOutbox(ctx, "acceptance", "same-operation", fixed, 512<<20, 64<<20)
+		if err != nil || a.ID != b.ID || a.Revision != b.Revision {
+			t.Fatal("correction allocated twice", a, b, err)
+		}
+		fixed.CostMicro++ // 实际幂等输入以 usage 为准；下行用不同 usage 验证冲突。
+		fixed.Usage.Input++
+		fixed.Usage.Total++
+		if _, err := s.CorrectOutbox(ctx, "acceptance", "same-operation", fixed, 512<<20, 64<<20); !errors.Is(err, ErrEventConflict) {
+			t.Fatal("correction key reused", err)
+		}
+		if err := e.Bus.(*DurableBus).RelayOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+		drain()
+		counts := reconcile(a.AppID)
+		if counts.Tokens != 50 || counts.Micro != 70 {
+			t.Fatal("correction not applied by consumer", counts)
+		}
+	})
+	runCase("completed_without_outbox_releases_reserved_capacity", func(t *testing.T) {
+		original := e.Bus.(*DurableBus)
+		bus := &DurableBus{Store: failedCompletionOutbox{s}, Transport: original.Transport, GlobalBytes: 512 << 20, AppBytes: 64 << 20}
+		started := Event{ID: "kafka-only:1", AttemptID: "kafka-only", RequestID: "kafka-only-request", AppID: "kafka-only-app", Kind: "started", Revision: 1, Purpose: "inference", At: time.Now().UTC(), Month: month(time.Now()), ReserveTokens: 100, ReserveMicro: 100}
+		if err := e.Guard.Reserve(ctx, App{ID: started.AppID}, Reservation{started.AttemptID, started.AppID, started.Month, 100, 100}); err != nil {
+			t.Fatal(err)
+		}
+		if err := bus.Publish(ctx, started); err != nil {
+			t.Fatal(err)
+		}
+		completed := started
+		completed.ID = "kafka-only:2"
+		completed.Kind = "completed"
+		completed.Revision = 2
+		completed.Usage = Usage{Input: 10, Output: 20, Total: 30}
+		completed.CostMicro = 40
+		if err := bus.Publish(ctx, completed); err != nil {
+			t.Fatal("Kafka fallback was short-circuited", err)
+		}
+		drain()
+		if counts := reconcile(started.AppID); counts.Tokens != 30 || counts.Micro != 40 {
+			t.Fatal("consumer failed to settle Kafka-only event", counts)
+		}
+		var n int64
+		if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_metering_outbox WHERE event_id=?`, completed.ID).Scan(&n); err != nil || n != 0 {
+			t.Fatal("unnecessary outbox backfill", n, err)
+		}
+		if err := s.DB.QueryRowContext(ctx, `SELECT used_bytes FROM gw_metering_capacity WHERE id=?`, "app:"+started.AppID).Scan(&n); err != nil || n != 0 {
+			t.Fatal("Kafka-only completion leaked reservation", n, err)
+		}
+		// 只重置隔离 fixture 的故障标记，实际恢复通过 metering-resume 核验。
+		if _, err := s.DB.ExecContext(ctx, `UPDATE gw_metering_control SET state='healthy',reason='' WHERE id=1`); err != nil {
+			t.Fatal(err)
+		}
+	})
+	runCase("outbox_concurrent_capacity_serialization", func(t *testing.T) {
+		const n = 64
+		events := make([]Event, n)
+		failures := make(chan error, n)
+		var tasks sync.WaitGroup
+		for i := range events {
+			id := fmt.Sprintf("capacity-concurrent-%d", i)
+			events[i] = Event{ID: id + ":1", AttemptID: id, RequestID: id, AppID: "outbox-concurrent", Kind: "started", Revision: 1, Purpose: "inference", At: time.Now().UTC(), Month: month(time.Now()), ReserveTokens: 100, ReserveMicro: 100}
+			tasks.Add(1)
+			go func(event Event) {
+				defer tasks.Done()
+				if err := e.Guard.Reserve(ctx, App{ID: event.AppID}, Reservation{event.AttemptID, event.AppID, event.Month, 100, 100}); err != nil {
+					failures <- err
+					return
+				}
+				failures <- s.SaveOutbox(ctx, event, 512<<20, 128<<20)
+			}(events[i])
+		}
+		tasks.Wait()
+		close(failures)
+		for err := range failures {
+			if err != nil {
+				t.Fatal("concurrent capacity failed", err)
+			}
+		}
+		for _, event := range events {
+			// 手工 fixture 未调用厂商，用已知零费用完成，不用猜测真实 pending。
+			event.ID = event.AttemptID + ":2"
+			event.Kind = "completed"
+			event.Revision = 2
+			event.Status = "cancelled"
+			event.Quality = "reported"
+			if err := e.Bus.Publish(ctx, event); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for i := 0; i < 3; i++ {
+			if err := e.Bus.(*DurableBus).RelayOnce(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+		drain()
+		var used int64
+		if err := s.DB.QueryRowContext(ctx, `SELECT used_bytes FROM gw_metering_capacity WHERE id='app:outbox-concurrent'`).Scan(&used); err != nil || used != 0 {
+			t.Fatal("capacity accounting leaked under concurrency", used, err)
+		}
+		if counts := reconcile("outbox-concurrent"); counts != (Counters{}) {
+			t.Fatal("late started recreated reservations", counts)
+		}
+	})
+	runCase("offline_audit_requires_evidence_before_resume", func(t *testing.T) {
+		drain()
+		stopWorker()
+		if _, err := AuditMetering(ctx, r); err == nil {
+			t.Fatal("audit did not require writer acknowledgement")
+		}
+		t.Setenv("GW_METERING_RECOVERY_ACK", "writers-stopped")
+		audit, err := AuditMetering(ctx, r)
+		if err != nil || audit.Pending != 1 {
+			t.Fatal("pending audit failed", audit, err)
+		}
+		if err := s.FreezeMetering(ctx, "metering_delivery_failure"); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Redis.Set(ctx, "gw:metering:frozen", "delivery_failure", 0).Err(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ResumeMetering(ctx, r); err == nil {
+			t.Fatal("unknown started was automatically released")
+		}
+		key := quotaKeys("relay-app", month(time.Now()), "relay-attempt")[1]
+		fields, err := r.Redis.HGetAll(ctx, key).Result()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = r.Redis.Del(ctx, key).Err(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = AuditMetering(ctx, r); err == nil {
+			t.Fatal("missing idempotency key not detected")
+		}
+		if err = r.Redis.HSet(ctx, key, fields).Err(); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := s.Records(ctx, Filter{RequestID: "outbox-request"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// outbox-b 是测试手工构造且从未调用上游的 fixture，已知费用为零。
+		var fixed Event
+		for _, event := range rows {
+			if event.AttemptID == "outbox-b" {
+				fixed = event
+			}
+		}
+		if fixed.AttemptID == "" {
+			t.Fatal("pending fixture missing")
+		}
+		fixed.Kind = "completed"
+		fixed.Revision = 3
+		fixed.Status = "reconciled"
+		fixed.Quality = "reconciled"
+		fixed.Usage = Usage{}
+		fixed.CostMicro = 0
+		if _, err = s.CorrectOutbox(ctx, "acceptance", "resolve-known-fixture", fixed, 512<<20, 64<<20); err != nil {
+			t.Fatal(err)
+		}
+		if err = e.Bus.(*DurableBus).RelayOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+		startWorker()
+		drain()
+		stopWorker()
+		audit, err = ResumeMetering(ctx, r)
+		if err != nil || audit.Pending != 0 {
+			t.Fatal("verified resume failed", audit, err)
+		}
+		if err = s.MeteringHealthy(ctx); err != nil {
+			t.Fatal("control remained frozen", err)
+		}
+		if n, err := r.Redis.Exists(ctx, "gw:metering:frozen").Result(); err != nil || n != 0 {
+			t.Fatal("distributed freeze not cleared", err)
+		}
+		startWorker()
+	})
+	runCase("quota_rebuild_includes_unpublished_outbox", func(t *testing.T) {
+		drain()
+		stopWorker()
+		started := Event{ID: "rebuild-outbox:1", AttemptID: "rebuild-outbox", RequestID: "rebuild-outbox-request", AppID: "rebuild-outbox-app", Kind: "started", Revision: 1, Purpose: "inference", At: time.Now().UTC(), Month: month(time.Now()), ReserveTokens: 100, ReserveMicro: 100}
+		if err := e.Guard.Reserve(ctx, App{ID: started.AppID}, Reservation{started.AttemptID, started.AppID, started.Month, 100, 100}); err != nil {
+			t.Fatal(err)
+		}
+		completed := started
+		completed.ID = "rebuild-outbox:2"
+		completed.Kind = "completed"
+		completed.Revision = 2
+		completed.Usage = Usage{Input: 10, Output: 20, Total: 30}
+		completed.CostMicro = 40
+		for _, event := range []Event{started, completed} {
+			if err := s.SaveOutbox(ctx, event, 512<<20, 64<<20); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Setenv("GW_QUOTA_REBUILD_ACK", "writers-stopped")
+		if err := RebuildQuota(ctx, r); err != nil {
+			t.Fatal("unpublished compensation omitted", err)
+		}
+		if counts := reconcile(started.AppID); counts.Tokens != 30 || counts.Micro != 40 {
+			t.Fatal("rebuild lost compensation", counts)
+		}
+		t.Setenv("GW_METERING_RECOVERY_ACK", "writers-stopped")
+		if _, err := AuditMetering(ctx, r); err != nil {
+			t.Fatal("rebuild did not leave a consistent snapshot", err)
+		}
+		startWorker()
 	})
 	t.Logf("isolated acceptance completed: %s, upstream calls=%d", run, upstreamCalls.Load())
 }

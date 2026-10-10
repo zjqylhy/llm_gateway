@@ -9,6 +9,7 @@ import (
 )
 
 var ErrUnavailable = errors.New("dependency unavailable")
+var ErrMeteringCompletion = fmt.Errorf("completion not acknowledged: %w", ErrUnavailable)
 var ErrReportCapacity = errors.New("report exceeds 10000 groups; narrow the filters")
 var ErrRecordCapacity = errors.New("records exceed 16 MiB; lower the page limit or narrow the filters")
 var ErrLimit = errors.New("quota exceeded")
@@ -31,6 +32,7 @@ type App struct {
 	CacheEpoch     int64    `json:"cache_epoch"`
 	EmbeddingModel string   `json:"embedding_model"`
 	LogSample      float64  `json:"log_sample"`
+	OutboxBytes    int64    `json:"outbox_bytes,omitempty"`
 }
 type Key struct {
 	ID      string    `json:"id"`

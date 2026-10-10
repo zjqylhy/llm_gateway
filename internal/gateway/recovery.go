@@ -34,6 +34,12 @@ func InitializeQuota(ctx context.Context, e *Engine) error {
 	if n != 0 {
 		return errors.New("existing ledger requires offline quota-rebuild; counters will not be reset")
 	}
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_metering_outbox WHERE delivered=0`).Scan(&n); err != nil {
+		return err
+	}
+	if n != 0 {
+		return errors.New("existing outbox requires offline quota-rebuild")
+	}
 	return g.Client.Set(ctx, "gw:quota:state", "ready", 0).Err()
 }
 func RebuildQuota(ctx context.Context, r *Runtime) error {
@@ -49,9 +55,15 @@ func RebuildQuota(ctx context.Context, r *Runtime) error {
 	if err := rc.Set(ctx, "gw:quota:state", "rebuilding", 0).Err(); err != nil {
 		return err
 	}
+	// Kafka 中尚不存在的补偿事件也属于恢复来源，先排空再重建/消费。
+	if bus, ok := r.Engine.Bus.(*DurableBus); ok {
+		if err := DrainOutbox(ctx, s, bus); err != nil {
+			return err
+		}
+	}
 	var cursor uint64
 	for {
-		keys, next, err := rc.Scan(ctx, cursor, "gw:{app:*}", 500).Result()
+		keys, next, err := rc.Scan(ctx, cursor, "gw:{app:*}:*", 500).Result()
 		if err != nil {
 			return err
 		}
@@ -128,6 +140,9 @@ func RebuildQuota(ctx context.Context, r *Runtime) error {
 			err = g.Settle(ctx, event)
 		}
 		if err != nil {
+			return err
+		}
+		if err = s.DeliveredOutbox(ctx, event); err != nil {
 			return err
 		}
 		if err = r.Reader.CommitMessages(ctx, message); err != nil {

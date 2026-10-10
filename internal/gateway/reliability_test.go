@@ -63,6 +63,9 @@ func TestReliabilityProcess(t *testing.T) {
 	defer server.Close()
 	go func() { <-ctx.Done(); _ = server.Close() }()
 	if role == "worker" {
+		if bus, ok := e.Bus.(*DurableBus); ok {
+			go bus.RunRelay(ctx)
+		}
 		go func() {
 			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				cancel()

@@ -115,7 +115,15 @@ TLS 使用系统信任 CA：MySQL DSN 使用 `tls=true`，Redis 使用 `rediss:/
 
 ## SSE 和更新
 
-Ingress 必须关闭响应缓冲，读取/发送超时至少 130 秒，负载均衡器也应配置相同或更长空闲超时。应用流式期限 120 秒，收到 SIGTERM 后停止监听并等待最多 125 秒；Kubernetes termination grace 为 130 秒。先摘流量再终止，滚动更新保持可用副本。
+Ingress 必须关闭响应缓冲，读取/发送超时至少 130 秒，负载均衡器也应配置相同或更长空闲超时。应用流式期限 120 秒，计量保存/补偿另有最长 9 秒操作预算。收到 SIGTERM 后停止监听并等待最多 150 秒；Compose/Kubernetes grace 为 155 秒，留出计量和请求汇总收尾时间。先摘流量再终止，滚动更新保持可用副本。
+
+## outbox 版本升级
+
+新增 outbox、容量、冻结控制与修正幂等表，运行服务不会自动执行 DDL。首次升级在维护窗口摘流量，停止 gateway/admin/worker 和其他计量写入者，备份 SQL/Redis 并记录 Kafka 位置；构建新镜像，用迁移凭据执行 `/app/migrate`，再更新角色。已有账本/配额不清空，不执行 down -v。
+
+Compose 与云 ConfigMap 均提供 `GW_OUTBOX_GLOBAL_BYTES=536870912`、`GW_OUTBOX_APP_BYTES=67108864`。应用可配置 `outbox_bytes` 覆盖默认，每应用逻辑限额与全局共享限额同时生效；这不是物理磁盘隔离。新接单与 completed 保存各最多 8 个 SQL 保存槽，后台发送按最多 32 条/4MiB 领取，数据库总连接数仍需按角色副本数核算。
+
+启动后核对 worker 消费与 outbox 状态、配额和 readyz；有计量冻结按 operations.md 停写重建/核验再恢复。新同步 SQL 写入与额外事务改变了成本和延迟，既有配额压测结果不能作为新版本容量保证。本轮代码与隔离验收不等于已更新现有容器或完成云预发。
 
 使用提交标签发布镜像并记录 digest，发布前在预发环境执行基础设施与真实厂商协议回归。数据库迁移先行，保持前后版本兼容。使用 `kubectl rollout undo deployment/gateway -n llm-gateway` 等回滚代码；配置灰度由管理页面回滚，避免恢复过期 Key 配置。
 

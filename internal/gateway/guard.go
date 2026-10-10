@@ -127,6 +127,7 @@ type RedisGuard struct {
 	Client        *redis.Client
 	RequireReady  bool
 	EnforceMemory bool
+	Replay        bool
 }
 
 const rateLua = `local tm=redis.call('TIME');local now=tm[1]*1000+math.floor(tm[2]/1000)
@@ -159,6 +160,7 @@ func quotaKeys(a, m, id string) []string {
 
 const reserveLua = `if ARGV[6]=='true' and redis.call('GET','gw:quota:state')~='ready' then return -1 end
 if redis.call('HEXISTS',KEYS[2],'reserved')==1 or redis.call('HEXISTS',KEYS[2],'revision')==1 then return 1 end
+if ARGV[8]=='true' and redis.call('EXISTS','gw:metering:frozen')==1 then return -1 end
 if ARGV[7]=='true' then
  local info=redis.call('INFO','memory');local max=tonumber(string.match(info,'\r\nmaxmemory:(%d+)'));local used=tonumber(string.match(info,'\r\nused_memory:(%d+)'));local excluded=tonumber(string.match(info,'\r\nmem_not_counted_for_evict:(%d+)')) or 0
  local policy=string.match(info,'\r\nmaxmemory_policy:([^\r\n]+)')
@@ -174,7 +176,7 @@ func (g RedisGuard) Reserve(c context.Context, a App, r Reservation) error {
 	c, cancel := context.WithTimeout(c, time.Second)
 	defer cancel()
 	// 90% 水位拒绝新增预占，余量留给已发生费用的结算；INFO/策略无法核验时失败关闭。
-	v, e := g.Client.Eval(c, reserveLua, quotaKeys(a.ID, r.Month, r.ID), r.Tokens, r.Micro, a.MonthlyTokens, a.BudgetMicro, a.BudgetAction, strconv.FormatBool(g.RequireReady), strconv.FormatBool(g.EnforceMemory)).Int()
+	v, e := g.Client.Eval(c, reserveLua, quotaKeys(a.ID, r.Month, r.ID), r.Tokens, r.Micro, a.MonthlyTokens, a.BudgetMicro, a.BudgetAction, strconv.FormatBool(g.RequireReady), strconv.FormatBool(g.EnforceMemory), strconv.FormatBool(g.RequireReady && !g.Replay)).Int()
 	if e != nil {
 		return ErrUnavailable
 	}

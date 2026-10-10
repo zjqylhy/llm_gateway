@@ -170,7 +170,25 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 		}
 		writer := &kafka.Writer{Addr: kafka.TCP(brokers...), Topic: env("GW_KAFKA_TOPIC", "gateway-events"), Balancer: &kafka.Hash{}, RequiredAcks: kafka.RequireAll, Async: false, WriteTimeout: 3 * time.Second, ReadTimeout: 3 * time.Second, BatchTimeout: time.Millisecond, Transport: transport}
 		out.KafkaClient = &kafka.Client{Addr: kafka.TCP(brokers...), Transport: transport, Timeout: 3 * time.Second}
-		e.Bus = KafkaBus{writer}
+		globalBytes, be := outboxBytesEnv("GW_OUTBOX_GLOBAL_BYTES", 512<<20)
+		if be != nil {
+			return nil, be
+		}
+		appBytes, be := outboxBytesEnv("GW_OUTBOX_APP_BYTES", 64<<20)
+		if be != nil {
+			return nil, be
+		}
+		e.Bus = &DurableBus{Store: sqlStore, Transport: KafkaBus{writer}, GlobalBytes: globalBytes, AppBytes: appBytes, OnFreeze: func(c context.Context) { _ = rc.Set(c, "gw:metering:frozen", "delivery_failure", 0).Err() }}
+		e.Bus.(*DurableBus).CheckFrozen = func(c context.Context) error {
+			n, err := rc.Exists(c, "gw:metering:frozen").Result()
+			if err != nil {
+				return err
+			}
+			if n > 0 {
+				return ErrUnavailable
+			}
+			return nil
+		}
 		out.closers = append(out.closers, func() { _ = writer.Close() })
 		out.readerConfig = kafka.ReaderConfig{Brokers: brokers, Topic: env("GW_KAFKA_TOPIC", "gateway-events"), GroupID: env("GW_KAFKA_GROUP", "gateway-metering"), MinBytes: 1, MaxBytes: 1 << 20, QueueCapacity: 8, CommitInterval: 0, Dialer: dialer}
 		out.closers = append(out.closers, func() {
@@ -284,6 +302,22 @@ func Main(mode string) {
 		}
 		return
 	}
+	if mode == "metering-audit" || mode == "metering-resume" {
+		auditCtx, finish := context.WithTimeout(ctx, 5*time.Minute)
+		defer finish()
+		var result MeteringAudit
+		if mode == "metering-resume" {
+			result, e = ResumeMetering(auditCtx, runtime)
+		} else {
+			result, e = AuditMetering(auditCtx, runtime)
+		}
+		if e != nil {
+			slog.Error("metering verification failed", "error", e)
+			os.Exit(1)
+		}
+		slog.Info("metering verification complete", "groups", result.Groups, "attempts", result.Attempts, "pending", result.Pending)
+		return
+	}
 	if !dev {
 		if state, err := runtime.Redis.Get(startup, "gw:quota:state").Result(); err != nil || state != "ready" {
 			slog.Error("quota state unavailable; bootstrap or offline rebuild required")
@@ -309,6 +343,9 @@ func Main(mode string) {
 		}()
 		defer workerHealth.Close()
 		go RunMaintenance(ctx, runtime.Engine)
+		if bus, ok := runtime.Engine.Bus.(*DurableBus); ok {
+			go bus.RunRelay(ctx)
+		}
 		if e = Consume(ctx, runtime.OpenMeteringReader(), runtime.Engine.Store, runtime.Engine.Guard); e != nil && !errors.Is(e, context.Canceled) {
 			slog.Error("worker stopped", "error", e)
 			os.Exit(1)
@@ -345,7 +382,7 @@ func Main(mode string) {
 		}
 		stop()
 	}
-	shutdown, done := context.WithTimeout(context.Background(), 125*time.Second)
+	shutdown, done := context.WithTimeout(context.Background(), 150*time.Second)
 	defer done()
 	for _, s := range servers {
 		_ = s.Shutdown(shutdown)

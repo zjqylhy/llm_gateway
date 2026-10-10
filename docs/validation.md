@@ -102,3 +102,21 @@ Linux race、真实厂商、最大报文持续压力、云预发、入口代理�
 用户要求比较使用与不使用 Redis 的配额性能，新增测试专用 SQL 基线及独立容器脚本，生产代码和既有服务未切换。最终 gw_quota_491965d693b7 完成 36 组采样，约 171 秒；所有无错误组逐应用账本/配额一致且无预占残留，前置验证重复事件、递增修正和并发争抢额度。MySQL 单应用 64 并发发生 31% 超时及未完成预占，作为饱和结果保留，不算性能通过。其他组和 Redis 全部组无错误；全部组已结算数值与 SQL 最新账本一致。
 
 方法、完整结果、局限及前置失败记录见 [quota-comparison-report.md](quota-comparison-report.md) 和 [quota-comparison-results.json](quota-comparison-results.json)。这是存储周期短时对比，未覆盖端到端 Kafka/HTTP/真实厂商及云长时间实验，不能替代既有网关压力/SLO 验收。
+
+## 2026-10-11 计量恢复阶段 1
+
+按用户最终确认，网关保存 SQL outbox，Kafka 消费者统一入账。已实现 started 保存及 completed 空间预留、completed 的 SQL/Kafka 双路径、后台补发/租约/有界退避、消费结算后释放容量、同 ID/版本载荷冲突拒绝、取消事件持久化、usage 修正版本/审计/outbox 原子保存及操作幂等。SQL 控制与 Redis 冻结标记拒绝新付费调用，既有重放继续；提供停写 metering-audit/metering-resume，quota-rebuild 先排空未发布 outbox。
+
+全量 Go 回归（count=1）、go vet、go build、gofmt、git diff --check、27 份 YAML/24 面板结构校验和 Docker Compose config --quiet 均通过。新语义回归覆盖 SQL started 失败不调用上游、completed SQL 失败仍发 Kafka、Kafka 失败重启补发且不重调模型、两路失败保留预占/不输出 DONE、冲突冻结、采样超限仍保存财务字段、冻结不阻止结算重放、调用方取消不冻结健康计量。运行时故障注入仅在测试代码，生产没有绕过开关。
+
+最终真实依赖验收为 gw_acceptance_06a4cfc53453，19 项通过，测试约 128 秒。新增验证：保存 outbox 时账本为空；单应用满不阻止其他应用、completed 使用预留容量；丢失 ACK 后重复发送无重复收费；修正幂等及内容冲突；completed 没有 outbox 也能从真实 Kafka 入账、释放预留且不补写 outbox；64 并发容量事务不死锁/泄漏；停写核验拒绝未知 pending 和丢失 attempt 键；核实后解除冻结；Redis 重建包含尚未发布补偿并保留其他业务键。
+
+容器故障回归 gw_acceptance_ddfe6f051375：6 项通过，测试约 56 秒，压力项明确跳过。两实例 100 并发争抢 Token/预算各只允许 5 次调用；强杀 worker 后补账；Redis 停止时拒绝新调用、AOF 恢复；网关流中崩溃保留 pending。角色使用 Linux 编译的验收程序，但不等于完整应用镜像构建或云环境验证。
+
+保留前置失败：gw_acceptance_21413de265c6 在离线核验阶段失败，发现原 quota-rebuild 及新增 audit 的 SCAN 模式未覆盖带后缀的配额键，改为 gw:{app:*}:*，并增加孤立键清理/其他业务键保留验证后通过。gw_acceptance_e18bdd98f327 初次跨实例争抢未满足 5 次调用；排查修正容量行 INSERT IGNORE 共享锁升级为直接取排他锁，随后容器回归及 64 并发容量验收通过。早期 15 项及 17/18 项成功结果不替代最终 19 项结果。
+
+验收仅创建随机独立数据库、Kafka topic/组、配置前缀、collection、临时 Redis 和角色容器，结束后清理；日志在忽略的 data/acceptance，临时凭据文件已删除。现有应用未迁移、重建或部署；Compose/Kubernetes 已更新配置与 155 秒停机宽限，Dockerfile 增加两个核验命令。
+
+本阶段不包含 Kafka 分区 SQL 检查点/旧 SQL 备份回放、自动周期对账与代次许可、云预发、真实厂商、SQL/Kafka 容器断网或整节点损坏、完整端到端压测/SLO。completed SQL/Kafka 双路径失败由方法/传输边界注入；不能据此宣称真实存储整节点故障已演练。Windows CGO=0 且无 GCC，本轮未执行 race。全局容量行、同步 SQL 保存与更多消费事务增加成本，旧性能结果不能沿用。
+
+代码与本阶段结果需按 AGENTS.md 人工确认，再进入检查点与旧备份恢复阶段。运行与升级步骤见 operations.md、deployment.md。

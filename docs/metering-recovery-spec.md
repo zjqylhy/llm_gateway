@@ -1,6 +1,8 @@
 # 计量故障恢复补强：需求与技术方案
 
-日期：2026-10-11。状态：待用户确认技术方案，运行时代码尚未实现。用户已授权继续分析存储故障恢复。现有行为与验收见 [design.md](design.md)、[operations.md](operations.md)、[validation.md](validation.md)。
+日期：2026-10-11。状态：用户已确认按后续讨论实施，分阶段验证；具体完成范围以 validation.md 为准。最终分工为网关保存 outbox，消费者统一入账。现有行为与验收见 [design.md](design.md)、[operations.md](operations.md)、[validation.md](validation.md)。
+
+阶段 1 已实现 outbox、容量预留、修正事务、冻结和离线核验/恢复接单；代码及测试结果待人工确认。下文的分区检查点、旧备份回放、短期许可/Redis 代次与在线周期对账仍为阶段 2/3 设计，不是当前能力。当前冻结使用 SQL 控制状态、Redis 标记和实例闩锁，离线核验需要操作者确认停写，不具备恢复独占锁。
 
 ## 1. 目标与保证边界
 
@@ -31,15 +33,15 @@ Engine.Refresh 在 SQL 心跳报错前已更新配置时间；配置新鲜不等
 选择 MySQL outbox 保存补偿事件，gateway 无需本地 WAL/独立持久卷，适用于 Compose 和云上多实例。outbox 记录发送状态，不作为第三份可累加的账本。
 
 1. Redis 原子检查额度并预占，保持现有预算串行化边界。
-2. SQL 短事务检查全局/应用恢复门禁和补偿容量，写 started 账本与 outbox，为 completed 留足空间。事务失败或结果不明时不调用厂商。
+2. SQL 短事务检查全局/应用恢复门禁和补偿容量，写 started outbox，为 completed 留足空间。网关不更新账本；事务失败或结果不明时不调用厂商。
 3. started 获得 Kafka ACK 后才调用厂商；后台重复发送沿用同一事件标识。
-4. 得到 completed 后先尝试 SQL 事务写账本与 outbox；SQL 失败仍在独立超时预算内尝试 Kafka，不能短路健康的备用通道。
+4. 得到 completed 后先尝试 SQL 事务保存 outbox；SQL 失败仍在独立超时预算内尝试 Kafka，不能短路健康的备用通道。Kafka 确认后无需为了补偿再补写 outbox；消费者补入账并释放原有补偿容量。SQL 超时若实际已提交，后续重复发送仍应幂等。
 5. Kafka ACK 后可以正常结束；SQL 成功但 Kafka 未 ACK 时返回计量错误，后台补发。两路都失败时保留预占、冻结并标记待核实。
-6. worker 按版本结算 Redis，再提交 Kafka offset。SQL completed 提前可见的窗口由预占保护。
+6. worker 事务更新账本与检查点，按版本结算 Redis，再提交 Kafka offset。SQL 入账领先 Redis 的窗口由预占保护。
 
 Redis 预占与步骤 2 不原子。明确未调用上游的失败路径生成零费用取消事件，在独立有界上下文中持久化并结算；取消失败保留孤立预占。崩溃且不能证明未调用厂商时不自动取消。对账必须纳入 Redis 中没有 SQL started 的记录，不能只计算 SQL pending。
 
-覆盖 started/completed、重试/降级、内部 Embedding、管理端 usage 修正。request 汇总也补偿，但不能据其推断付费 attempt 已结算。管理修正的版本分配、审计、账本和 outbox 合并事务，使用操作幂等标识。
+覆盖 started/completed、重试/降级、内部 Embedding、管理端 usage 修正。request 汇总也补偿，但不能据其推断付费 attempt 已结算。管理修正的版本分配、审计和 outbox 合并事务，使用操作幂等标识，最终账本仍由消费者更新。
 
 ### 数据与发送约束
 
@@ -63,7 +65,7 @@ Redis 预占与步骤 2 不原子。明确未调用上游的失败路径生成�
 
 只有 Kafka ACK、SQL 入账、Redis 结算证据都成立，才释放对应未交付容量、清除冗余 outbox payload；保留标识/哈希/状态用于审计。SQL 事件及账本不按日期删除。未完成、冲突和来源缺口不能通过清理换取接单空间。
 
-outbox 将 SQL 业务状态与待发事件一起提交，发送仍可能重复，消费者必须幂等；不能提供与上游、Redis、Kafka 的跨系统事务。[AWS outbox 模式说明](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/transactional-outbox.html)
+outbox 将补偿容量或修正版本/审计与待发事件一起提交，账本由消费者更新。发送仍可能重复，消费者必须幂等；不能提供与上游、Redis、Kafka 的跨系统事务。[AWS outbox 模式说明](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/transactional-outbox.html)
 
 ## 4. 检查点与旧备份回放
 
@@ -111,7 +113,7 @@ Kafka 超过保留窗口后旧位置可能不存在，自动位置重置无法�
 
 ## 6. 实施与验收
 
-待本次确认的关键选择是：新增同步 SQL started/outbox 事务；Kafka ACK 仍为正常成功必要条件；存量迁移及旧备份修复需要明确停写窗口；上述容量、批次和许可期限作为可调初始值。保留 Redis 的决定在完整链路压测后再复核。
+用户已确认新增同步 SQL outbox 事务、账本由消费者统一写入、Kafka ACK 仍为正常成功必要条件。存量迁移及旧备份修复需要明确停写窗口；上述容量、批次和许可期限作为可调初始值。保留 Redis 的决定在完整链路压测后再复核。
 
 分三阶段交付，每阶段验证、提交 commit、展示代码及测试结果供人工确认：
 
@@ -139,4 +141,4 @@ Kafka 超过保留窗口后旧位置可能不存在，自动位置重置无法�
 
 重新测量 overhead、SQL 池等待、outbox 积压、单/多应用并发、恢复时间。[此前配额对比](quota-comparison-report.md) 未包含新增同步 SQL 链路，不能沿用其吞吐数字。先测量再定容量/恢复 SLO，少量故障实验不证明全年可用性。
 
-本次只核验设计与源码对应关系、文档链接和差异格式；新链路未测试。实际迁移、部署更新与故障注入待技术方案确认后执行。
+测试与交付状态记录在 validation.md，未完成部分不得据本文视为已上线。存量部署不自动迁移或重建，实际升级需遵循 operations.md 的停写、备份和核验流程。

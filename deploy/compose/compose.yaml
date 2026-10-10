@@ -14,6 +14,8 @@ x-app: &app
     GW_MAX_CONCURRENT_REQUESTS: ${GW_MAX_CONCURRENT_REQUESTS:-16}
     GW_MAX_ADMIN_REQUESTS: ${GW_MAX_ADMIN_REQUESTS:-8}
     GW_MAX_CONNECTIONS: ${GW_MAX_CONNECTIONS:-256}
+    GW_OUTBOX_GLOBAL_BYTES: ${GW_OUTBOX_GLOBAL_BYTES:-536870912}
+    GW_OUTBOX_APP_BYTES: ${GW_OUTBOX_APP_BYTES:-67108864}
   mem_limit: 1g
   cpus: 2
   pids_limit: 256
@@ -23,7 +25,7 @@ x-app: &app
   read_only: true
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
-  stop_grace_period: 130s
+  stop_grace_period: 155s
   restart: unless-stopped
 services:
   mysql:

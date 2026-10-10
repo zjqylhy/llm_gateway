@@ -110,6 +110,15 @@ func (e *Engine) Handler() http.Handler {
 			APIError(w, 503, "not_ready", "configuration unavailable")
 			return
 		}
+		if bus, ok := e.Bus.(*DurableBus); ok {
+			ctx, done := context.WithTimeout(r.Context(), time.Second)
+			err := bus.Ready(ctx)
+			done()
+			if err != nil {
+				APIError(w, 503, "not_ready", "metering unavailable")
+				return
+			}
+		}
 		JSON(w, map[string]string{"status": "ready"})
 	})
 	mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, r *http.Request) {
@@ -174,7 +183,7 @@ func (e *Engine) handle(w http.ResponseWriter, r *http.Request, kind string) {
 	defer func() {
 		e.Metrics.Request(a.ID, req.Alias, finalStatus, cached, time.Since(start))
 		event := Event{ID: id + ":result", RequestID: id, AttemptID: id, Revision: 2, Kind: "completed", Purpose: "request", AppID: a.ID, Department: a.Department, Alias: req.Alias, At: start.UTC(), Month: month(start), Status: finalStatus, Cached: cached, DurationMS: time.Since(start).Milliseconds()}
-		pc, done := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		pc, done := context.WithTimeout(context.WithoutCancel(ctx), 9*time.Second)
 		defer done()
 		if err := e.Bus.Publish(pc, event); err != nil {
 			e.Metrics.EventError()
@@ -301,6 +310,10 @@ func (e *Engine) handle(w http.ResponseWriter, r *http.Request, kind string) {
 	APIError(w, 503, "upstream_unavailable", "all eligible upstream attempts failed")
 }
 func rejectGuard(w http.ResponseWriter, e error) string {
+	if errors.Is(e, ErrMeteringCompletion) {
+		APIError(w, 503, "metering_unavailable", "model call may have incurred usage; verify request_id before retrying")
+		return "failed"
+	}
 	if errors.Is(e, ErrLimit) {
 		APIError(w, 429, "insufficient_quota", "rate, token quota or budget exceeded")
 		return "rate_limited"
@@ -468,10 +481,20 @@ func (e *Engine) attempt(ctx context.Context, cfg Config, a App, m Model, r Requ
 	}
 	if err = e.Bus.Publish(ctx, event); err != nil {
 		release := event
+		release.ID = id + ":2"
 		release.Revision = 2
+		release.Kind = "completed"
+		release.Status = "cancelled"
+		release.Quality = "reported"
 		release.Usage = Usage{}
 		release.CostMicro = 0
-		_ = e.Guard.Settle(context.WithoutCancel(ctx), release)
+		// 此路径确定没有调用厂商；持久化取消可防止迟到 started 重建预占。
+		cleanup, done := context.WithTimeout(context.WithoutCancel(ctx), 9*time.Second)
+		_ = e.Bus.Publish(cleanup, release)
+		done()
+		settle, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+		_ = e.Guard.Settle(settle, release)
+		cancel()
 		err = ErrUnavailable
 		return
 	}
@@ -507,11 +530,11 @@ func (e *Engine) attempt(ctx context.Context, cfg Config, a App, m Model, r Requ
 		} else {
 			event.ErrorCode = "upstream_error"
 		}
-		pc, done := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		pc, done := context.WithTimeout(context.WithoutCancel(ctx), 9*time.Second)
 		defer done()
 		if pe := e.Bus.Publish(pc, event); pe != nil {
 			e.Metrics.EventError()
-			err = ErrUnavailable
+			err = ErrMeteringCompletion
 		}
 		e.Metrics.Attempt(event)
 		e.breakerMu.Lock()
@@ -678,7 +701,7 @@ func (e *Engine) attempt(ctx context.Context, cfg Config, a App, m Model, r Requ
 	// 成功终止标记之前必须确认计量事件已持久化。
 	complete()
 	if err != nil {
-		_, _ = fmt.Fprint(w, "data: {\"error\":{\"code\":\"metering_unavailable\",\"message\":\"completion could not be recorded\"}}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"error\":{\"code\":\"metering_unavailable\",\"message\":\"completion publication not acknowledged; model usage may have occurred\"}}\n\n")
 		_ = http.NewResponseController(w).Flush()
 		return
 	}

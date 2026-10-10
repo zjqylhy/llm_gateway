@@ -16,7 +16,7 @@ worker 按事件 ID 去重、按 attempt revision 更新账本和配额。MySQL 
 
 `reported` 表示厂商返回 usage，`estimated` 表示缺失 usage 时的保守估算，`pending` 表示上游尝试没有终结记录。报表将 started 和 estimated 计入待核实，不能视为已确认账单。进程突然退出后，不能凭 TCP 断开推断厂商没有收费。
 
-管理员通过 `POST /admin/usage-correction` 提交 `request_id`、`attempt_id` 和修正后的 `usage`（prompt_tokens、completion_tokens、cached_tokens）；保存原尝试的价格版本，服务器分配唯一递增 revision 并记录审计。异步计量完成前应查看调用记录确认 revision，金额以最新账本为准。
+管理员通过 `POST /admin/usage-correction` 提交 `request_id`、`attempt_id` 和修正后的 `usage`（prompt_tokens、completion_tokens、cached_tokens）；保存原尝试的价格版本，服务器分配唯一递增 revision 并记录审计。生产模式版本/审计/outbox 在同一事务中保存，由消费者最终入账。重试请发送相同 `Idempotency-Key`，响应也返回该 header；同 key 不同修正返回 409。发布未确认返回 503 时，修正可能已在 outbox 中，不应换 key 盲目重试。异步计量完成前查看调用记录确认 revision，金额以最新账本为准。
 
 80% 预算告警和成本突增告警显示在控制台；100% 按应用 warn/reject 设置处理。warn 不阻止请求。当前告警没有自动发送邮件或企业聊天消息；可在部署环境通过 Prometheus/云监控配置告警接收器，渠道发送需单独授权和配置。
 
@@ -24,7 +24,28 @@ worker 按事件 ID 去重、按 attempt revision 更新账本和配额。MySQL 
 
 额度实例使用 noeviction 和持久化，禁止把缓存 Redis 的 LRU 策略用到配额账本。配额初始化标记丢失时，付费调用失败关闭，bootstrap 也不会在已有账本上重置额度。
 
-恢复步骤：摘除入口，停止 gateway/admin/worker 及其他账本写入者；保留 MySQL 与 Kafka 数据。设置 `GW_QUOTA_REBUILD_ACK=writers-stopped`，执行 `quota-rebuild`。该命令仅清理 `gw:{app:*}` 配额数据，重建 MySQL 最新版本及 started 预占，排空尚未入账事件，核验 Kafka 所有分区 offset 后恢复 ready 标记。失败时标记仍为 rebuilding，不得人工改成 ready。
+恢复步骤：摘除入口，停止 gateway/admin/worker 及其他账本写入者；保留 MySQL 与 Kafka 数据。设置 `GW_QUOTA_REBUILD_ACK=writers-stopped`，执行 `quota-rebuild`。先将尚未发布的 outbox 排空至 Kafka，再清理匹配 `gw:{app:*}:*` 的配额/attempt 键，重建 MySQL 最新版本及 started 预占，排空未入账事件，核验所有分区 offset 后恢复 ready。失败保持 rebuilding，不得人工改为 ready。该命令不清理其他业务键，也不直接解除计量冻结。
+
+## outbox 与计量冻结恢复
+
+生产模式启动前需完成新迁移。网关保存 outbox，不更新账本；worker 后台重试，消费入账并结算 Redis 后清除冗余载荷、释放逻辑容量。未交付容量默认全局 512MiB、每应用 64MiB，环境变量为 `GW_OUTBOX_GLOBAL_BYTES`、`GW_OUTBOX_APP_BYTES`；应用 `outbox_bytes` 可覆盖默认，每个新调用为 completed 预留 1MiB。限额不覆盖索引、已交付元数据及其他 SQL 表，不能代替磁盘、备份和连接池监控。
+
+网关保存/发布计量失败及消费者事件冲突会触发 SQL/Redis 冻结并使 readyz 返回 503；启动新网关也要检查 SQL 控制状态。已有结算继续，新付费调用停止。worker 静默停止、消费积压或其他消费失败的自动健康门禁仍待后续许可/进度方案，不应把本轮当作实时检测全部依赖异常。两路 completed 保存都失败或上游未返回 usage 时，精确费用仍可能需要厂商记录核实；不自动释放 pending。普通计量失败返回 `metering_unavailable`，可能已经产生费用，请按 X-Request-Id 检查记录再决定重试。
+
+以下命令仅用于确认所有写入者已停止后的维护窗口，不要在正常 consumer/outbox sender/管理员修正仍运行时执行：
+
+```powershell
+# 先停止写入者、保留备份并修复依赖，再执行恢复和核验。
+$env:GW_QUOTA_REBUILD_ACK='writers-stopped'
+go run ./cmd/quota-rebuild
+$env:GW_METERING_RECOVERY_ACK='writers-stopped'
+go run ./cmd/metering-audit
+go run ./cmd/metering-resume
+```
+
+命令使用当前环境中的生产模式连接配置。容器对应 `/app/quota-rebuild`、`/app/metering-audit`、`/app/metering-resume`，同样传入上述确认变量。audit 校验 SQL/Redis 月度结算与预占、attempt/revision、未交付 outbox 和消费位置；最多 10,000 个应用月份及 100,000 个 Redis 键，超限明确失败，不截断为成功。resume 要求无未解决 started，并记录审计，清除 SQL/Redis 冻结后重启业务进程以清除本实例故障闩锁。
+
+有未知 started 时先核实费用、通过管理修正保存持久事件，再停止写入者、排空与重新核验；不能为恢复接单把未知用量改零。CLI 的 writers-stopped 是操作者承诺，当前没有跨命令分布式恢复独占锁。MySQL 恢复旧备份后的历史回放、在线周期对账和任意 Redis 损坏检测尚未实现，不能把本轮命令用作完整灾备工具。
 
 恢复结束后核对各应用当前月份的 token、金额、预占及待核实记录，再重新启动服务和开放入口。恢复命令需要独占消费组；不得在生产 worker 同时运行时执行。历史数据被清理、Kafka 超出保留窗口或账本损坏时，需要备份恢复或人工对账，不能只运行重建命令。
 

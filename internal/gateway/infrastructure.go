@@ -20,20 +20,18 @@ import (
 type KafkaBus struct{ Writer *kafka.Writer }
 
 func (b KafkaBus) Publish(c context.Context, e Event) error {
-	if err := CheckEvent(e); err != nil {
-		return err
-	}
-	raw, err := json.Marshal(e)
+	raw, err := eventBytes(e)
 	if err != nil {
 		return err
-	}
-	if len(raw) > 1<<20 {
-		return errors.New("metering event exceeds 1 MiB")
 	}
 	return b.Writer.WriteMessages(c, kafka.Message{Key: []byte(e.AppID), Value: raw})
 }
 func (b KafkaBus) Close() error { return b.Writer.Close() }
 func Consume(c context.Context, r *kafka.Reader, s Store, g Guard) error {
+	if redisGuard, ok := g.(RedisGuard); ok {
+		redisGuard.Replay = true
+		g = redisGuard
+	}
 	for {
 		m, e := r.FetchMessage(c)
 		if e != nil {
@@ -47,6 +45,18 @@ func Consume(c context.Context, r *kafka.Reader, s Store, g Guard) error {
 			return e
 		}
 		if e = s.Apply(c, event); e != nil {
+			if errors.Is(e, ErrEventConflict) {
+				freeze, done := context.WithTimeout(context.WithoutCancel(c), time.Second)
+				if store, ok := s.(*SQLStore); ok {
+					_ = store.FreezeMetering(freeze, "event_conflict")
+				}
+				done()
+				if guard, ok := g.(RedisGuard); ok {
+					freeze, done = context.WithTimeout(context.WithoutCancel(c), time.Second)
+					_ = guard.Client.Set(freeze, "gw:metering:frozen", "event_conflict", 0).Err()
+					done()
+				}
+			}
 			return e
 		}
 		if event.Kind == "started" {
@@ -56,6 +66,13 @@ func Consume(c context.Context, r *kafka.Reader, s Store, g Guard) error {
 		}
 		if event.Kind == "completed" && event.Purpose != "request" {
 			if e = g.Settle(c, event); e != nil {
+				return e
+			}
+		}
+		if outbox, ok := s.(interface {
+			DeliveredOutbox(context.Context, Event) error
+		}); ok {
+			if e = outbox.DeliveredOutbox(c, event); e != nil {
 				return e
 			}
 		}

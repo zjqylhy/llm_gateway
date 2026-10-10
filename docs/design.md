@@ -16,7 +16,11 @@ Redis 预占与结算使用原子操作和 attempt 幂等键；已完成事件�
 
 Redis 治理操作有 1 秒总期限；建连及池等待各上限 1 秒，读取/写入各 250 毫秒，并显式限制建连和命令重试次数。操作期限覆盖叠加的 DNS/连接/重试等待，防止 Redis 停止后 HTTP 请求长时间挂起。首次启动和离线恢复的整体期限另行控制。
 
-计量故障恢复的下一阶段方案见 [metering-recovery-spec.md](metering-recovery-spec.md)，状态为待确认，尚未替代上述现有实现。
+生产网关先将 started 保存至 SQL outbox，为 completed 预留空间，再等待 Kafka ACK。completed 尝试 outbox 后，即使 SQL 失败也继续尝试 Kafka；后台发送者从 outbox 补发。账本仅由消费者写入，消费者结算 Redis 后释放补偿容量。事件 ID/版本内容冲突明确失败，不靠 INSERT IGNORE 吞掉。
+
+usage 修正事务合并版本分配、审计与 outbox，支持 Idempotency-Key 重试。计量依赖故障通过 SQL 控制状态和 Redis 冻结标记停止新增付费调用，既有重放及结算继续；readyz 同时核验计量状态。清除冻结需停写核验，未知 started 必须核实用量后修正。
+
+当前提供 outbox、离线 metering-audit/metering-resume 及 quota-rebuild 排空补偿事件。分区恢复检查点、旧 SQL 备份回放、短期许可/代次校验和在线周期对账仍属于后续阶段，完整规格见 [metering-recovery-spec.md](metering-recovery-spec.md)。
 
 ## 安全与边界
 
