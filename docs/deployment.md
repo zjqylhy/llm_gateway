@@ -22,6 +22,19 @@ docker compose --env-file .env -f deploy/compose/compose.yaml up -d gateway admi
 
 等待各依赖健康后再运行迁移。首次 bootstrap 初始化管理员及空账本的配额标记；再次运行只重发配置，不覆盖已有密码。DDL 由显式 migrate 命令执行。云端应使用单独迁移账号，运行账号只授予必要 DML 权限。
 
+若只启动依赖、在 Windows 上运行 Go 进程，可加上本机端口覆盖文件：
+
+```powershell
+$composeArgs = @('--env-file', '.env', '-f', 'deploy/compose/compose.yaml', '-f', 'deploy/compose/integration-ports.yaml')
+docker compose @composeArgs pull mysql redis kafka etcd minio milvus
+docker compose @composeArgs up -d mysql redis kafka kafka-init etcd minio milvus
+docker compose @composeArgs ps
+```
+
+本机连接地址分别为 MySQL `127.0.0.1:13306`、Redis `127.0.0.1:16379`、Kafka `127.0.0.1:19092`、etcd `http://127.0.0.1:12379`、Milvus `http://127.0.0.1:19530`。容器内应用仍使用 `.env.example` 中的服务名称。Go 命令不会自动加载 `.env`，需要在各进程启动前注入环境变量；管理页面仍需 HTTPS 反向代理以支持 Secure Cookie。
+
+MinIO 使用 [Milvus 官方部署配置](https://github.com/milvus-io/milvus/blob/master/deployments/docker/standalone/docker-compose.yml)中的 `milvusdb/minio` 同版本镜像，原 `minio/minio` 地址在本机拉取时返回仓库访问错误。普通停止、重建容器保留命名卷中的数据。
+
 本机管理页面为 `https://localhost:8443`，Caddy 使用本地证书。应导入 Caddy 根证书建立本机信任，浏览器证书警告需用户处理。该 Compose 中间件配置仅供本机联调，不能作为公网生产服务。
 
 注册向量模型后设置真实输出维度及 `GW_CACHE_DIMENSIONS`，运行 `cache-init` 创建 Milvus collection。collection 中只使用一种维度；需要不同维度时配置新的 collection 和相应网关部署。缓存默认关闭，未创建 collection 时会绕过并记录缓存错误。
@@ -50,6 +63,6 @@ Ingress 必须关闭响应缓冲，读取/发送超时至少 130 秒，负载均
 
 使用提交标签发布镜像并记录 digest，发布前在预发环境执行基础设施与真实厂商协议回归。数据库迁移先行，保持前后版本兼容。使用 `kubectl rollout undo deployment/gateway -n llm-gateway` 等回滚代码；配置灰度由管理页面回滚，避免恢复过期 Key 配置。
 
-模板目前通过 YAML 和 Linux 编译校验，未在这台无 Docker 的 Windows 环境运行容器，也未实际部署云资源。需完成预发验证后再接入生产流量。
+模板目前通过 YAML 和 Linux 编译校验，本机已具备 Docker Desktop 和 Linux 容器引擎。容器启动、基础设施联调和云部署仍须分别验证后再接入生产流量。
 
 配置依据：[Milvus REST collection 创建](https://milvus.io/api-reference/restful/v2.6.x/v2/Collection%20%28v2%29/Create.md)、[Milvus standalone 部署](https://milvus.io/docs/v2.6.x/install_standalone-docker-compose.md)、[Kafka 官方 Docker 配置](https://github.com/apache/kafka/tree/4.0.0/docker/examples)。镜像示例锁定版本，上线前仍应执行镜像漏洞扫描并更新到验证过的补丁版本。
