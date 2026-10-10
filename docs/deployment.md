@@ -49,6 +49,14 @@ docker compose @composeArgs ps
 
 本机连接地址分别为 MySQL `127.0.0.1:13306`、Redis `127.0.0.1:16379`、Kafka `127.0.0.1:19092`、etcd `http://127.0.0.1:12379`、Milvus `http://127.0.0.1:19530`。容器内应用仍使用 `.env.example` 中的服务名称。Go 命令不会自动加载 `.env`，需要在各进程启动前注入环境变量；管理页面仍需 HTTPS 反向代理以支持 Secure Cookie。
 
+依赖启动后，从项目根目录执行以下命令可验收真实数据链路和配额恢复：
+
+```powershell
+./scripts/verify-infrastructure.ps1
+```
+
+脚本从本地 `.env` 读取数据库密码和主密钥，临时注入测试环境变量，不调用真实厂商。它创建专用数据库、Kafka topic/消费组、etcd 配置前缀、Milvus collection 及临时 Redis；结束后清理，日志保存在 `data/acceptance`，现有应用容器继续运行。测试只对该 Redis 执行数据清空。此脚本使用上述默认 loopback 端口，需要本机 Go 和 Docker，结果边界见 `docs/validation.md`。
+
 MinIO 使用 [Milvus 官方部署配置](https://github.com/milvus-io/milvus/blob/master/deployments/docker/standalone/docker-compose.yml)中的 `milvusdb/minio` 同版本镜像，原 `minio/minio` 地址在本机拉取时返回仓库访问错误。普通停止、重建容器保留命名卷中的数据。
 
 本机管理页面为 `https://localhost:8443`，Caddy 使用本地证书。应导入 Caddy 根证书建立本机信任，浏览器证书警告需用户处理。该 Compose 中间件配置仅供本机联调，不能作为公网生产服务。
@@ -68,6 +76,8 @@ MinIO 使用 [Milvus 官方部署配置](https://github.com/milvus-io/milvus/blo
 5. 内部监控从 Service 或 Pod 的 `/metrics` 抓取，Ingress 仅暴露业务及控制台路径。导入 Prometheus 规则及 Grafana JSON，接入云端 Kafka/MySQL/Redis/etcd 指标和告警接收器。
 
 运行层支持多副本：数据库事务序列化配置及修正版本，Redis 共享配额和管理会话，Kafka 消费组分配计量分区，etcd CAS 阻止旧版本覆盖。熔断和延迟 EWMA 仍为每实例状态，基础设施治理指标由外部服务汇总。
+
+共享 Kafka/etcd 的不同部署环境应使用不同 `GW_KAFKA_TOPIC`、`GW_KAFKA_GROUP` 和 `GW_ETCD_PREFIX`；同一环境的各 worker 使用相同消费组。MySQL 数据库、Redis 数据库及 Milvus collection 也须按环境隔离。默认消费组 `gateway-metering`、配置前缀 `/llm-gateway` 与既有部署一致，新增可选参数无需重配现有环境。
 
 TLS 使用系统信任 CA：MySQL DSN 使用 `tls=true`，Redis 使用 `rediss://`，Kafka 打开 `GW_KAFKA_TLS` 并配置 SASL，etcd 使用 `https://`，Milvus 使用 HTTPS。私有 CA 可通过镜像信任库或标准证书环境配置安装；当前不提供 mTLS client certificate 参数。选择与这些能力兼容的服务认证方式。
 

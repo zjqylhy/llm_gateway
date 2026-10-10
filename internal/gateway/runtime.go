@@ -159,7 +159,8 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 		out.KafkaClient = &kafka.Client{Addr: kafka.TCP(brokers...), Transport: transport, Timeout: 3 * time.Second}
 		e.Bus = KafkaBus{writer}
 		out.closers = append(out.closers, func() { _ = writer.Close() })
-		out.Reader = kafka.NewReader(kafka.ReaderConfig{Brokers: brokers, Topic: env("GW_KAFKA_TOPIC", "gateway-events"), GroupID: "gateway-metering", MinBytes: 1, MaxBytes: 10 << 20, CommitInterval: 0, Dialer: dialer})
+		// 共享 broker 的不同环境使用独立消费组，避免 topic 订阅引起跨环境重平衡。
+		out.Reader = kafka.NewReader(kafka.ReaderConfig{Brokers: brokers, Topic: env("GW_KAFKA_TOPIC", "gateway-events"), GroupID: env("GW_KAFKA_GROUP", "gateway-metering"), MinBytes: 1, MaxBytes: 10 << 20, CommitInterval: 0, Dialer: dialer})
 		out.closers = append(out.closers, func() { _ = out.Reader.Close() })
 		etConfig := clientv3.Config{Endpoints: strings.Split(os.Getenv("GW_ETCD_ENDPOINTS"), ","), DialTimeout: 3 * time.Second, Username: os.Getenv("GW_ETCD_USER"), Password: os.Getenv("GW_ETCD_PASSWORD")}
 		if strings.HasPrefix(etConfig.Endpoints[0], "https://") {
@@ -170,7 +171,7 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 			return nil, ee
 		}
 		out.closers = append(out.closers, func() { _ = et.Close() })
-		e.Publisher = EtcdPublisher{et, "/llm-gateway"}
+		e.Publisher = EtcdPublisher{et, env("GW_ETCD_PREFIX", "/llm-gateway")}
 		e.Cache = MilvusCache{URL: strings.TrimRight(os.Getenv("GW_MILVUS_URL"), "/"), Token: os.Getenv("GW_MILVUS_TOKEN"), Collection: env("GW_MILVUS_COLLECTION", "gateway_cache"), Client: &http.Client{Timeout: 3 * time.Second}, Redis: rc}
 	}
 	out.Admin = NewAdmin(e, !dev, os.Getenv("GW_ADMIN_ORIGIN"))
