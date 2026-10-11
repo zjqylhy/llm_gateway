@@ -690,6 +690,36 @@ func TestInfrastructureIntegration(t *testing.T) {
 			t.Fatal("Redis process unavailable after OOM", err)
 		}
 	})
+	runCase("SQL_UTF8_parameter_and_JSON_roundtrip", func(t *testing.T) {
+		text := "研发🚀 '引号' \\路径\x00; DROP TABLE gw_config; --"
+		cfg, err := s.Update(ctx, "acceptance", "quoted-config", func(c *Config) error {
+			app := c.Apps["app"]
+			app.Name = text
+			c.Apps["app"] = app
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := s.Load(ctx)
+		if err != nil || loaded.Apps["app"].Name != text || loaded.Version != cfg.Version {
+			t.Fatal("JSON parameter changed after SQL roundtrip", err)
+		}
+		alert := Alert{ID: "quoted-alert", AppID: "app", Kind: "test", Message: text, At: time.Now().UTC()}
+		if err := s.SaveAlert(ctx, alert); err != nil {
+			t.Fatal(err)
+		}
+		alerts, err := s.Alerts(ctx, "app")
+		found := false
+		for _, a := range alerts {
+			if a.ID == alert.ID {
+				found = a.Message == text
+			}
+		}
+		if err != nil || !found {
+			t.Fatal("alert JSON or parameter escaping changed", err)
+		}
+	})
 	runCase("outbox_capacity_and_consumer_ownership", func(t *testing.T) {
 		drain()
 		stopWorker()
@@ -724,11 +754,32 @@ func TestInfrastructureIntegration(t *testing.T) {
 		completed.Revision = 2
 		completed.Usage = Usage{Input: 10, Output: 20, Total: 30}
 		completed.CostMicro = 40
-		if err := s.SaveOutbox(ctx, completed, 8<<20, 2<<20); err != nil {
-			t.Fatal("reserved completion was rejected", err)
+		// 真实持有容量行锁；已预留的完成事件仍须保存，不能被新接单竞争拖住。
+		lock, err := s.DB.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer lock.Rollback()
+		if _, err := lock.ExecContext(ctx, `UPDATE gw_metering_capacity SET used_bytes=used_bytes WHERE id='global'`); err != nil {
+			t.Fatal(err)
+		}
+		completionCtx, done := context.WithTimeout(ctx, time.Second)
+		err = s.SaveOutbox(completionCtx, completed, 8<<20, 2<<20)
+		done()
+		if err != nil {
+			t.Fatal("reserved completion waited for global capacity lock", err)
+		}
+		if err := lock.Rollback(); err != nil {
+			t.Fatal(err)
 		}
 		if err := s.SaveOutbox(ctx, completed, 8<<20, 2<<20); err != nil {
 			t.Fatal("duplicate completion consumed capacity", err)
+		}
+		wrongApp := completed
+		wrongApp.ID = "wrong-application:2"
+		wrongApp.AppID = other.AppID
+		if err := s.SaveOutbox(ctx, wrongApp, 8<<20, 2<<20); !errors.Is(err, ErrEventConflict) {
+			t.Fatal("completion used another application's reservation", err)
 		}
 		conflict := completed
 		conflict.CostMicro++
@@ -909,6 +960,19 @@ func TestInfrastructureIntegration(t *testing.T) {
 		for err := range failures {
 			if err != nil {
 				t.Fatal("concurrent capacity failed", err)
+			}
+		}
+		// 多个生产者同时保存同一完成事件，预留只扣一次。
+		duplicate := events[0]
+		duplicate.ID = duplicate.AttemptID + ":2"
+		duplicate.Kind, duplicate.Revision, duplicate.Status, duplicate.Quality = "completed", 2, "cancelled", "reported"
+		duplicateErrors := make(chan error, 16)
+		for i := 0; i < 16; i++ {
+			go func() { duplicateErrors <- s.SaveOutbox(ctx, duplicate, 512<<20, 128<<20) }()
+		}
+		for i := 0; i < 16; i++ {
+			if err := <-duplicateErrors; err != nil {
+				t.Fatal("concurrent reserved completion failed", err)
 			}
 		}
 		for _, event := range events {

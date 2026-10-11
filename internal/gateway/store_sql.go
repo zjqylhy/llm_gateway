@@ -7,16 +7,28 @@ import (
 	"errors"
 	"fmt"
 	"github.com/go-sql-driver/mysql"
+	"net/url"
 	"strings"
 	"time"
 )
 
-type SQLStore struct{ DB *sql.DB }
+type SQLStore struct {
+	DB      *sql.DB
+	Metrics *Metrics
+}
 
-func NewSQLStore(c context.Context, dsn string) (*SQLStore, error) {
+func gatewayMySQLConfig(dsn string) (*mysql.Config, error) {
 	cfg, e := mysql.ParseDSN(dsn)
 	if e != nil {
 		return nil, errors.New("invalid GW_MYSQL_DSN")
+	}
+	// 明确使用 utf8mb4 时由驱动安全转义参数，省去每条查询的临时 prepare/close 往返。
+	// 其他字符集、非 utf8mb4 排序规则及显式 false 保留原有预处理行为。
+	canonical := cfg.FormatDSN()
+	_, query, _ := strings.Cut(canonical[strings.LastIndexByte(canonical, '/')+1:], "?")
+	params, _ := url.ParseQuery(query)
+	if !strings.Contains(dsn, "interpolateParams=") && params.Get("charset") == "utf8mb4" && (cfg.Collation == "" || strings.HasPrefix(cfg.Collation, "utf8mb4_")) {
+		cfg.InterpolateParams = true
 	}
 	// Context 取消之外保留 socket 超时，覆盖网络半开及无期限后台操作。
 	if cfg.Timeout == 0 {
@@ -27,6 +39,13 @@ func NewSQLStore(c context.Context, dsn string) (*SQLStore, error) {
 	}
 	if cfg.WriteTimeout == 0 {
 		cfg.WriteTimeout = 5 * time.Second
+	}
+	return cfg, nil
+}
+func NewSQLStore(c context.Context, dsn string) (*SQLStore, error) {
+	cfg, e := gatewayMySQLConfig(dsn)
+	if e != nil {
+		return nil, e
 	}
 	db, e := sql.Open("mysql", cfg.FormatDSN())
 	if e != nil {
@@ -39,7 +58,7 @@ func NewSQLStore(c context.Context, dsn string) (*SQLStore, error) {
 		db.Close()
 		return nil, e
 	}
-	s := &SQLStore{db}
+	s := &SQLStore{DB: db}
 	return s, nil
 }
 
@@ -73,7 +92,7 @@ func (s *SQLStore) Migrate(c context.Context) error {
 		return err
 	}
 	b, _ := json.Marshal(EmptyConfig())
-	_, e := s.DB.ExecContext(c, `INSERT IGNORE INTO gw_config(id,version,payload) VALUES(1,0,?)`, b)
+	_, e := s.DB.ExecContext(c, `INSERT IGNORE INTO gw_config(id,version,payload) VALUES(1,0,?)`, string(b))
 	return e
 }
 func (s *SQLStore) Load(c context.Context) (Config, error) {
@@ -111,7 +130,7 @@ func (s *SQLStore) Update(c context.Context, actor, action string, fn func(*Conf
 	if len(b) > maxConfigBytes {
 		return cfg, errors.New("configuration exceeds 1 MiB")
 	}
-	if _, e = tx.ExecContext(c, `UPDATE gw_config SET payload=?,version=? WHERE id=1`, b, cfg.Version); e != nil {
+	if _, e = tx.ExecContext(c, `UPDATE gw_config SET payload=?,version=? WHERE id=1`, string(b), cfg.Version); e != nil {
 		return cfg, e
 	}
 	if _, e = tx.ExecContext(c, `INSERT INTO gw_audit(id,actor,action,version,at) VALUES(?,?,?,?,?)`, ID("aud_"), actor, action, cfg.Version, time.Now().UTC()); e != nil {
@@ -137,7 +156,7 @@ func applyEventTx(c context.Context, tx *sql.Tx, e Event) error {
 	if err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(c, `INSERT IGNORE INTO gw_events(id,attempt_id,revision,payload,at) VALUES(?,?,?,?,?)`, e.ID, e.AttemptID, e.Revision, b, e.At); err != nil {
+	if _, err = tx.ExecContext(c, `INSERT IGNORE INTO gw_events(id,attempt_id,revision,payload,at) VALUES(?,?,?,?,?)`, e.ID, e.AttemptID, e.Revision, string(b), e.At); err != nil {
 		return err
 	}
 	// INSERT IGNORE 只允许相同内容重放，不能吞掉同 ID 的矛盾计量。
@@ -160,7 +179,7 @@ func applyEventTx(c context.Context, tx *sql.Tx, e Event) error {
 	if Hash(string(oldRaw)) != Hash(string(newRaw)) {
 		return ErrEventConflict
 	}
-	_, err = tx.ExecContext(c, `INSERT INTO gw_attempts(attempt_id,request_id,app_id,department,model_id,status,purpose,revision,tokens,cost_micro,at,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE attempt_id=attempt_id`, e.AttemptID, e.RequestID, e.AppID, e.Department, e.Model.ID, e.Status, e.Purpose, e.Revision, e.Usage.Total, e.CostMicro, e.At, b)
+	_, err = tx.ExecContext(c, `INSERT INTO gw_attempts(attempt_id,request_id,app_id,department,model_id,status,purpose,revision,tokens,cost_micro,at,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE attempt_id=attempt_id`, e.AttemptID, e.RequestID, e.AppID, e.Department, e.Model.ID, e.Status, e.Purpose, e.Revision, e.Usage.Total, e.CostMicro, e.At, string(b))
 	if err != nil {
 		return err
 	}
@@ -185,7 +204,7 @@ func applyEventTx(c context.Context, tx *sql.Tx, e Event) error {
 			return ErrEventConflict
 		}
 	}
-	_, err = tx.ExecContext(c, `UPDATE gw_attempts SET status=?,revision=?,tokens=?,cost_micro=?,payload=? WHERE attempt_id=? AND revision<?`, e.Status, e.Revision, e.Usage.Total, e.CostMicro, b, e.AttemptID, e.Revision)
+	_, err = tx.ExecContext(c, `UPDATE gw_attempts SET status=?,revision=?,tokens=?,cost_micro=?,payload=? WHERE attempt_id=? AND revision<?`, e.Status, e.Revision, e.Usage.Total, e.CostMicro, string(b), e.AttemptID, e.Revision)
 	if err != nil {
 		return err
 	}

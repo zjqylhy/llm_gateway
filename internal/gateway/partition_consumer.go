@@ -21,7 +21,7 @@ func decodeMetering(m kafka.Message) (Event, error) {
 	}
 	return e, CheckEvent(e)
 }
-func settleMetering(c context.Context, s *SQLStore, g Guard, e Event) error {
+func settleRedis(c context.Context, g Guard, e Event) error {
 	if redisGuard, ok := g.(RedisGuard); ok {
 		redisGuard.Replay = true
 		g = redisGuard
@@ -40,7 +40,19 @@ func settleMetering(c context.Context, s *SQLStore, g Guard, e Event) error {
 			return err
 		}
 	}
-	return s.DeliveredOutbox(c, e)
+	return nil
+}
+func settleMetering(c context.Context, s *SQLStore, g Guard, e Event) error {
+	start := time.Now()
+	err := settleRedis(c, g, e)
+	s.Metrics.meteringStage("redis_settle", meteringEventKind(e), start, err)
+	if err != nil {
+		return err
+	}
+	start = time.Now()
+	err = s.DeliveredOutbox(c, e)
+	s.Metrics.meteringStage("outbox_deliver", meteringEventKind(e), start, err)
+	return err
 }
 func (r *Runtime) freezeConsumer(c context.Context) {
 	if c.Err() != nil {
@@ -56,7 +68,9 @@ func (r *Runtime) freezeConsumer(c context.Context) {
 	r.freezeEtcd(ctx)
 	done()
 }
-func (r *Runtime) commitPositions(c context.Context, generation int, member string, offsets []kafka.OffsetCommit) error {
+func (r *Runtime) commitPositions(c context.Context, generation int, member string, offsets []kafka.OffsetCommit) (result error) {
+	start := time.Now()
+	defer func() { r.Engine.Metrics.meteringStage("offset_commit", "other", start, result) }()
 	res, err := r.KafkaClient.OffsetCommit(c, &kafka.OffsetCommitRequest{GroupID: r.readerConfig.GroupID, GenerationID: generation, MemberID: member, Topics: map[string][]kafka.OffsetCommit{r.readerConfig.Topic: offsets}})
 	if err != nil {
 		return err
@@ -219,12 +233,11 @@ func (r *Runtime) consumeAssignment(c context.Context, generation *kafka.Generat
 		return err
 	}
 	defer reader.Close()
-	cursor := start
-	for {
-		m, err := reader.FetchMessage(c)
-		if err != nil {
-			return err
-		}
+	batchSize, interval := r.commitBatchSize, r.commitInterval
+	if batchSize == 0 {
+		batchSize, interval = defaultMeteringCommitBatch, defaultMeteringCommitInterval
+	}
+	err = consumeSettledPartition(c, start, batchSize, interval, reader.FetchMessage, func(ctx context.Context, cursor int64, m kafka.Message) error {
 		e, err := decodeMetering(m)
 		if err != nil {
 			return err
@@ -232,22 +245,32 @@ func (r *Runtime) consumeAssignment(c context.Context, generation *kafka.Generat
 		if err = verifyRecordSource(source, p, m); err != nil {
 			return err
 		}
-		if err = s.ApplyPartition(c, p, cursor, m, e, false); err != nil {
+		step := time.Now()
+		err = s.ApplyPartition(ctx, p, cursor, m, e, false)
+		r.Engine.Metrics.meteringStage("ledger_apply", meteringEventKind(e), step, err)
+		if err != nil {
 			return err
 		}
-		if err = settleMetering(c, s, r.Engine.Guard, e); err != nil {
+		if err = settleMetering(ctx, s, r.Engine.Guard, e); err != nil {
 			return err
 		}
-		if err = r.advanceWatermark(c, gen, p.Partition, cursor, m.Offset+1); err != nil {
+		step = time.Now()
+		err = r.advanceWatermark(ctx, gen, p.Partition, cursor, m.Offset+1)
+		r.Engine.Metrics.meteringStage("settlement_watermark", meteringEventKind(e), step, err)
+		if err != nil {
 			return err
 		}
-		if err = r.commitPositions(c, int(generation.ID), generation.MemberID, []kafka.OffsetCommit{{Partition: p.Partition, Offset: m.Offset + 1}}); err != nil {
-			// 重平衡仅结束本代消费；新 owner 从已提交位置幂等补结算。
-			if errors.Is(err, kafka.RebalanceInProgress) || errors.Is(err, kafka.IllegalGeneration) || errors.Is(err, kafka.UnknownMemberId) {
-				return nil
-			}
-			return err
+		return nil
+	}, func(ctx context.Context, next int64, count int) error {
+		err := r.commitPositions(ctx, int(generation.ID), generation.MemberID, []kafka.OffsetCommit{{Partition: p.Partition, Offset: next}})
+		if err == nil {
+			r.Engine.Metrics.MeteringCommitBatch.Observe(float64(count))
 		}
-		cursor = m.Offset + 1
+		return err
+	})
+	// 重平衡仅结束本代消费；新 owner 从已提交位置幂等补结算。
+	if errors.Is(err, kafka.RebalanceInProgress) || errors.Is(err, kafka.IllegalGeneration) || errors.Is(err, kafka.UnknownMemberId) {
+		return nil
 	}
+	return err
 }

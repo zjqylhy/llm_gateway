@@ -965,6 +965,76 @@
           "expr": "increase(gateway_metering_audit_failures_total[5m])"
         }
       ]
+    },
+    {
+      "id": 33,
+      "type": "timeseries",
+      "title": "计量阶段 P95（含失败）",
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 77,
+        "w": 12,
+        "h": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, stage, kind, result) (rate(gateway_metering_stage_seconds_bucket[5m])))",
+          "legendFormat": "{{stage}} / {{kind}} / {{result}}"
+        }
+      ]
+    },
+    {
+      "id": 34,
+      "type": "timeseries",
+      "title": "计量拒绝原因",
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 77,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (reason) (rate(gateway_metering_rejections_total[5m]))",
+          "legendFormat": "{{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 35,
+      "type": "timeseries",
+      "title": "消费位置平均提交批次",
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 84,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(gateway_metering_commit_batch_records_sum[5m])) / clamp_min(sum(rate(gateway_metering_commit_batch_records_count[5m])), 0.001)"
+        }
+      ]
     }
   ],
   "uid": "llm-gateway",

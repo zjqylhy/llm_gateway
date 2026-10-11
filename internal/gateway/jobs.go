@@ -27,7 +27,7 @@ func (s *SQLStore) SaveAlert(c context.Context, a Alert) error {
 	if e != nil {
 		return e
 	}
-	_, e = s.DB.ExecContext(c, `INSERT INTO gw_alerts(id,app_id,active,at,payload) VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE active=?,at=?,payload=?`, a.ID, a.AppID, a.Active, a.At, b, a.Active, a.At, b)
+	_, e = s.DB.ExecContext(c, `INSERT INTO gw_alerts(id,app_id,active,at,payload) VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE active=?,at=?,payload=?`, a.ID, a.AppID, a.Active, a.At, string(b), a.Active, a.At, string(b))
 	return e
 }
 func (s *SQLStore) Alerts(c context.Context, app string) ([]Alert, error) {

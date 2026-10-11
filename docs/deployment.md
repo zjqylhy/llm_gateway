@@ -115,6 +115,14 @@ TLS 使用系统信任 CA：MySQL DSN 使用 `tls=true`，Redis 使用 `rediss:/
 
 ## SSE 和更新
 
+### 计量性能参数
+
+`GW_METERING_COMMIT_BATCH_SIZE` 默认 32，范围 1～256；`GW_METERING_COMMIT_INTERVAL_MS` 默认 100，范围 10～1000。每分区仅合并提交连续完成 SQL 入账、Redis 结算、outbox 交付与结算水位的消费位置。空闲分区到期提交尾部，正常停机尽力提交，单次提交期限 1 秒；慢处理步骤可能超过时间阈值，不能据此承诺绝对 100ms 提交。强杀或重平衡后允许幂等重放，设置批次 1 可恢复逐条提交，不改变 Redis 的逐事件结算。
+
+MySQL DSN 显式包含 `charset=utf8mb4`，且没有显式 `interpolateParams` 设置、没有其他字符集的 collation 时，默认启用驱动参数转义，减少临时 prepare/close 往返。所有 JSON 列以字符串参数保存，BLOB 仍为字节载荷；默认连接超时不变。需要回退时在 DSN 设置 `interpolateParams=false`。未明确 utf8mb4 的连接保留预处理路径，本次不会修改现有 `.env` 或重启容器。
+
+本版本无需新增表或清空历史数据。生产升级仍须先确认当前计量状态，在预发验证配置、故障恢复及完整核验期间的影响；周期屏障核验及其中断后的恢复流程保持现有规则。
+
 Ingress 必须关闭响应缓冲，读取/发送超时至少 130 秒，负载均衡器也应配置相同或更长空闲超时。应用流式期限 120 秒，计量保存/补偿另有最长 9 秒操作预算。收到 SIGTERM 后停止监听并等待最多 150 秒；Compose/Kubernetes grace 为 155 秒，留出计量和请求汇总收尾时间。先摘流量再终止，滚动更新保持可用副本。
 
 ## outbox 版本升级

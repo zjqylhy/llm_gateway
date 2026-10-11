@@ -19,6 +19,9 @@ type Metrics struct {
 	MeteringAuditFailures prometheus.Counter
 	MeteringRotation      prometheus.Gauge
 	MeteringOutboxBytes   prometheus.Gauge
+	MeteringStages        *prometheus.HistogramVec
+	MeteringRejections    *prometheus.CounterVec
+	MeteringCommitBatch   prometheus.Histogram
 	Registry              *prometheus.Registry
 	Requests              *prometheus.CounterVec
 	Attempts              *prometheus.CounterVec
@@ -37,6 +40,10 @@ type Metrics struct {
 
 func NewMetrics() *Metrics {
 	m := &Metrics{Registry: prometheus.NewRegistry()}
+	m.MeteringStages = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "gateway_metering_stage_seconds", Help: "Metering operation duration including failed operations", Buckets: []float64{.001, .005, .01, .03, .05, .1, .25, .5, 1, 2, 5}}, []string{"stage", "kind", "result"})
+	m.MeteringRejections = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_metering_rejections_total", Help: "Metering admission or started persistence rejection reasons"}, []string{"reason"})
+	m.MeteringCommitBatch = prometheus.NewHistogram(prometheus.HistogramOpts{Name: "gateway_metering_commit_batch_records", Help: "Contiguously settled records included in successful offset commits", Buckets: []float64{1, 2, 4, 8, 16, 32, 64, 128, 256}})
+	m.Registry.MustRegister(m.MeteringStages, m.MeteringRejections, m.MeteringCommitBatch)
 	m.MeteringLag = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_metering_lag_records", Help: "Captured Kafka end minus committed positions"})
 	m.MeteringPermit = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_metering_permit_expires_seconds", Help: "Last successful permit expiry, zero on unavailable evidence"})
 	m.MeteringUnchecked = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_metering_unchecked_apps", Help: "Applications without a recent barrier audit"})
@@ -63,6 +70,34 @@ func NewMetrics() *Metrics {
 	m.Overload = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_overload_rejections_total", Help: "Requests rejected before processing because instance concurrency is full"}, []string{"role"})
 	m.Registry.MustRegister(m.Requests, m.Attempts, m.Tokens, m.Cost, m.Latency, m.Upstream, m.First, m.CacheOps, m.Events, m.Active, m.Config, m.Overhead, m.Overload, prometheus.NewGoCollector(), prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
 	return m
+}
+
+// 诊断标签只使用固定阶段、事件种类和结果，避免应用或事件数量扩大指标基数。
+func (m *Metrics) meteringStage(stage, kind string, start time.Time, err error) {
+	if m == nil {
+		return
+	}
+	if kind != "started" && kind != "completed" && kind != "request" {
+		kind = "other"
+	}
+	result := "ok"
+	if err != nil {
+		result = "error"
+	}
+	m.MeteringStages.WithLabelValues(stage, kind, result).Observe(time.Since(start).Seconds())
+}
+
+func meteringEventKind(e Event) string {
+	if e.Purpose == "request" {
+		return "request"
+	}
+	return e.Kind
+}
+
+func (m *Metrics) meteringRejected(reason string) {
+	if m != nil {
+		m.MeteringRejections.WithLabelValues(reason).Inc()
+	}
 }
 func (m *Metrics) Handler() http.Handler {
 	h := promhttp.HandlerFor(m.Registry, promhttp.HandlerOpts{MaxRequestsInFlight: 2, Timeout: 5 * time.Second})

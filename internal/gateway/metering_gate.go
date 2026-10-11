@@ -54,7 +54,15 @@ func (r *Runtime) readPermit(c context.Context) (meteringPermit, string, error) 
 }
 
 // 登记早于 Redis 预占，应用屏障与登记共用同一行锁，涵盖尚未写 started 的准备阶段。
-func (r *Runtime) beginAdmission(c context.Context, app, attempt string, required, appLimit int64) (context.Context, func(), error) {
+func (r *Runtime) beginAdmission(c context.Context, app, attempt string, required, appLimit int64) (admitted context.Context, finish func(), result error) {
+	start := time.Now()
+	reason := "admission_slots"
+	defer func() {
+		r.Engine.Metrics.meteringStage("admission", "started", start, result)
+		if result != nil {
+			r.Engine.Metrics.meteringRejected(reason)
+		}
+	}()
 	slot, endSlot := context.WithTimeout(c, time.Second)
 	defer endSlot()
 	select {
@@ -68,11 +76,15 @@ func (r *Runtime) beginAdmission(c context.Context, app, attempt string, require
 			<-r.admissionSlots
 		}
 	}()
+	reason = "permit"
+	step := time.Now()
 	p, raw, err := r.readPermit(c)
+	r.Engine.Metrics.meteringStage("permit_read", "started", step, err)
 	if err != nil {
 		return c, nil, err
 	}
 	s := r.Engine.Store.(*SQLStore)
+	reason = "admission_sql"
 	ctx, done := context.WithTimeout(c, time.Second)
 	defer done()
 	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
@@ -85,12 +97,14 @@ func (r *Runtime) beginAdmission(c context.Context, app, attempt string, require
 		return c, nil, err
 	}
 	if state != "healthy" || gen != p.Generation {
+		reason = "global_state"
 		return c, nil, ErrUnavailable
 	}
 	if err = tx.QueryRowContext(ctx, `SELECT state,generation FROM gw_metering_apps WHERE app_id=? FOR SHARE`, app).Scan(&state, &appGen); err != nil {
 		return c, nil, ErrUnavailable
 	}
 	if state != "healthy" {
+		reason = "application_barrier"
 		return c, nil, ErrUnavailable
 	}
 	// 只做只读预检来减少已满容量下的预占/取消洪峰，最终额度仍由 outbox 原子事务决定。
@@ -99,6 +113,7 @@ func (r *Runtime) beginAdmission(c context.Context, app, attempt string, require
 		return c, nil, err
 	}
 	if required > appLimit-appUsed || required > r.Engine.Bus.(*DurableBus).GlobalBytes-globalUsed {
+		reason = "outbox_capacity"
 		return c, nil, ErrUnavailable
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO gw_metering_admissions(attempt_id,app_id,at) VALUES(?,?,UTC_TIMESTAMP(6))`, attempt, app); err != nil {

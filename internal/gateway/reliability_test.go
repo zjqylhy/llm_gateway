@@ -160,6 +160,13 @@ func (u *reliabilityUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		}
 		return
 	}
+	if text == "delayed-probe" {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
 	r.Body = io.NopCloser(bytes.NewReader(raw))
 	MockProvider(w, r)
 }
@@ -313,7 +320,7 @@ func TestReliabilityIntegration(t *testing.T) {
 		model := Model{ID: "primary", ProviderID: "primary", Upstream: "mock-primary", Version: "v1", Capabilities: []string{"chat", "stream"}, Context: 16000, MaxOutput: 128, InputMicro: 1000000, OutputMicro: 2000000, PriceVersion: "acceptance-v1", Currency: "CNY", FXPPM: 1000000}
 		c.Models[model.ID] = model
 		c.Routes["chat"] = Route{Alias: "chat", Kind: "chat", Strategy: "priority", Candidates: []Candidate{{"primary", 100}}}
-		for _, id := range []string{"token", "budget", "load", "redis-fault", "worker-fault", "gateway-fault"} {
+		for _, id := range []string{"token", "budget", "load", "load-a", "load-b", "redis-fault", "worker-fault", "gateway-fault"} {
 			a := App{ID: id, Active: true, Owner: "admin", Models: []string{"chat"}, BudgetAction: "warn"}
 			if id == "token" {
 				a.MonthlyTokens = 5 * (tokenRequest.InputEstimate + tokenRequest.MaxOutput)
@@ -569,17 +576,58 @@ func TestReliabilityIntegration(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, "pressure.json"), b, 0600); err != nil {
 			t.Fatal(err)
 		}
-		for i, url := range gateways {
+		for i, url := range append(append([]string{}, gateways...), workerURL) {
 			res, err := client.Get(url + "/metrics")
 			if err != nil {
 				t.Fatal(err)
 			}
 			b, _ := io.ReadAll(res.Body)
 			_ = res.Body.Close()
-			if err := os.WriteFile(filepath.Join(dir, "gateway-"+strconv.Itoa(i+1)+"-metrics.txt"), b, 0600); err != nil {
+			name := "gateway-" + strconv.Itoa(i+1) + "-metrics.txt"
+			if i == len(gateways) {
+				name = "worker-metrics.txt"
+			}
+			if err := os.WriteFile(filepath.Join(dir, name), b, 0600); err != nil {
 				t.Fatal(err)
 			}
 		}
+	})
+	runCase("fixed_arrival_multi_application_load", func(t *testing.T) {
+		if os.Getenv("GW_RELIABILITY_SKIP_PRESSURE") == "1" {
+			t.Skip("fault-only iteration; fixed-arrival profiles skipped")
+		}
+		profiles := []fixedArrivalSample{}
+		accepted := 0
+		for _, profile := range []struct {
+			rate         int
+			stream, slow bool
+		}{{2, false, false}, {5, false, false}, {10, false, false}, {2, true, false}, {2, false, true}} {
+			text := "fixed-arrival probe"
+			if profile.slow {
+				text = "delayed-probe"
+			}
+			sample := runFixedArrival(t, ctx, profile.rate, 20*time.Second, profile.stream, profile.slow, func(i int) reliabilityResult {
+				app := "load-a"
+				if i%2 == 1 {
+					app = "load-b"
+				}
+				return call(gateways[i%2], app, text, profile.stream)
+			})
+			accepted += sample.Accepted
+			if sample.Failed != 0 || sample.Accepted == 0 {
+				t.Fatalf("fixed-arrival protocol failed: %+v", sample)
+			}
+			start := time.Now()
+			drain()
+			sample.DrainSeconds = time.Since(start).Seconds()
+			left, right := reconcile("load-a"), reconcile("load-b")
+			if left.Tokens+right.Tokens != int64(accepted)*32 || left.Micro+right.Micro != int64(accepted)*52 || left.ReservedTokens+right.ReservedTokens != 0 || left.ReservedMicro+right.ReservedMicro != 0 {
+				t.Fatal("fixed-arrival ledger/quota mismatch", left, right, accepted)
+			}
+			profiles = append(profiles, sample)
+			t.Logf("fixed-arrival: %+v", sample)
+		}
+		writeFixedArrivalSamples(t, dir, profiles)
 	})
 	runCase("killed_worker_replays_durable_backlog", func(t *testing.T) {
 		drain()

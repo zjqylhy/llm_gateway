@@ -48,6 +48,7 @@ type DurableBus struct {
 	Transport      Bus
 	GlobalBytes    int64
 	AppBytes       int64
+	Metrics        *Metrics
 	stopped        atomic.Bool
 	OnFreeze       func(context.Context)
 	CheckFrozen    func(context.Context) error
@@ -129,13 +130,25 @@ func (b *DurableBus) Publish(c context.Context, e Event) error {
 		return ErrUnavailable
 	}
 	save, done := context.WithTimeout(c, 2*time.Second)
+	start := time.Now()
 	err := b.save(save, e)
+	b.Metrics.meteringStage("outbox_save", meteringEventKind(e), start, err)
 	done()
 	if errors.Is(err, ErrEventConflict) {
 		b.freeze(c, "event_conflict")
 		return ErrUnavailable
 	}
 	if err != nil && e.Kind == "started" {
+		reason := "outbox_sql"
+		switch {
+		case errors.Is(err, ErrOutboxCapacity):
+			reason = "outbox_capacity"
+		case errors.Is(err, errOutboxBusy):
+			reason = "outbox_slots"
+		case errors.Is(err, errMeteringBarrier):
+			reason = "application_barrier"
+		}
+		b.Metrics.meteringRejected(reason)
 		if c.Err() == nil && !errors.Is(err, ErrOutboxCapacity) && !errors.Is(err, errOutboxBusy) && !errors.Is(err, errMeteringBarrier) {
 			slog.Warn("metering started persistence failed", "error", err)
 			b.freeze(c, "outbox_unavailable")
@@ -144,7 +157,9 @@ func (b *DurableBus) Publish(c context.Context, e Event) error {
 	}
 	// completed 的备用发布有独立预算，SQL 失败不能短路健康的 Kafka。
 	send, cancel := context.WithTimeout(c, 3*time.Second)
+	start = time.Now()
 	pubErr := b.Transport.Publish(send, e)
+	b.Metrics.meteringStage("kafka_ack", meteringEventKind(e), start, pubErr)
 	cancel()
 	if c.Err() == nil && e.Purpose != "request" && (pubErr != nil || err != nil && !errors.Is(err, ErrOutboxCapacity) && !errors.Is(err, errOutboxBusy)) {
 		slog.Warn("metering delivery failed", "kind", e.Kind, "save_error", err, "publish_error", pubErr)
@@ -156,7 +171,9 @@ func (b *DurableBus) Publish(c context.Context, e Event) error {
 	mark, finish := context.WithTimeout(context.WithoutCancel(c), time.Second)
 	defer finish()
 	// 状态更新失败不否定已得到的 Kafka ACK，消费者仍能证明事件已交付。
-	_ = b.Store.PublishedOutbox(mark, e, 0, true)
+	start = time.Now()
+	markErr := b.Store.PublishedOutbox(mark, e, 0, true)
+	b.Metrics.meteringStage("outbox_mark", meteringEventKind(e), start, markErr)
 	return nil
 }
 

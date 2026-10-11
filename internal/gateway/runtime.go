@@ -30,15 +30,17 @@ import (
 )
 
 type Runtime struct {
-	admissionSlots chan struct{}
-	Engine         *Engine
-	Admin          *Admin
-	readerConfig   kafka.ReaderConfig
-	KafkaClient    *kafka.Client
-	Redis          *redis.Client
-	MaxConnections int
-	closers        []func()
-	TraceShutdown  func(context.Context) error
+	admissionSlots  chan struct{}
+	commitBatchSize int
+	commitInterval  time.Duration
+	Engine          *Engine
+	Admin           *Admin
+	readerConfig    kafka.ReaderConfig
+	KafkaClient     *kafka.Client
+	Redis           *redis.Client
+	MaxConnections  int
+	closers         []func()
+	TraceShutdown   func(context.Context) error
 }
 
 func env(k, fallback string) string {
@@ -49,6 +51,10 @@ func env(k, fallback string) string {
 }
 func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 	out = &Runtime{}
+	out.commitBatchSize, out.commitInterval, err = meteringCommitOptions()
+	if err != nil {
+		return nil, err
+	}
 	meteringConcurrency, err := concurrencyEnv("GW_MAX_METERING_INFLIGHT", 8)
 	if err != nil {
 		return nil, err
@@ -186,7 +192,8 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 		if be != nil {
 			return nil, be
 		}
-		e.Bus = &DurableBus{Store: sqlStore, Transport: &KafkaBus{Writer: writer, Store: sqlStore}, GlobalBytes: globalBytes, AppBytes: appBytes, OnFreeze: func(c context.Context) {
+		sqlStore.Metrics = e.Metrics
+		e.Bus = &DurableBus{Store: sqlStore, Transport: &KafkaBus{Writer: writer, Store: sqlStore}, GlobalBytes: globalBytes, AppBytes: appBytes, Metrics: e.Metrics, OnFreeze: func(c context.Context) {
 			_ = rc.Set(c, "gw:metering:frozen", "delivery_failure", 0).Err()
 			out.freezeEtcd(c)
 		}}

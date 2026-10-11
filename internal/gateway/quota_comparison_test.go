@@ -67,13 +67,13 @@ func comparisonApply(ctx context.Context, tx *sql.Tx, e Event) error {
 	if err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, "INSERT IGNORE INTO gw_events(id,attempt_id,revision,payload,at) VALUES(?,?,?,?,?)", e.ID, e.AttemptID, e.Revision, b, e.At); err != nil {
+	if _, err = tx.ExecContext(ctx, "INSERT IGNORE INTO gw_events(id,attempt_id,revision,payload,at) VALUES(?,?,?,?,?)", e.ID, e.AttemptID, e.Revision, string(b), e.At); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, "INSERT IGNORE INTO gw_attempts(attempt_id,request_id,app_id,department,model_id,status,purpose,revision,tokens,cost_micro,at,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", e.AttemptID, e.RequestID, e.AppID, e.Department, e.Model.ID, e.Status, e.Purpose, e.Revision, e.Usage.Total, e.CostMicro, e.At, b); err != nil {
+	if _, err = tx.ExecContext(ctx, "INSERT IGNORE INTO gw_attempts(attempt_id,request_id,app_id,department,model_id,status,purpose,revision,tokens,cost_micro,at,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", e.AttemptID, e.RequestID, e.AppID, e.Department, e.Model.ID, e.Status, e.Purpose, e.Revision, e.Usage.Total, e.CostMicro, e.At, string(b)); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, "UPDATE gw_attempts SET status=?,revision=?,tokens=?,cost_micro=?,payload=? WHERE attempt_id=? AND revision<?", e.Status, e.Revision, e.Usage.Total, e.CostMicro, b, e.AttemptID, e.Revision)
+	_, err = tx.ExecContext(ctx, "UPDATE gw_attempts SET status=?,revision=?,tokens=?,cost_micro=?,payload=? WHERE attempt_id=? AND revision<?", e.Status, e.Revision, e.Usage.Total, e.CostMicro, string(b), e.AttemptID, e.Revision)
 	return err
 }
 

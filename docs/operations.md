@@ -118,4 +118,8 @@ Compose 的 Docker 日志轮转为每文件 10MiB、最多 3 份。云部署须�
 
 剩余容量边界：公网反向代理/Ingress 接入层、监控标签随配置长期变更的累计数量、数据库历史元数据归档及云依赖的资源配额仍需专项治理。本轮容量限制不能证明所有压力场景下无 OOM；需在云预发做持续压力和最大报文测试，并验证告警接收与扩容流程。
 
+计量性能诊断使用 `gateway_metering_stage_seconds{stage,kind,result}`，包含失败操作；`kind=request` 表示请求汇总，started/completed 表示付费 attempt，other 表示共享锁或消费位置操作。容量锁阶段包含锁取得和查询执行时间，不能将其当作纯锁等待或事务全部持锁时间。新增标签没有应用和 attempt 标识。
+
+`gateway_metering_rejections_total{reason}` 区分在途槽位、许可、SQL 登记、全局/应用状态及 outbox 容量/保存槽位拒绝；同一次调用可能进入多个阶段，不将此指标直接当作去重 HTTP 请求数。`gateway_metering_commit_batch_records` 统计成功提交包含的连续已结算记录数；它不是付费请求数量，也不改变至少一次重放语义。Grafana 新增阶段 P95、拒绝原因和平均提交批次面板。
+
 99.95% 是持续 SLO，需要真实可用性采样、错误预算、基础设施 HA、故障演练和运维响应；当前本地测试不能证明该指标。
