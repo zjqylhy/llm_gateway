@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRefreshQueue, waitForAll } from "./refresh";
+import { TrafficPanel } from "./TrafficPanel";
 import "./style.css";
 
 type App = {
@@ -254,6 +255,7 @@ function Console({
   onLogout: () => void;
 }) {
   const [tab, setTab] = useState("dashboard");
+  const [trafficRevision, setTrafficRevision] = useState(0);
   const [apps, setApps] = useState<App[]>([]);
   const [cfg, setCfg] = useState<Config | null>(null);
   const [appID, setAppID] = useState("");
@@ -375,6 +377,7 @@ function Console({
     return q.toString();
   }
   async function load() {
+    setTrafficRevision((value) => value + 1);
     return refreshQueue.current(loadData);
   }
   async function loadData() {
@@ -628,6 +631,11 @@ function Console({
         )}
         {tab === "dashboard" && (
           <>
+            <TrafficPanel
+              appID={appID}
+              revision={trafficRevision}
+              requiresApp={session.role === "developer"}
+            />
             <div className="kpis">
               {[
                 ["请求样本", number(metrics.requests)],

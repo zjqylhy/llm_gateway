@@ -67,6 +67,7 @@ func (e *Engine) Refresh(c context.Context) error {
 	e.state.Store(&snapshot{cfg, keys})
 	e.refreshed.Store(time.Now().UnixMilli())
 	e.Metrics.Config.Set(float64(cfg.Version))
+	e.Metrics.refreshApps(cfg)
 	return e.Store.Heartbeat(c, e.InstanceID, cfg.Version)
 }
 func (e *Engine) RunRefresh(c context.Context) {
@@ -100,6 +101,7 @@ func (e *Engine) authenticate(r *http.Request) (App, Config, bool) {
 	return a, s.cfg, ok && a.Active
 }
 func APIError(w http.ResponseWriter, status int, code, message string) {
+	observeCallError(w, code)
 	w.Header().Set("Content-Type", "application/json")
 	if status == 429 {
 		w.Header().Set("Retry-After", "1")
@@ -148,7 +150,7 @@ func (e *Engine) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/embeddings", func(w http.ResponseWriter, r *http.Request) { e.handle(w, r, "embedding") })
 	mux.HandleFunc("POST /v1/rerank", func(w http.ResponseWriter, r *http.Request) { e.handle(w, r, "rerank") })
 	mux.HandleFunc("POST /v1/reranks", func(w http.ResponseWriter, r *http.Request) { e.handle(w, r, "rerank") })
-	return protectedHandler(mux, &e.admission, e.MaxConcurrent, defaultGatewayConcurrency, "/v1/", "gateway", e.Metrics)
+	return e.observeCalls(protectedHandler(mux, &e.admission, e.MaxConcurrent, defaultGatewayConcurrency, "/v1/", "gateway", e.Metrics))
 }
 func (e *Engine) handle(w http.ResponseWriter, r *http.Request, kind string) {
 	start := time.Now()
@@ -207,7 +209,12 @@ func (e *Engine) handle(w http.ResponseWriter, r *http.Request, kind string) {
 		}
 	}()
 	if err = e.Guard.Rate(ctx, "app:"+a.ID, a.QPS, time.Second); err != nil {
-		finalStatus = rejectGuard(w, err)
+		if errors.Is(err, ErrLimit) {
+			finalStatus = "rate_limited"
+			APIError(w, 429, "app_qps_exceeded", "application QPS limit exceeded")
+		} else {
+			finalStatus = rejectGuard(w, err)
+		}
 		return
 	}
 	sensitive, blocked := Safety(cfg.Rules, req.SafetyText)
@@ -747,6 +754,7 @@ func (e *Engine) attempt(ctx context.Context, cfg Config, a App, m Model, r Requ
 	}
 	if err != nil {
 		if committed {
+			observeCallError(w, "stream_interrupted")
 			_, _ = fmt.Fprintf(w, "data: {\"error\":{\"code\":\"stream_interrupted\",\"message\":\"upstream stream interrupted\"}}\n\n")
 			_ = http.NewResponseController(w).Flush()
 		}
@@ -759,6 +767,7 @@ func (e *Engine) attempt(ctx context.Context, cfg Config, a App, m Model, r Requ
 	// 成功终止标记之前必须确认计量事件已持久化。
 	complete()
 	if err != nil {
+		observeCallError(w, "metering_unavailable")
 		_, _ = fmt.Fprint(w, "data: {\"error\":{\"code\":\"metering_unavailable\",\"message\":\"completion publication not acknowledged; model usage may have occurred\"}}\n\n")
 		_ = http.NewResponseController(w).Flush()
 		return

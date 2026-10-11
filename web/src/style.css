@@ -562,3 +562,79 @@ footer {
   font-size: 12px;
   z-index: 10;
 }
+.traffic-panel {
+  margin-bottom: 24px;
+}
+.traffic-filter {
+  padding: 0;
+  margin: 20px 0;
+}
+.traffic-filter label {
+  display: grid;
+  gap: 8px;
+  font-size: 13px;
+  color: #526785;
+}
+.traffic-app {
+  border-top: 1px solid #e4eaf3;
+  padding: 18px 0;
+}
+.traffic-app h3 small {
+  margin-left: 8px;
+  color: #71829b;
+  font-size: 12px;
+  font-weight: 400;
+}
+.traffic-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin: 16px 0;
+}
+.traffic-stats span {
+  display: block;
+  color: #526785;
+  font-size: 12px;
+}
+.traffic-stats strong {
+  display: block;
+  margin-top: 8px;
+  color: #193255;
+  font-size: 23px;
+}
+.traffic-chart {
+  width: 100%;
+  min-height: 160px;
+  overflow: visible;
+}
+.traffic-chart text {
+  fill: #71829b;
+  font-size: 11px;
+}
+.traffic-point:hover {
+  opacity: 1;
+}
+.traffic-legend {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 20px;
+  font-size: 12px;
+  color: #526785;
+  margin: 8px 0 18px;
+}
+.traffic-legend i {
+  display: inline-block;
+  width: 12px;
+  height: 3px;
+  vertical-align: middle;
+}
+.traffic-note {
+  font-size: 12px;
+  line-height: 1.8;
+}
+@media (max-width: 1100px) {
+  .traffic-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

@@ -8,6 +8,8 @@
 
 Dockerfile 使用多阶段 Go/Node 构建，最终镜像包含所有命令和控制台静态资源，以非 root 用户运行。镜像没有 shell，不在镜像中写入凭据。修改配置后须重启应用进程；业务配置由 etcd 动态同步。
 
+应用调用监控需在管理端配置 `GW_PROMETHEUS_URL`，例如完整 Compose 栈的 `http://prometheus:9090`。Compose 默认连接栈内 Prometheus；Kubernetes 和轻量部署需显式设置私有监控服务地址。按随项目提供的抓取配置，job 使用 `gateway`/`admin`，抓取所有网关实例的 `/metrics`；仅消费计量的 worker 不计入调用 QPS。监控依赖新增的 `gateway_calls_total` 和 `gateway_app_qps_limit`，历史采样需覆盖欲查看区间。控制台限定最近 24 小时内选择，按应用权限查询；未配置、查询失败或缺失采样显示无数据。详见 [监控规格](app-traffic-spec.md)。
+
 构建若在访问 `auth.docker.io` 获取匿名令牌时超时，应检查主机 DNS 和 Docker Desktop 的代理链路。可在本地 `.env` 设置以下构建参数，选择 [Docker 官方 AWS 公共仓库](https://gallery.ecr.aws/docker/)中的同版本基础镜像，然后重新执行 `docker compose ... build gateway`：
 
 ```dotenv

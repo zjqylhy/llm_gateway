@@ -33,6 +33,7 @@ type Admin struct {
 	Sessions      SessionStore
 	MaxConcurrent int
 	admission     admission
+	Prometheus    *TrafficPrometheus
 }
 
 func NewAdmin(e *Engine, secure bool, origin string) *Admin {
@@ -101,6 +102,7 @@ func (a *Admin) Handler() http.Handler {
 	mux.HandleFunc("GET /admin/payload/{id}", a.payload)
 	mux.HandleFunc("GET /admin/cost-report", a.cost)
 	mux.HandleFunc("GET /admin/metrics", a.metrics)
+	mux.HandleFunc("GET /admin/app-traffic", a.appTraffic)
 	mux.HandleFunc("GET /admin/audit", a.audit)
 	mux.HandleFunc("GET /admin/metering", a.meteringStatus)
 	mux.HandleFunc("GET /admin/instances", a.instances)
