@@ -40,8 +40,10 @@ type trafficPoint struct {
 	Value float64   `json:"value"`
 }
 type trafficSeries struct {
-	Kind   string         `json:"kind"`
-	Points []trafficPoint `json:"points"`
+	Kind       string         `json:"kind"`
+	HTTPStatus string         `json:"http_status,omitempty"`
+	ErrorCode  string         `json:"error_code,omitempty"`
+	Points     []trafficPoint `json:"points"`
 }
 type trafficFailure struct {
 	HTTPStatus string  `json:"http_status"`
@@ -115,11 +117,17 @@ func trafficQueries(ids []string, from, to time.Time) (string, string) {
 	limit := kind("max by(app) (gateway_app_qps_limit{"+selector+"})", "limit")
 	success := "gateway_calls_total{" + selector + `,outcome="success"}`
 	failure := "gateway_calls_total{" + selector + `,outcome="error"}`
-	// dev 模式两端口共享注册表；source 先去重再汇总，避免重复抓取翻倍。
-	rangeQuery := kind("sum by(app) (max by(app,source) (rate("+success+"[1m])))", "success") + " or " + kind("sum by(app) (max by(app,source,http_status,error_code) (rate("+failure+"[1m])))", "failure") + " or " + limit
 	window := fmt.Sprintf("%dms", to.Sub(from).Milliseconds())
 	seconds := strconv.FormatFloat(to.Sub(from).Seconds(), 'f', 3, 64)
-	summaryQuery := kind("sum by(app) (max by(app,source) (increase("+success+"["+window+"]))) / "+seconds, "success") + " or " + kind("(sum by(app,http_status,error_code) (max by(app,source,http_status,error_code) (increase("+failure+"["+window+"]))) / "+seconds+") > 0", "failure") + " or " + limit
+	failureSum := func(expr string) string {
+		return "sum by(app,http_status,error_code) (max by(app,source,http_status,error_code) (" + expr + "))"
+	}
+	// dev 模式共享注册表，先按 source 去重；失败趋势保留错误码维度。
+	// 固定区间结束时间筛选发生过的错误，保留这些曲线的零值和采样缺口。
+	activeFailures := failureSum("increase("+failure+"["+window+"] @ end())") + " > 0"
+	failureRange := failureSum("rate("+failure+"[1m])") + " and on(app,http_status,error_code) (" + activeFailures + ")"
+	rangeQuery := kind("sum by(app) (max by(app,source) (rate("+success+"[1m])))", "success") + " or " + kind(failureRange, "failure") + " or " + limit
+	summaryQuery := kind("sum by(app) (max by(app,source) (increase("+success+"["+window+"]))) / "+seconds, "success") + " or " + kind("("+failureSum("increase("+failure+"["+window+"])")+" / "+seconds+") > 0", "failure") + " or " + limit
 	return rangeQuery, summaryQuery
 }
 
@@ -192,8 +200,13 @@ func mergeTraffic(result *trafficResponse, series []prometheusSeries, summary bo
 			return errors.New("unexpected Prometheus application or series")
 		}
 		key := app.ID + ":" + kind
-		if summary && kind == "failure" {
-			key += ":" + row.Metric["http_status"] + ":" + row.Metric["error_code"]
+		if kind == "failure" {
+			code, status := row.Metric["error_code"], row.Metric["http_status"]
+			expectedStatus, known := callErrorStatuses[code]
+			if !known || (status != strconv.Itoa(expectedStatus) && !(code == "metering_unavailable" && status == "200")) {
+				return errors.New("unexpected error labels")
+			}
+			key += ":" + status + ":" + code
 		}
 		if seen[key] {
 			return errors.New("duplicate aggregated Prometheus series")
@@ -214,16 +227,13 @@ func mergeTraffic(result *trafficResponse, series []prometheusSeries, summary bo
 				app.LimitAtEnd = &point.Value
 			case "failure":
 				code, status := row.Metric["error_code"], row.Metric["http_status"]
-				if _, known := callErrorStatuses[code]; !known || !Contains([]string{"200", "400", "401", "403", "404", "413", "429", "500", "503"}, status) {
-					return errors.New("unexpected error labels")
-				}
 				app.Failures = append(app.Failures, trafficFailure{HTTPStatus: status, ErrorCode: code, QPS: point.Value})
 			}
 		} else {
 			if len(row.Values) > 1441 {
 				return errors.New("too many Prometheus points")
 			}
-			line := trafficSeries{Kind: kind, Points: []trafficPoint{}}
+			line := trafficSeries{Kind: kind, HTTPStatus: row.Metric["http_status"], ErrorCode: row.Metric["error_code"], Points: []trafficPoint{}}
 			for _, raw := range row.Values {
 				point, err := parseTrafficPoint(raw)
 				if err != nil {

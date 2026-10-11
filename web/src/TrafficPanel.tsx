@@ -1,6 +1,10 @@
 import React, { useEffect, useState } from "react";
 import {
   fetchTraffic,
+  failureTrafficSeries,
+  trafficSeriesKey,
+  trafficSeriesTitle,
+  type TrafficSeries,
   qpsText,
   trafficSegments,
   trafficWindowError,
@@ -8,26 +12,65 @@ import {
   type TrafficData,
 } from "./traffic";
 
-const legend = {
-  success: { title: "成功 QPS", color: "#2363db" },
-  failure: { title: "失败 QPS", color: "#d13c54" },
-  limit: { title: "历史上限", color: "#ca8c20" },
-};
+const failureColors = [
+  "#d13c54",
+  "#7c3aed",
+  "#0891b2",
+  "#c05621",
+  "#2563eb",
+  "#0f766e",
+  "#a21caf",
+  "#4d7c0f",
+  "#b45309",
+  "#be185d",
+  "#4338ca",
+  "#047857",
+  "#0369a1",
+  "#9f1239",
+  "#6d28d9",
+  "#15803d",
+  "#b91c1c",
+  "#0e7490",
+  "#854d0e",
+];
+
+function seriesColor(series: TrafficSeries, index: number) {
+  return series.kind === "failure"
+    ? failureColors[index % failureColors.length]
+    : series.kind === "success"
+      ? "#2363db"
+      : "#ca8c20";
+}
 
 function localTime(date: Date) {
   const offset = date.getTimezoneOffset() * 60000;
   return new Date(date.getTime() - offset).toISOString().slice(0, 19);
 }
 
-function TrafficChart({ app, data }: { app: TrafficApp; data: TrafficData }) {
+function TrafficChart({
+  app,
+  data,
+  series,
+  title,
+  colors,
+}: {
+  app: TrafficApp;
+  data: TrafficData;
+  series: TrafficSeries[];
+  title: string;
+  colors?: Map<string, string>;
+}) {
+  const color = (line: TrafficSeries, index: number) =>
+    colors?.get(trafficSeriesKey(line)) ?? seriesColor(line, index);
   const from = new Date(data.from).getTime();
   const to = new Date(data.to).getTime();
-  const finitePoints = app.series.flatMap((series) =>
+  const finitePoints = series.flatMap((series) =>
     series.points.filter((point) => series.kind !== "limit" || point.value > 0),
   );
   if (!finitePoints.length)
     return <p className="muted">所选区间暂无趋势采样。</p>;
-  const max = Math.max(1, ...finitePoints.map((point) => point.value)) * 1.1;
+  const peak = Math.max(...finitePoints.map((point) => point.value));
+  const max = (peak || 1) * 1.1;
   const x = (timestamp: string) =>
     54 + ((new Date(timestamp).getTime() - from) / (to - from)) * 850;
   const y = (value: number) => 190 - (value / max) * 165;
@@ -37,7 +80,7 @@ function TrafficChart({ app, data }: { app: TrafficApp; data: TrafficData }) {
         className="traffic-chart"
         viewBox="0 0 960 230"
         role="img"
-        aria-label={`${app.name} 的成功、失败 QPS 和历史限流上限趋势`}
+        aria-label={`${app.name} 的${title}`}
       >
         {[0, 0.5, 1].map((fraction) => (
           <g key={fraction}>
@@ -53,12 +96,15 @@ function TrafficChart({ app, data }: { app: TrafficApp; data: TrafficData }) {
             </text>
           </g>
         ))}
-        {app.series.map((series) =>
+        {series.map((series, seriesIndex) =>
           trafficSegments(series, data.step_seconds).map((points, index) => (
-            <g key={`${series.kind}-${index}`}>
+            <g
+              key={`${trafficSeriesKey(series)}-${index}`}
+              data-series={trafficSeriesKey(series)}
+            >
               <polyline
                 fill="none"
-                stroke={legend[series.kind].color}
+                stroke={color(series, seriesIndex)}
                 strokeWidth={2}
                 strokeDasharray={series.kind === "limit" ? "6 4" : undefined}
                 points={points
@@ -77,13 +123,13 @@ function TrafficChart({ app, data }: { app: TrafficApp; data: TrafficData }) {
                     cx={x(point.at)}
                     cy={y(point.value)}
                     r={points.length === 1 ? 3 : 5}
-                    fill={legend[series.kind].color}
+                    fill={color(series, seriesIndex)}
                     opacity={points.length === 1 ? 1 : 0}
                     className="traffic-point"
                   >
                     <title>
                       {new Date(point.at).toLocaleString("zh-CN")} ·
-                      {legend[series.kind].title} {qpsText(point.value)}
+                      {trafficSeriesTitle(series)} {qpsText(point.value)}
                     </title>
                   </circle>
                 ))}
@@ -98,12 +144,76 @@ function TrafficChart({ app, data }: { app: TrafficApp; data: TrafficData }) {
         </text>
       </svg>
       <div className="traffic-legend">
-        {Object.entries(legend).map(([kind, item]) => (
-          <span key={kind}>
-            <i style={{ background: item.color }} /> {item.title}
+        {series.map((line, index) => (
+          <span key={trafficSeriesKey(line)}>
+            <i style={{ background: color(line, index) }} />{" "}
+            {trafficSeriesTitle(line)}
           </span>
         ))}
       </div>
+    </>
+  );
+}
+
+function TrafficTrends({ app, data }: { app: TrafficApp; data: TrafficData }) {
+  const [selected, setSelected] = useState("");
+  const failures = failureTrafficSeries(app.series);
+  const colors = new Map(
+    failures.map((line, index) => [
+      trafficSeriesKey(line),
+      seriesColor(line, index),
+    ]),
+  );
+  const selection = failures.some((line) => trafficSeriesKey(line) === selected)
+    ? selected
+    : "";
+  return (
+    <>
+      <h4>成功 QPS 与历史上限</h4>
+      <TrafficChart
+        app={app}
+        data={data}
+        series={app.series.filter((line) => line.kind !== "failure")}
+        title="成功 QPS 与历史上限趋势"
+      />
+      <div className="section-head traffic-failure-head">
+        <h4>失败 QPS · 按错误码</h4>
+        {failures.length > 0 && (
+          <label className="field">
+            失败错误码
+            <select
+              aria-label={`${app.name} 的失败错误码`}
+              value={selection}
+              onChange={(event) => setSelected(event.target.value)}
+            >
+              <option value="">全部错误码</option>
+              {failures.map((line) => (
+                <option
+                  key={trafficSeriesKey(line)}
+                  value={trafficSeriesKey(line)}
+                >
+                  {trafficSeriesTitle(line)}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+      </div>
+      {failures.length > 0 ? (
+        <TrafficChart
+          app={app}
+          data={data}
+          series={failureTrafficSeries(app.series, selection)}
+          title="按错误码拆分的失败 QPS 趋势"
+          colors={colors}
+        />
+      ) : (
+        <p className="muted">
+          {app.failure_qps === 0
+            ? "所选区间未观测到失败调用。"
+            : "所选区间暂无失败趋势采样。"}
+        </p>
+      )}
     </>
   );
 }
@@ -267,7 +377,7 @@ export function TrafficPanel({
               </strong>
             </div>
           </div>
-          <TrafficChart app={app} data={data} />
+          <TrafficTrends app={app} data={data} />
           {app.failures.length > 0 ? (
             <div className="table-wrap">
               <table>
@@ -291,8 +401,6 @@ export function TrafficPanel({
                 </tbody>
               </table>
             </div>
-          ) : app.failure_qps !== null ? (
-            <p className="muted">所选区间未观测到失败调用。</p>
           ) : null}
         </article>
       ))}

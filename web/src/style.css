@@ -638,3 +638,14 @@ footer {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+.traffic-failure-head {
+  align-items: center;
+  flex-wrap: wrap;
+}
+.traffic-failure-head select {
+  max-width: 100%;
+}
+.traffic-failure-head .field {
+  min-width: 0;
+}

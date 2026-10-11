@@ -198,12 +198,18 @@ func TestApplicationTrafficPrometheusQueriesAndRBAC(t *testing.T) {
 		}
 		point := []any{to.Unix(), "12.5"}
 		if r.URL.Path == "/api/v1/query_range" {
-			if r.Form.Get("step") != "60s" || r.Form.Get("start") != from.Format(time.RFC3339) || r.Form.Get("end") != to.Format(time.RFC3339) || !strings.Contains(query, "rate(") || !strings.Contains(query, "sum by(app)") {
+			if r.Form.Get("step") != "60s" || r.Form.Get("start") != from.Format(time.RFC3339) || r.Form.Get("end") != to.Format(time.RFC3339) || !strings.Contains(query, "rate(") || !strings.Contains(query, "sum by(app,http_status,error_code)") || !strings.Contains(query, "@ end()") || !strings.Contains(query, "and on(app,http_status,error_code)") {
 				t.Error("invalid multi-instance range query", r.Form)
 			}
 			rows := []any{}
-			for _, kind := range []string{"success", "failure", "limit"} {
+			for _, kind := range []string{"success", "limit"} {
 				rows = append(rows, map[string]any{"metric": map[string]string{"app": "app", "kind": kind}, "values": []any{[]any{from.Unix(), "2"}, point}})
+			}
+			for _, labels := range []map[string]string{
+				{"app": "app", "kind": "failure", "http_status": "400", "error_code": "invalid_request_error"},
+				{"app": "app", "kind": "failure", "http_status": "429", "error_code": "app_qps_exceeded"},
+			} {
+				rows = append(rows, map[string]any{"metric": labels, "values": []any{[]any{from.Unix(), "0"}, point}})
 			}
 			JSON(w, map[string]any{"status": "success", "data": map[string]any{"resultType": "matrix", "result": rows}})
 		} else {
@@ -213,6 +219,7 @@ func TestApplicationTrafficPrometheusQueriesAndRBAC(t *testing.T) {
 			rows := []any{
 				map[string]any{"metric": map[string]string{"app": "app", "kind": "success"}, "value": point},
 				map[string]any{"metric": map[string]string{"app": "app", "kind": "failure", "http_status": "429", "error_code": "app_qps_exceeded"}, "value": []any{to.Unix(), "0.5"}},
+				map[string]any{"metric": map[string]string{"app": "app", "kind": "failure", "http_status": "400", "error_code": "invalid_request_error"}, "value": []any{to.Unix(), "0.25"}},
 				map[string]any{"metric": map[string]string{"app": "app", "kind": "limit"}, "value": []any{to.Unix(), "100"}},
 			}
 			JSON(w, map[string]any{"status": "success", "data": map[string]any{"resultType": "vector", "result": rows}})
@@ -228,8 +235,12 @@ func TestApplicationTrafficPrometheusQueriesAndRBAC(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if w.Code != 200 || !result.Available || len(result.Apps) != 1 || *result.Apps[0].SuccessQPS != 12.5 || *result.Apps[0].FailureQPS != .5 || *result.Apps[0].LimitAtEnd != 100 || len(result.Apps[0].Failures) != 1 || len(result.Apps[0].Series) != 3 || requests.Load() != 2 {
+	if w.Code != 200 || !result.Available || len(result.Apps) != 1 || *result.Apps[0].SuccessQPS != 12.5 || *result.Apps[0].FailureQPS != .75 || *result.Apps[0].LimitAtEnd != 100 || len(result.Apps[0].Failures) != 2 || len(result.Apps[0].Series) != 4 || requests.Load() != 2 {
 		t.Fatal(w.Code, w.Body.String(), requests.Load())
+	}
+	lines := result.Apps[0].Series
+	if lines[2].HTTPStatus != "400" || lines[2].ErrorCode != "invalid_request_error" || lines[3].HTTPStatus != "429" || lines[3].ErrorCode != "app_qps_exceeded" || lines[2].Points[0].Value != 0 {
+		t.Fatal("error dimensions or zero samples lost", lines)
 	}
 	for _, id := range []string{"other", "", "missing"} {
 		if w := adminCall(a, cookie, csrf, "GET", trafficTestPath(from, to, id), ""); w.Code != 403 {
@@ -304,6 +315,39 @@ func TestApplicationTrafficMissingOrFailedPrometheus(t *testing.T) {
 	for _, raw := range []string{"file:///local", "http://user:secret@prometheus:9090", "http://prometheus:9090?query=all", "bad"} {
 		if _, err := newTrafficPrometheus(raw); err == nil {
 			t.Fatal("invalid deployment URL accepted", raw)
+		}
+	}
+}
+
+func TestApplicationTrafficFailureSeriesLabels(t *testing.T) {
+	at := time.Now().UTC().Truncate(time.Second)
+	row := func(status, code string) prometheusSeries {
+		point := []json.RawMessage{json.RawMessage(fmt.Sprint(at.Unix())), json.RawMessage(`"0.1"`)}
+		return prometheusSeries{Metric: map[string]string{"app": "app", "kind": "failure", "http_status": status, "error_code": code}, Value: point, Values: [][]json.RawMessage{point}}
+	}
+	for _, summary := range []bool{false, true} {
+		for _, test := range []struct {
+			name  string
+			rows  []prometheusSeries
+			valid bool
+		}{
+			{"stream and pre-header metering", []prometheusSeries{row("200", "metering_unavailable"), row("503", "metering_unavailable")}, true},
+			{"distinct business errors", []prometheusSeries{row("400", "invalid_request_error"), row("400", "unsupported_capability")}, true},
+			{"missing labels", []prometheusSeries{row("", "")}, false},
+			{"unknown code", []prometheusSeries{row("400", "unbounded_upstream_code")}, false},
+			{"wrong status", []prometheusSeries{row("200", "app_qps_exceeded")}, false},
+			{"duplicate pair", []prometheusSeries{row("400", "invalid_request_error"), row("400", "invalid_request_error")}, false},
+		} {
+			t.Run(fmt.Sprintf("%s/summary=%t", test.name, summary), func(t *testing.T) {
+				result := trafficResponse{From: at.Add(-time.Hour), To: at, Apps: []trafficApp{{ID: "app"}}}
+				err := mergeTraffic(&result, test.rows, summary)
+				if (err == nil) != test.valid {
+					t.Fatal(err, result)
+				}
+				if test.valid && !summary && len(result.Apps[0].Series) != 2 {
+					t.Fatal("distinct failure lines collapsed", result)
+				}
+			})
 		}
 	}
 }

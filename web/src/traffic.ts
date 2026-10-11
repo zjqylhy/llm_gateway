@@ -1,6 +1,8 @@
 export type TrafficPoint = { at: string; value: number };
 export type TrafficSeries = {
   kind: "success" | "failure" | "limit";
+  http_status?: string;
+  error_code?: string;
   points: TrafficPoint[];
 };
 export type TrafficApp = {
@@ -21,6 +23,27 @@ export type TrafficData = {
   step_seconds: number;
   apps: TrafficApp[];
 };
+
+export function trafficSeriesKey(series: TrafficSeries) {
+  return series.kind === "failure"
+    ? `${series.http_status}:${series.error_code}`
+    : series.kind;
+}
+
+export function failureTrafficSeries(series: TrafficSeries[], selected = "") {
+  return series
+    .filter((line) => line.kind === "failure")
+    .sort((a, b) => trafficSeriesKey(a).localeCompare(trafficSeriesKey(b)))
+    .filter((line) => !selected || trafficSeriesKey(line) === selected);
+}
+
+export function trafficSeriesTitle(series: TrafficSeries) {
+  return series.kind === "failure"
+    ? `HTTP ${series.http_status} · ${series.error_code}`
+    : series.kind === "success"
+      ? "成功 QPS"
+      : "历史上限";
+}
 
 export function trafficWindowError(from: string, to: string, now = Date.now()) {
   const start = new Date(from).getTime();
