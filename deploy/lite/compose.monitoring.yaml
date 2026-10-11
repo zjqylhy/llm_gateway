@@ -1,0 +1,33 @@
+# 显式叠加到 Lite 部署，启用控制台所需的私有监控；不开放宿主机端口。
+services:
+  admin:
+    environment:
+      GW_PROMETHEUS_URL: http://prometheus:9090
+  prometheus:
+    image: ${GW_PROMETHEUS_IMAGE:-prom/prometheus:v3.5.0}
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=26h
+      - --storage.tsdb.retention.size=256MB
+      - --query.max-concurrency=4
+      - --query.timeout=5s
+    environment:
+      GOMEMLIMIT: 192MiB
+      GOMAXPROCS: "1"
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+    restart: unless-stopped
+    volumes:
+      - ../observability/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - ../observability/alerts.yaml:/etc/prometheus/alerts.yml:ro
+      - prometheus:/prometheus
+volumes:
+  prometheus: {}
