@@ -562,3 +562,19 @@ footer {
   font-size: 12px;
   z-index: 10;
 }
+.metering-detail {
+  min-width: 260px;
+  line-height: 1.7;
+}
+.cost-table {
+  min-width: 1380px;
+}
+.cost-table th,
+.cost-table td:first-child {
+  white-space: nowrap;
+}
+.metering-detail summary {
+  color: #526785;
+  font-size: 12px;
+  cursor: pointer;
+}
