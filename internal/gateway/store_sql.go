@@ -311,13 +311,25 @@ func (s *SQLStore) Instances(c context.Context) (map[string]Instance, error) {
 }
 
 type Report struct {
-	AppID      string `json:"app_id"`
-	Department string `json:"department"`
-	ModelID    string `json:"model_id"`
-	Count      int64  `json:"count"`
-	Tokens     int64  `json:"tokens"`
-	Micro      int64  `json:"micro"`
-	Pending    int64  `json:"pending"`
+	FeeParts
+	AppID                string `json:"app_id"`
+	Department           string `json:"department"`
+	ModelID              string `json:"model_id"`
+	Count                int64  `json:"count"`
+	Tokens               int64  `json:"tokens"`
+	Micro                int64  `json:"micro"`
+	Pending              int64  `json:"pending"`
+	InputTokens          int64  `json:"input_tokens"`
+	UncachedInputTokens  int64  `json:"uncached_input_tokens"`
+	OutputTokens         int64  `json:"output_tokens"`
+	CachedTokens         int64  `json:"cached_tokens"`
+	CacheUnreported      int64  `json:"cache_unreported"`
+	UsageUnreported      int64  `json:"usage_unreported"`
+	UnallocatedCount     int64  `json:"unallocated_count"`
+	CacheEmbeddingCount  int64  `json:"cache_embedding_count"`
+	CacheEmbeddingTokens int64  `json:"cache_embedding_tokens"`
+	CacheEmbeddingMicro  int64  `json:"cache_embedding_micro"`
+	CacheHits            int64  `json:"cache_hits"`
 }
 type Aggregator interface {
 	Report(context.Context, Filter) ([]Report, error)
@@ -325,7 +337,7 @@ type Aggregator interface {
 
 func (s *SQLStore) Report(c context.Context, f Filter) ([]Report, error) {
 	w, args := where(f)
-	rows, e := s.DB.QueryContext(c, `SELECT app_id,department,model_id,COUNT(*),COALESCE(SUM(tokens),0),COALESCE(SUM(cost_micro),0),SUM(status='started' OR JSON_UNQUOTE(JSON_EXTRACT(payload,'$.quality'))='estimated') FROM gw_attempts WHERE purpose<>'request' AND `+w+` GROUP BY app_id,department,model_id LIMIT 10001`, args...)
+	rows, e := s.DB.QueryContext(c, costReportSQL(w), args...)
 	if e != nil {
 		return nil, e
 	}
@@ -333,7 +345,10 @@ func (s *SQLStore) Report(c context.Context, f Filter) ([]Report, error) {
 	out := []Report{}
 	for rows.Next() {
 		var r Report
-		if e = rows.Scan(&r.AppID, &r.Department, &r.ModelID, &r.Count, &r.Tokens, &r.Micro, &r.Pending); e != nil {
+		if e = rows.Scan(&r.AppID, &r.Department, &r.ModelID, &r.Count, &r.Tokens, &r.Micro, &r.Pending,
+			&r.InputTokens, &r.UncachedInputTokens, &r.OutputTokens, &r.CachedTokens, &r.CacheUnreported, &r.UsageUnreported,
+			&r.InputMicro, &r.CachedInputMicro, &r.OutputMicro, &r.UnallocatedMicro, &r.UnallocatedCount,
+			&r.CacheEmbeddingCount, &r.CacheEmbeddingTokens, &r.CacheEmbeddingMicro, &r.CacheHits); e != nil {
 			return nil, e
 		}
 		out = append(out, r)
@@ -344,17 +359,20 @@ func (s *SQLStore) Report(c context.Context, f Filter) ([]Report, error) {
 	return out, rows.Err()
 }
 func (s *MemoryStore) Report(c context.Context, f Filter) ([]Report, error) {
-	f.Limit = 0
-	es, e := s.Records(c, f)
-	if e != nil {
-		return nil, e
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hits := map[string]bool{}
+	for _, e := range s.events {
+		if e.Purpose == "request" && e.Cached {
+			hits[e.AppID+":"+e.RequestID] = true
+		}
 	}
 	m := map[string]Report{}
-	for _, x := range es {
-		if x.Purpose == "request" {
+	for _, x := range s.events {
+		if x.Purpose == "request" || !Match(x, f) {
 			continue
 		}
-		k := x.AppID + ":" + x.Model.ID
+		k := x.AppID + "\x00" + x.Department + "\x00" + x.Model.ID
 		r := m[k]
 		r.AppID = x.AppID
 		r.Department = x.Department
@@ -362,6 +380,32 @@ func (s *MemoryStore) Report(c context.Context, f Filter) ([]Report, error) {
 		r.Count++
 		r.Tokens += x.Usage.Total
 		r.Micro += x.CostMicro
+		r.InputTokens += x.Usage.Input
+		r.UncachedInputTokens += x.Usage.Input - x.Usage.Cached
+		r.OutputTokens += x.Usage.Output
+		r.CachedTokens += x.Usage.Cached
+		if !cacheUsageKnown(x) {
+			r.CacheUnreported++
+		}
+		if x.Usage.Input+x.Usage.Output != x.Usage.Total || x.Kind == "started" || x.Status == "started" {
+			r.UsageUnreported++
+		}
+		parts := breakdown(x)
+		r.InputMicro += parts.InputMicro
+		r.CachedInputMicro += parts.CachedInputMicro
+		r.OutputMicro += parts.OutputMicro
+		r.UnallocatedMicro += parts.UnallocatedMicro
+		if !parts.Known {
+			r.UnallocatedCount++
+		}
+		if x.Purpose == "cache_embedding" {
+			r.CacheEmbeddingCount++
+			r.CacheEmbeddingTokens += x.Usage.Total
+			r.CacheEmbeddingMicro += x.CostMicro
+			if hits[x.AppID+":"+x.RequestID] {
+				r.CacheHits++
+			}
+		}
 		if x.Status == "started" || x.Quality == "estimated" {
 			r.Pending++
 		}

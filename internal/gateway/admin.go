@@ -5,7 +5,6 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -694,10 +693,7 @@ func (a *Admin) records(w http.ResponseWriter, r *http.Request) {
 		APIError(w, 503, "storage_unavailable", "cannot query records")
 		return
 	}
-	for i := range rows {
-		rows[i].PayloadCipher = ""
-	}
-	JSON(w, rows)
+	JSON(w, recordViews(rows))
 }
 func (a *Admin) cost(w http.ResponseWriter, r *http.Request) {
 	f, e := a.filter(r)
@@ -723,9 +719,11 @@ func (a *Admin) cost(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 		w.Header().Set("Content-Disposition", "attachment; filename=cost-report.csv")
 		cw := csv.NewWriter(w)
-		_ = cw.Write([]string{"app", "department", "model", "attempts", "tokens", "cost_cny", "pending"})
+		_ = cw.Write([]string{"app", "department", "model", "attempts", "tokens", "cost_cny", "pending", "input_tokens", "uncached_input_tokens", "cached_tokens", "output_tokens", "input_cost_cny", "cached_input_cost_cny", "output_cost_cny", "unallocated_cost_cny", "unallocated_count", "cache_unreported", "cache_embedding_attempts", "cache_embedding_tokens", "cache_embedding_cost_cny", "semantic_cache_hits", "usage_unreported"})
 		for _, x := range rows {
-			_ = cw.Write([]string{x.AppID, csvSafe(x.Department), csvSafe(x.ModelID), strconv.FormatInt(x.Count, 10), strconv.FormatInt(x.Tokens, 10), fmt.Sprintf("%.6f", float64(x.Micro)/1000000), strconv.FormatInt(x.Pending, 10)})
+			integer := func(n int64) string { return strconv.FormatInt(n, 10) }
+			_ = cw.Write([]string{x.AppID, csvSafe(x.Department), csvSafe(x.ModelID), integer(x.Count), integer(x.Tokens), microCNY(x.Micro), integer(x.Pending),
+				integer(x.InputTokens), integer(x.UncachedInputTokens), integer(x.CachedTokens), integer(x.OutputTokens), microCNY(x.InputMicro), microCNY(x.CachedInputMicro), microCNY(x.OutputMicro), microCNY(x.UnallocatedMicro), integer(x.UnallocatedCount), integer(x.CacheUnreported), integer(x.CacheEmbeddingCount), integer(x.CacheEmbeddingTokens), microCNY(x.CacheEmbeddingMicro), integer(x.CacheHits), integer(x.UsageUnreported)})
 		}
 		cw.Flush()
 		return
@@ -826,6 +824,7 @@ func (a *Admin) correct(w http.ResponseWriter, r *http.Request) {
 	}
 	fixed := *old
 	fixed.Usage = event.Usage
+	fixed.Usage.CachedReported = true
 	fixed.Usage.Total = fixed.Usage.Input + fixed.Usage.Output
 	fixed.Revision++
 	if fixed.Revision < 3 {

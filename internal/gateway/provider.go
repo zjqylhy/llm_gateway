@@ -345,12 +345,12 @@ func OpenUpstream(c context.Context, client *http.Client, p Provider, m Model, r
 func ExtractUsage(raw []byte) (Usage, bool) {
 	var x struct {
 		Usage *struct {
-			Input   int64 `json:"prompt_tokens"`
-			Output  int64 `json:"completion_tokens"`
-			Total   int64 `json:"total_tokens"`
-			Hit     int64 `json:"prompt_cache_hit_tokens"`
+			Input   *int64 `json:"prompt_tokens"`
+			Output  *int64 `json:"completion_tokens"`
+			Total   *int64 `json:"total_tokens"`
+			Hit     *int64 `json:"prompt_cache_hit_tokens"`
 			Details struct {
-				Cached int64 `json:"cached_tokens"`
+				Cached *int64 `json:"cached_tokens"`
 			} `json:"prompt_tokens_details"`
 		} `json:"usage"`
 	}
@@ -358,15 +358,26 @@ func ExtractUsage(raw []byte) (Usage, bool) {
 		return Usage{}, false
 	}
 	u := x.Usage
-	cached := u.Details.Cached
-	if u.Hit > cached {
-		cached = u.Hit
-	}
-	if u.Input < 0 || u.Output < 0 || u.Total < 0 || cached < 0 || cached > u.Input || u.Input > 100000000 || u.Output > 100000000 {
+	if u.Input == nil {
 		return Usage{}, false
 	}
-	total := u.Input + u.Output
-	return Usage{u.Input, u.Output, total, cached}, true
+	input, output, cached := *u.Input, int64(0), int64(0)
+	if u.Output != nil {
+		output = *u.Output
+	} else if u.Total == nil || *u.Total != input {
+		// 向量模型可省略输出字段；其 total 必须确认只有输入消耗。
+		return Usage{}, false
+	}
+	if u.Details.Cached != nil {
+		cached = *u.Details.Cached
+	}
+	if u.Hit != nil && *u.Hit > cached {
+		cached = *u.Hit
+	}
+	if input < 0 || output < 0 || (u.Total != nil && *u.Total < 0) || (u.Hit != nil && *u.Hit < 0) || (u.Details.Cached != nil && *u.Details.Cached < 0) || cached < 0 || cached > input || input > 100000000 || output > 100000000 {
+		return Usage{}, false
+	}
+	return Usage{Input: input, Output: output, Total: input + output, Cached: cached, CachedReported: u.Hit != nil || u.Details.Cached != nil}, true
 }
 
 // SSE 按事件边界读取，支持多行 data；从不等待整段模型输出。

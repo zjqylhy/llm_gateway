@@ -121,10 +121,11 @@ func Clone(c Config) Config {
 }
 
 type Usage struct {
-	Input  int64 `json:"prompt_tokens"`
-	Output int64 `json:"completion_tokens"`
-	Total  int64 `json:"total_tokens"`
-	Cached int64 `json:"cached_tokens,omitempty"`
+	Input          int64 `json:"prompt_tokens"`
+	Output         int64 `json:"completion_tokens"`
+	Total          int64 `json:"total_tokens"`
+	Cached         int64 `json:"cached_tokens,omitempty"`
+	CachedReported bool  `json:"cached_tokens_reported,omitempty"`
 }
 type Event struct {
 	PayloadCipher string    `json:"payload_ciphertext,omitempty"`

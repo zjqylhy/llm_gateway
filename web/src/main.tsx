@@ -2,6 +2,13 @@ import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRefreshQueue, waitForAll } from "./refresh";
 import { TrafficPanel } from "./TrafficPanel";
+import {
+  cachedTokens,
+  uncachedTokens,
+  sourceLabel,
+  type FeeParts,
+  type Usage,
+} from "./metering";
 import "./style.css";
 
 type App = {
@@ -35,10 +42,14 @@ type RecordItem = {
   duration_ms: number;
   cached: boolean;
   cost_micro: number;
-  usage: { total_tokens: number };
-  model: { id: string };
+  kind: string;
+  usage: Usage;
+  cache_reported?: boolean;
+  usage_breakdown_known?: boolean;
+  cost_breakdown?: FeeParts & { known: boolean };
+  model: Partial<Model>;
 };
-type Cost = {
+type Cost = FeeParts & {
   app_id: string;
   department: string;
   model_id: string;
@@ -46,6 +57,17 @@ type Cost = {
   tokens: number;
   micro: number;
   pending: number;
+  input_tokens: number;
+  uncached_input_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+  cache_unreported: number;
+  usage_unreported: number;
+  unallocated_count: number;
+  cache_embedding_count: number;
+  cache_embedding_tokens: number;
+  cache_embedding_micro: number;
+  cache_hits: number;
 };
 type Config = {
   runtime_capabilities?: { cache_enabled: boolean };
@@ -1610,25 +1632,36 @@ function Console({
               </a>
             </div>
             <p className="muted">
-              包含失败重试及缓存向量化。待核实记录不会被视为零费用确认。
+              输入总量包含模型缓存命中；总 Token = 输入总量 +
+              输出。费用按调用时价格和汇率折算人民币，包含失败重试及缓存向量化。向量化费用属于总费用中的子项。
+            </p>
+            <p className="muted">
+              缓存写入与推理 Token
+              明细：未提供。缓存字段缺失及待核实记录不视为零消耗确认；无法还原的历史费用显示为未分摊。
             </p>
             {costs.length ? (
               <div className="table-wrap">
-                <table>
+                <table className="cost-table">
                   <thead>
                     <tr>
                       <th>应用</th>
                       <th>部门</th>
                       <th>模型</th>
                       <th>调用次数</th>
-                      <th>Token</th>
-                      <th>费用 / 元</th>
+                      <th>总 Token</th>
+                      <th>普通输入 / 费用</th>
+                      <th>模型缓存读取 / 费用</th>
+                      <th>输出 / 费用</th>
+                      <th>总费用 / 元</th>
+                      <th>语义缓存 / 向量化子项</th>
                       <th>待核实</th>
                     </tr>
                   </thead>
                   <tbody>
                     {costs.map((c) => (
-                      <tr key={c.app_id + ":" + c.model_id}>
+                      <tr
+                        key={c.app_id + ":" + c.department + ":" + c.model_id}
+                      >
                         <td>
                           {apps.find((a) => a.id === c.app_id)?.name ??
                             c.app_id}
@@ -1636,9 +1669,67 @@ function Console({
                         <td>{c.department || "—"}</td>
                         <td>{c.model_id}</td>
                         <td>{number(c.count)}</td>
-                        <td>{number(c.tokens)}</td>
-                        <td>¥{money(c.micro)}</td>
-                        <td>{c.pending}</td>
+                        <td>
+                          {number(c.tokens)}
+                          <small>输入总量 {number(c.input_tokens)}</small>
+                          {c.usage_unreported > 0 && (
+                            <small>
+                              {number(c.usage_unreported)} 次无完整用量明细
+                            </small>
+                          )}
+                        </td>
+                        <td>
+                          {number(c.uncached_input_tokens)}
+                          <small>¥{money(c.input_micro)}</small>
+                        </td>
+                        <td>
+                          {c.cache_unreported === c.count
+                            ? "未提供"
+                            : number(c.cached_tokens)}
+                          <small>
+                            {c.cache_unreported === c.count
+                              ? "费用未提供"
+                              : `¥${money(c.cached_input_micro)}`}
+                          </small>
+                          {c.cache_unreported > 0 && (
+                            <small>
+                              {number(c.cache_unreported)} 次未提供缓存用量
+                            </small>
+                          )}
+                        </td>
+                        <td>
+                          {number(c.output_tokens)}
+                          <small>¥{money(c.output_micro)}</small>
+                        </td>
+                        <td>
+                          ¥{money(c.micro)}
+                          {c.unallocated_count > 0 && (
+                            <small>
+                              未分摊 ¥{money(c.unallocated_micro)} ·{" "}
+                              {number(c.unallocated_count)} 次
+                            </small>
+                          )}
+                        </td>
+                        <td>
+                          {c.cache_embedding_count > 0 ? (
+                            <>
+                              <span>命中 {number(c.cache_hits)} 次</span>
+                              <small>
+                                向量化 {number(c.cache_embedding_count)} 次 ·{" "}
+                                {number(c.cache_embedding_tokens)} Token
+                              </small>
+                              <small>
+                                其中 ¥{money(c.cache_embedding_micro)}
+                              </small>
+                            </>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                        <td>
+                          {c.pending}
+                          {c.pending > 0 && <small>含估算或进行中</small>}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -1788,6 +1879,80 @@ function Console({
     </div>
   );
 }
+function RecordMetering({ item: x }: { item: RecordItem }) {
+  const quantity = (n: number | undefined) =>
+    n == null ? "未提供" : number(n);
+  if (x.purpose === "request") {
+    return (
+      <span>
+        {x.cached ? "语义缓存命中" : "请求汇总"}
+        <small>费用见各次实际调用</small>
+      </span>
+    );
+  }
+  if (x.kind === "started" || x.status === "started") {
+    return (
+      <span>
+        进行中<small>用量与费用待核实</small>
+      </span>
+    );
+  }
+  const parts = x.cost_breakdown;
+  const price = x.model;
+  const usage = x.usage_breakdown_known === false ? undefined : x.usage;
+  const cache = cachedTokens(usage, x.cache_reported);
+  const fee = (n: number | undefined) =>
+    parts?.known && n != null ? `¥${money(n)}` : "未分摊";
+  return (
+    <div className="metering-detail">
+      <span>
+        总计 {quantity(x.usage?.total_tokens)} Token · ¥{money(x.cost_micro)}
+      </span>
+      <small>
+        输入总量 {quantity(usage?.prompt_tokens)} · 输出{" "}
+        {quantity(usage?.completion_tokens)}
+      </small>
+      <small>
+        普通输入 {quantity(uncachedTokens(usage))} · {fee(parts?.input_micro)}
+      </small>
+      <small>
+        模型缓存读取 {quantity(cache)} ·{" "}
+        {cache == null ? "费用未提供" : fee(parts?.cached_input_micro)}
+      </small>
+      <small>输出费用 {fee(parts?.output_micro)}</small>
+      {!parts?.known && (
+        <small>未分摊 ¥{money(parts?.unallocated_micro ?? x.cost_micro)}</small>
+      )}
+      {x.purpose === "cache_embedding" && (
+        <small>语义缓存向量化子项，已计入总费用</small>
+      )}
+      <details>
+        <summary>计价快照</summary>
+        <small>
+          价格版本 {price?.price_version || "未提供"} ·{" "}
+          {price?.currency || "CNY"}
+        </small>
+        <small>
+          单价 / 百万 Token：输入{" "}
+          {price?.input_micro == null ? "未提供" : money(price.input_micro)} ·
+          缓存{" "}
+          {price?.cached_input_micro == null
+            ? "未提供"
+            : money(price.cached_input_micro)}{" "}
+          · 输出{" "}
+          {price?.output_micro == null ? "未提供" : money(price.output_micro)}
+        </small>
+        <small>
+          折算系数{" "}
+          {((price?.fx_ppm || 1000000) / 1000000).toLocaleString("zh-CN", {
+            maximumFractionDigits: 6,
+          })}
+        </small>
+        <small>缓存写入、推理 Token 明细：未提供</small>
+      </details>
+    </div>
+  );
+}
 function RecordTable({
   rows,
   onTrace,
@@ -1828,10 +1993,11 @@ function RecordTable({
               <td>
                 <Badge value={x.status} />
               </td>
-              <td>{x.quality || "—"}</td>
               <td>
-                {number(x.usage?.total_tokens ?? 0)}
-                <small>¥{money(x.cost_micro ?? 0)}</small>
+                {x.purpose === "request" ? "请求汇总" : sourceLabel(x.quality)}
+              </td>
+              <td>
+                <RecordMetering item={x} />
               </td>
               <td>{x.duration_ms} ms</td>
             </tr>
