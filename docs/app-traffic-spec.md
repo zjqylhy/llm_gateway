@@ -29,6 +29,6 @@ Grafana 增加应用筛选与成功/分错误码失败/历史 QPS 上限三个�
 
 ## 2026-10-12 错误码下钻补充（用户确认）
 
-失败趋势默认展示所选区间发生过的 HTTP 状态码及业务错误码组合，各组合使用独立颜色和图例，选择错误码后仅显示对应曲线。独立纵轴按失败速率缩放，避免被限流上限压平。后端 range 查询按 app/http_status/error_code 聚合，并以区间结束时刻固定的 increase 结果筛选活动错误；不逐点过滤零速率，也不补齐缺失采样。API 的 failure series 增加 http_status/error_code 字段，重复组合、未知错误码及不匹配的状态码拒绝返回部分监控数据；既有时间范围和权限约束保留。
+失败趋势默认展示所选区间发生过的 HTTP 状态码及业务错误码组合，各组合使用独立颜色和图例，选择错误码后仅显示对应曲线，刷新监控时保留各应用的下钻选择。独立纵轴按失败速率缩放，避免被限流上限压平。后端 range 查询按 app/http_status/error_code 聚合，并以区间结束时刻固定的 increase 结果筛选活动错误；不逐点过滤零速率，也不补齐缺失采样。API 的 failure series 增加 http_status/error_code 字段，重复组合、未知错误码及不匹配的状态码拒绝返回部分监控数据；既有时间范围和权限约束保留。
 
 使用 Prometheus 的 [@ end() 固定区间结束时间](https://prometheus.io/docs/prometheus/latest/querying/basics/#modifier)；仍维持查询超时、字节数和序列数限制，结果超过限制时提示选择单个应用。验收覆盖两种错误码独立曲线、SSE HTTP 200 失败、不匹配/重复标签拒绝、零值及断线保留和单码选择。

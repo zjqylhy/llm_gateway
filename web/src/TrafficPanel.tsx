@@ -155,8 +155,17 @@ function TrafficChart({
   );
 }
 
-function TrafficTrends({ app, data }: { app: TrafficApp; data: TrafficData }) {
-  const [selected, setSelected] = useState("");
+function TrafficTrends({
+  app,
+  data,
+  selected,
+  onSelect,
+}: {
+  app: TrafficApp;
+  data: TrafficData;
+  selected: string;
+  onSelect: (value: string) => void;
+}) {
   const failures = failureTrafficSeries(app.series);
   const colors = new Map(
     failures.map((line, index) => [
@@ -184,7 +193,7 @@ function TrafficTrends({ app, data }: { app: TrafficApp; data: TrafficData }) {
             <select
               aria-label={`${app.name} 的失败错误码`}
               value={selection}
-              onChange={(event) => setSelected(event.target.value)}
+              onChange={(event) => onSelect(event.target.value)}
             >
               <option value="">全部错误码</option>
               {failures.map((line) => (
@@ -227,6 +236,10 @@ export function TrafficPanel({
   revision: number;
   requiresApp: boolean;
 }) {
+  // 选择保存在面板层，自动刷新暂时卸载曲线时仍保留每个应用的下钻条件。
+  const [selectedFailures, setSelectedFailures] = useState<
+    Record<string, string>
+  >({});
   const [preset, setPreset] = useState("3600");
   const [draftFrom, setDraftFrom] = useState(() =>
     localTime(new Date(Date.now() - 3600000)),
@@ -377,7 +390,17 @@ export function TrafficPanel({
               </strong>
             </div>
           </div>
-          <TrafficTrends app={app} data={data} />
+          <TrafficTrends
+            app={app}
+            data={data}
+            selected={selectedFailures[app.id] ?? ""}
+            onSelect={(value) =>
+              setSelectedFailures((current) => ({
+                ...current,
+                [app.id]: value,
+              }))
+            }
+          />
           {app.failures.length > 0 ? (
             <div className="table-wrap">
               <table>
