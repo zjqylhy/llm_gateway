@@ -15,7 +15,7 @@ Go 协议测试需要本机 HTTP 服务，沙箱内原有 Chat 测试先出现�
 
 ## 未通过与未执行
 
-- `node scripts/validate-deploy.mjs`：当前工作区失败，报 `lite gateway: console/business concurrency mismatch`。开始本次开发前已有未提交的 `deploy/lite/compose.yaml` 将 `GW_MAX_ADMIN_REQUESTS` 从 8 改为 2，校验脚本要求 8。本次未修改或提交该已有改动。
+- `node scripts/validate-deploy.mjs`：首次失败，报 `lite gateway: console/business concurrency mismatch`。开始本次开发前已有未提交的 `deploy/lite/compose.yaml` 将 `GW_MAX_ADMIN_REQUESTS` 从 8 改为 2。用户随后明确要求恢复为 8，已恢复为仓库原有配置，复验通过（22 个 YAML 文档、35 个监控面板）。此恢复未引入相对仓库 HEAD 的部署文件变更。
 - 真实百炼模型、容器基础设施与线上控制台联调未执行；需对应地域的业务空间、API Key 和已开通模型。本次使用确定性本机上游验证协议和计量，不证明模型实际服务可用性。
 
 代码和本记录交付用户进行人工验收；本次提交不部署或推送远端。
