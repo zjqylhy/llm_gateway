@@ -1,0 +1,128 @@
+{
+  "date": "2026-10-11",
+  "docker_host_cpu": 32,
+  "docker_host_memory_bytes": 16303157248,
+  "whole_machine_2c4g_verified": false,
+  "cloud_verified": false,
+  "first_attempt_failure": "Kafka 4.0.0 KAFKA-19888 stack; worker exited and unexpected metering freeze; test failed at 3440.25 seconds",
+  "first_attempt": {
+    "requested_minutes": 60,
+    "sustained_seconds": 0,
+    "accepted": 6556,
+    "expected_audit_rejections": 60,
+    "unexpected_failures": 0,
+    "successful_periodic_reports": 0,
+    "ledger_drain_seconds": 0,
+    "final_counters": {},
+    "resource_scope": "individual container caps; Docker host is not constrained to 2 vCPU / 4 GiB; peak sampling adds a temporary Go process",
+    "cgroup_memory_peak_bytes": {},
+    "passed": false
+  },
+  "kafka_image": "apache/kafka:4.0.2",
+  "kafka_digest": "sha256:836cafdad9f4825880d7cf1d5a21202915ae2527bd0ef1c3600c526ed7814d1f",
+  "app_image": "llm-gateway:lite-reviewed",
+  "app_image_id": "sha256:2f3ddc11ac52900444832313743f9699412e8eb41c68049d988e0c31b9622566",
+  "sustained": {
+    "requested_minutes": 60,
+    "sustained_seconds": 3600.5519075,
+    "accepted": 6893,
+    "protected_rejections": 61,
+    "unexpected_failures": 0,
+    "successful_periodic_reports": 177,
+    "ledger_drain_seconds": 0.0091722,
+    "final_counters": {
+      "fault": {
+        "tokens": 328,
+        "micro": 473,
+        "reserved_tokens": 0,
+        "reserved_micro": 0
+      },
+      "lite-a": {
+        "tokens": 110504,
+        "micro": 179564,
+        "reserved_tokens": 0,
+        "reserved_micro": 0
+      },
+      "lite-b": {
+        "tokens": 110144,
+        "micro": 178984,
+        "reserved_tokens": 0,
+        "reserved_micro": 0
+      }
+    },
+    "resource_scope": "individual container caps; Docker host is not constrained to 2 vCPU / 4 GiB; peak sampling adds a temporary Go process",
+    "cgroup_memory_peak_bytes": {
+      "admin": 20750336,
+      "edge-local": 29999104,
+      "etcd": 38047744,
+      "gateway": 27815936,
+      "kafka": 729776128,
+      "mysql": 666525696,
+      "redis": 26394624,
+      "worker": 24838144
+    },
+    "sql_pool_wait_total": {
+      "admin": 0,
+      "gateway": 0,
+      "worker": 0
+    },
+    "passed": true
+  },
+  "sampled_cpu_max_percent": {
+    "worker": 54.16,
+    "etcd": 6.27,
+    "redis": 26.04,
+    "admin": 0.32,
+    "kafka": 169.62,
+    "gateway": 0.22,
+    "mysql": 12.64,
+    "edge-local": 0.03
+  },
+  "resource_snapshot_groups": 107,
+  "tls_pilot": {
+    "requested_minutes": 1,
+    "sustained_seconds": 60.0351962,
+    "accepted": 110,
+    "protected_rejections": 0,
+    "unexpected_failures": 0,
+    "successful_periodic_reports": 3,
+    "ledger_drain_seconds": 0.0092149,
+    "final_counters": {
+      "fault": {
+        "tokens": 328,
+        "micro": 473,
+        "reserved_tokens": 0,
+        "reserved_micro": 0
+      },
+      "lite-a": {
+        "tokens": 1832,
+        "micro": 2972,
+        "reserved_tokens": 0,
+        "reserved_micro": 0
+      },
+      "lite-b": {
+        "tokens": 1760,
+        "micro": 2860,
+        "reserved_tokens": 0,
+        "reserved_micro": 0
+      }
+    },
+    "resource_scope": "individual container caps; Docker host is not constrained to 2 vCPU / 4 GiB; peak sampling adds a temporary Go process",
+    "cgroup_memory_peak_bytes": {
+      "admin": 18243584,
+      "edge-local": 29007872,
+      "etcd": 28835840,
+      "gateway": 26062848,
+      "kafka": 501518336,
+      "mysql": 256983040,
+      "redis": 15425536,
+      "worker": 23007232
+    },
+    "sql_pool_wait_total": {
+      "admin": 0,
+      "gateway": 0,
+      "worker": 0
+    },
+    "passed": true
+  }
+}

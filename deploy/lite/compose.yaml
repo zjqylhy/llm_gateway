@@ -1,0 +1,181 @@
+name: llm-gateway-lite
+x-logging: &logging
+  driver: json-file
+  options: {max-size: "10m", max-file: "3"}
+x-app: &app
+  image: ${GW_IMAGE:-llm-gateway:lite}
+  env_file: ${GW_LITE_ENV_FILE:-../../.env}
+  environment:
+    GW_CACHE_ENABLED: "false"
+    GW_CACHE_REDIS_URL: ""
+    GW_MILVUS_URL: ""
+    GW_MYSQL_DSN: gateway:${GW_LOCAL_DB_PASSWORD:?set DB password}@tcp(mysql:3306)/gateway?parseTime=true&charset=utf8mb4
+    GW_REDIS_URL: redis://:${GW_LOCAL_REDIS_PASSWORD:?use hex Redis password}@redis:6379/0
+    GW_KAFKA_BROKERS: kafka:9092
+    GW_ETCD_ENDPOINTS: http://etcd:2379
+    GW_MYSQL_MAX_OPEN_CONNS: "12"
+    GW_MYSQL_MAX_IDLE_CONNS: "2"
+    GW_REDIS_POOL_SIZE: "8"
+    GW_MAX_CONCURRENT_REQUESTS: "2"
+    GW_MAX_ADMIN_REQUESTS: "2"
+    GW_MAX_METERING_INFLIGHT: "2"
+    GW_MAX_CONNECTIONS: "64"
+    GW_METERING_COMMIT_BATCH_SIZE: "32"
+    GW_METERING_COMMIT_INTERVAL_MS: "100"
+    GOMEMLIMIT: 192MiB
+    GOMAXPROCS: "2"
+    OTEL_EXPORTER_OTLP_ENDPOINT: ""
+  mem_limit: 256m
+  pids_limit: 128
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  logging: *logging
+  stop_grace_period: 155s
+  restart: unless-stopped
+  depends_on:
+    mysql: {condition: service_healthy}
+    redis: {condition: service_healthy}
+    kafka: {condition: service_healthy}
+    etcd: {condition: service_healthy}
+x-edge: &edge
+  image: ${GW_EDGE_IMAGE:-caddy:2.10}
+  mem_limit: 128m
+  pids_limit: 128
+  logging: *logging
+  restart: unless-stopped
+  cap_drop: [ALL]
+  cap_add: [NET_BIND_SERVICE]
+  security_opt: ["no-new-privileges:true"]
+  depends_on: [gateway, admin]
+services:
+  mysql:
+    image: mysql:8.4
+    command: [--innodb-buffer-pool-size=128M, --max-connections=60, --performance-schema=OFF]
+    mem_limit: 768m
+    pids_limit: 256
+    logging: *logging
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: gateway
+      MYSQL_USER: gateway
+      MYSQL_PASSWORD: ${GW_LOCAL_DB_PASSWORD:?set DB password}
+      MYSQL_ROOT_PASSWORD: ${GW_LOCAL_ROOT_PASSWORD:?set root password}
+    volumes: ["mysql:/var/lib/mysql"]
+    healthcheck:
+      test: [CMD-SHELL, 'MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysqladmin ping -h 127.0.0.1 --silent']
+      interval: 5s
+      timeout: 3s
+      retries: 40
+  redis:
+    image: redis:7.4
+    environment:
+      REDIS_PASSWORD: ${GW_LOCAL_REDIS_PASSWORD:?set Redis password}
+    # 配额、去重及会话不能淘汰；AOF 重写等额外开销由容器剩余空间承担。
+    command: [sh, -c, 'exec redis-server --appendonly yes --appendfsync always --maxmemory 64mb --maxmemory-policy noeviction --maxmemory-clients 10% --maxclients 256 --requirepass "$$REDIS_PASSWORD"']
+    mem_limit: 256m
+    pids_limit: 128
+    logging: *logging
+    restart: unless-stopped
+    volumes: ["redis:/data"]
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping']
+      interval: 5s
+      timeout: 3s
+      retries: 40
+  kafka:
+    # 4.0.2 修复 KAFKA-19888；旧版时间回拨可能使协调器提交失败。
+    image: apache/kafka:4.0.2
+    mem_limit: 1024m
+    pids_limit: 256
+    logging: *logging
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_HEAP_OPTS: "-Xms128m -Xmx384m"
+    volumes: ["kafka:/var/lib/kafka/data"]
+    healthcheck:
+      test: [CMD-SHELL, '/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list >/dev/null']
+      interval: 15s
+      timeout: 10s
+      retries: 30
+  kafka-init:
+    image: apache/kafka:4.0.2
+    mem_limit: 256m
+    environment: {KAFKA_HEAP_OPTS: "-Xms32m -Xmx128m"}
+    logging: *logging
+    entrypoint: [/opt/kafka/bin/kafka-topics.sh]
+    command: [--bootstrap-server, kafka:9092, --create, --if-not-exists, --topic, "${GW_KAFKA_TOPIC:-gateway-events}", --partitions, "6", --replication-factor, "1", --config, retention.ms=604800000]
+    depends_on:
+      kafka: {condition: service_healthy}
+    profiles: [setup]
+    restart: "no"
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.21
+    command: [etcd, --advertise-client-urls=http://etcd:2379, --listen-client-urls=http://0.0.0.0:2379, --data-dir=/etcd]
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+    mem_limit: 256m
+    pids_limit: 128
+    logging: *logging
+    restart: unless-stopped
+    volumes: ["etcd:/etcd"]
+    healthcheck:
+      test: [CMD, etcdctl, endpoint, health]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+  gateway:
+    <<: *app
+    command: [/app/gateway]
+  admin:
+    <<: *app
+    command: [/app/admin]
+  worker:
+    <<: *app
+    command: [/app/worker]
+  migrate:
+    <<: *app
+    command: [/app/migrate]
+    profiles: [setup]
+    restart: "no"
+  bootstrap:
+    <<: *app
+    command: [/app/bootstrap]
+    profiles: [setup]
+    restart: "no"
+  edge:
+    <<: *edge
+    profiles: [public]
+    ports: ["80:80", "443:443"]
+    environment:
+      GW_API_HOST: ${GW_API_HOST:?set API hostname}
+      GW_CONSOLE_HOST: ${GW_CONSOLE_HOST:?set console hostname}
+    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro", "caddy:/data", "caddy-config:/config"]
+  edge-local:
+    <<: *edge
+    profiles: [local]
+    ports: ["127.0.0.1:${GW_LITE_LOCAL_PORT:-8443}:443"]
+    volumes: ["./Caddyfile.local:/etc/caddy/Caddyfile:ro", "caddy-local:/data", "caddy-local-config:/config"]
+volumes:
+  mysql: {}
+  redis: {}
+  kafka: {}
+  etcd: {}
+  caddy: {}
+  caddy-config: {}
+  caddy-local: {}
+  caddy-local-config: {}

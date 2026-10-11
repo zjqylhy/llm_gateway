@@ -1,0 +1,18 @@
+# 仅用于本机 Go 基础设施回归，不在云部署中暴露中间件端口。
+services:
+  mysql:
+    ports: ["127.0.0.1:13306:3306"]
+  redis:
+    ports: ["127.0.0.1:16379:6379"]
+  redis-cache:
+    ports: ["127.0.0.1:16380:6379"]
+  kafka:
+    ports: ["127.0.0.1:19092:19092"]
+    environment:
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:19092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://127.0.0.1:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+  etcd:
+    ports: ["127.0.0.1:12379:2379"]
+  milvus:
+    ports: ["127.0.0.1:19530:19530"]

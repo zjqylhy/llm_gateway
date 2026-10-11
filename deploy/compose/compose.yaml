@@ -1,0 +1,196 @@
+name: llm-gateway-integration
+x-app: &app
+  build:
+    context: ../..
+    args:
+      NODE_IMAGE: ${GW_BUILD_NODE_IMAGE:-node:24.21.0-bookworm-slim}
+      GO_IMAGE: ${GW_BUILD_GO_IMAGE:-golang:1.27.1-bookworm}
+      GO_PROXY: ${GW_BUILD_GOPROXY:-https://proxy.golang.org,direct}
+  image: llm-gateway:local
+  env_file: ../../.env
+  environment:
+    GW_CACHE_REDIS_URL: ${GW_CACHE_REDIS_URL:-redis://:${GW_LOCAL_REDIS_PASSWORD:?set local Redis password}@redis-cache:6379/0}
+    GOMEMLIMIT: ${GW_GOMEMLIMIT:-768MiB}
+    GW_MAX_CONCURRENT_REQUESTS: ${GW_MAX_CONCURRENT_REQUESTS:-16}
+    GW_MAX_METERING_INFLIGHT: ${GW_MAX_METERING_INFLIGHT:-8}
+    GW_METERING_COMMIT_BATCH_SIZE: ${GW_METERING_COMMIT_BATCH_SIZE:-32}
+    GW_METERING_COMMIT_INTERVAL_MS: ${GW_METERING_COMMIT_INTERVAL_MS:-100}
+    GW_MAX_ADMIN_REQUESTS: ${GW_MAX_ADMIN_REQUESTS:-8}
+    GW_MAX_CONNECTIONS: ${GW_MAX_CONNECTIONS:-256}
+    GW_OUTBOX_GLOBAL_BYTES: ${GW_OUTBOX_GLOBAL_BYTES:-536870912}
+    GW_OUTBOX_APP_BYTES: ${GW_OUTBOX_APP_BYTES:-67108864}
+  mem_limit: 1g
+  cpus: 2
+  pids_limit: 256
+  logging: &logging
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  stop_grace_period: 155s
+  restart: unless-stopped
+services:
+  mysql:
+    image: mysql:8.4
+    logging: *logging
+    environment:
+      MYSQL_DATABASE: gateway
+      MYSQL_USER: gateway
+      MYSQL_PASSWORD: ${GW_LOCAL_DB_PASSWORD:?set local DB password}
+      MYSQL_ROOT_PASSWORD: ${GW_LOCAL_ROOT_PASSWORD:?set local root password}
+    volumes: ["mysql:/var/lib/mysql"]
+    healthcheck:
+      test: [CMD-SHELL, "MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysqladmin ping -h 127.0.0.1 --silent"]
+      interval: 5s
+      retries: 30
+  redis:
+    image: redis:7.4
+    environment:
+      REDIS_PASSWORD: ${GW_LOCAL_REDIS_PASSWORD:?set local Redis password}
+    # 配额和去重状态不可淘汰；内存限额之外为 AOF 重写、缓冲和碎片预留空间。
+    command: [sh, -c, 'exec redis-server --appendonly yes --appendfsync always --maxmemory 128mb --maxmemory-policy noeviction --maxmemory-clients 10% --maxclients 1024 --requirepass "$$REDIS_PASSWORD"']
+    mem_limit: 512m
+    cpus: 1
+    logging: *logging
+    volumes: ["redis:/data"]
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping']
+      interval: 5s
+      retries: 30
+  kafka:
+    image: apache/kafka:4.0.0
+    logging: *logging
+    mem_limit: 1536m
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
+    volumes: ["kafka:/var/lib/kafka/data"]
+    healthcheck:
+      test: [CMD-SHELL, "/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list >/dev/null"]
+      interval: 10s
+      retries: 30
+  kafka-init:
+    image: apache/kafka:4.0.0
+    logging: *logging
+    depends_on:
+      kafka: {condition: service_healthy}
+    entrypoint: [/opt/kafka/bin/kafka-topics.sh]
+    command: [--bootstrap-server, kafka:9092, --create, --if-not-exists, --topic, gateway-events, --partitions, "6", --replication-factor, "1", --config, retention.ms=604800000]
+    restart: "no"
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.21
+    logging: *logging
+    command: [etcd, --advertise-client-urls=http://etcd:2379, --listen-client-urls=http://0.0.0.0:2379, --data-dir=/etcd]
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+    volumes: ["etcd:/etcd"]
+    healthcheck:
+      test: [CMD, etcdctl, endpoint, health]
+      interval: 5s
+      retries: 30
+  minio:
+    # 与 Milvus 官方部署配置保持一致，原 minio/minio 镜像已无法拉取。
+    image: milvusdb/minio:RELEASE.2024-12-18T13-15-44Z
+    logging: *logging
+    command: [minio, server, /data]
+    environment:
+      MINIO_ACCESS_KEY: gateway
+      MINIO_SECRET_KEY: ${GW_LOCAL_OBJECT_PASSWORD:?set object store password}
+    volumes: ["minio:/data"]
+  milvus:
+    image: milvusdb/milvus:v2.6.0
+    logging: *logging
+    command: [milvus, run, standalone]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: gateway
+      MINIO_SECRET_ACCESS_KEY: ${GW_LOCAL_OBJECT_PASSWORD:?set object store password}
+    depends_on:
+      etcd: {condition: service_healthy}
+      minio: {condition: service_started}
+    volumes: ["milvus:/var/lib/milvus"]
+    healthcheck:
+      test: [CMD, curl, -f, http://localhost:9091/healthz]
+      interval: 10s
+      retries: 30
+  gateway:
+    <<: *app
+    command: [/app/gateway]
+    ports: ["127.0.0.1:${GW_LOCAL_GATEWAY_PORT:-8080}:8080"]
+  redis-cache:
+    image: redis:7.4
+    environment:
+      REDIS_PASSWORD: ${GW_LOCAL_REDIS_PASSWORD:?set local Redis password}
+    # 缓存允许淘汰与重启丢失，不能仅用不同 DB 编号与配额隔离。
+    command: [sh, -c, 'exec redis-server --save "" --appendonly no --maxmemory 64mb --maxmemory-policy allkeys-lru --maxmemory-clients 10% --maxclients 1024 --requirepass "$$REDIS_PASSWORD"']
+    mem_limit: 192m
+    cpus: 1
+    logging: *logging
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping']
+      interval: 5s
+      retries: 30
+  admin:
+    <<: *app
+    command: [/app/admin]
+  worker:
+    <<: *app
+    command: [/app/worker]
+  migrate:
+    <<: *app
+    command: [/app/migrate]
+    restart: "no"
+    profiles: [setup]
+  bootstrap:
+    <<: *app
+    command: [/app/bootstrap]
+    restart: "no"
+    profiles: [setup]
+  cache-init:
+    <<: *app
+    command: [/app/cache-init]
+    restart: "no"
+    profiles: [setup]
+  edge:
+    image: ${GW_LOCAL_EDGE_IMAGE:-caddy:2.10}
+    logging: *logging
+    ports: ["127.0.0.1:8443:443"]
+    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro", "caddy:/data"]
+    depends_on: [admin]
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    logging: *logging
+    volumes: ["../observability/prometheus.yaml:/etc/prometheus/prometheus.yml:ro", "../observability/alerts.yaml:/etc/prometheus/alerts.yml:ro", "prometheus:/prometheus"]
+    ports: ["127.0.0.1:9090:9090"]
+  grafana:
+    image: grafana/grafana:12.1.0
+    logging: *logging
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GW_GRAFANA_PASSWORD:?set Grafana password}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports: ["127.0.0.1:3000:3000"]
+    volumes: ["../observability/grafana:/etc/grafana/provisioning:ro", "../observability/dashboard.json:/var/lib/grafana/dashboards/gateway.json:ro", "grafana:/var/lib/grafana"]
+volumes:
+  mysql: {}
+  redis: {}
+  kafka: {}
+  etcd: {}
+  minio: {}
+  milvus: {}
+  caddy: {}
+  prometheus: {}
+  grafana: {}

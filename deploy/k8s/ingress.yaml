@@ -1,0 +1,34 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gateway
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "130"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "130"
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [api.example.com, console.example.com]
+      secretName: gateway-tls
+  rules:
+    - host: api.example.com
+      http:
+        paths:
+          - path: /v1
+            pathType: Prefix
+            backend: {service: {name: gateway, port: {number: 8080}}}
+    - host: console.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Exact
+            backend: {service: {name: admin, port: {number: 8081}}}
+          - path: /assets
+            pathType: Prefix
+            backend: {service: {name: admin, port: {number: 8081}}}
+          - path: /admin
+            pathType: Prefix
+            backend: {service: {name: admin, port: {number: 8081}}}

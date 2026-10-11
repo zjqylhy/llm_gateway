@@ -1,0 +1,1048 @@
+{
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": [
+    "llm-gateway"
+  ],
+  "version": 1,
+  "panels": [
+    {
+      "id": 1,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(gateway_requests_total[1m]))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "h": 7,
+        "w": 8,
+        "y": 0
+      },
+      "type": "timeseries",
+      "title": "请求 QPS",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(gateway_requests_total{status=~\"success|fallback_success\"}[5m])) / clamp_min(sum(rate(gateway_requests_total[5m])),0.001)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "h": 7,
+        "w": 8,
+        "y": 0
+      },
+      "type": "timeseries",
+      "title": "成功率",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(gateway_requests_total{status=~\"failed|stream_error\"}[5m])) / clamp_min(sum(rate(gateway_requests_total[5m])),0.001)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "h": 7,
+        "w": 8,
+        "y": 0
+      },
+      "type": "timeseries",
+      "title": "失败率",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(gateway_requests_total{status=\"rate_limited\"}[5m])) / clamp_min(sum(rate(gateway_requests_total[5m])),0.001)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "h": 7,
+        "w": 8,
+        "y": 7
+      },
+      "type": "timeseries",
+      "title": "限流比例",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5,sum(rate(gateway_request_seconds_bucket[5m])) by(le))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "h": 7,
+        "w": 8,
+        "y": 7
+      },
+      "type": "timeseries",
+      "title": "请求 P50",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.99,sum(rate(gateway_request_seconds_bucket[5m])) by(le))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "h": 7,
+        "w": 8,
+        "y": 7
+      },
+      "type": "timeseries",
+      "title": "请求 P99",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5,sum(rate(gateway_overhead_seconds_bucket{purpose=\"inference\"}[5m])) by(le))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "h": 7,
+        "w": 8,
+        "y": 14
+      },
+      "type": "timeseries",
+      "title": "网关开销 P50",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.99,sum(rate(gateway_overhead_seconds_bucket{purpose=\"inference\"}[5m])) by(le))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "h": 7,
+        "w": 8,
+        "y": 14
+      },
+      "type": "timeseries",
+      "title": "网关开销 P99",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95,sum(rate(gateway_first_token_seconds_bucket[5m])) by(le))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "h": 7,
+        "w": 8,
+        "y": 14
+      },
+      "type": "timeseries",
+      "title": "首事件 P95",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.99,sum(rate(gateway_attempt_seconds_bucket[5m])) by(le,model))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "h": 7,
+        "w": 8,
+        "y": 21
+      },
+      "type": "timeseries",
+      "title": "上游 P99",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(gateway_active_requests)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "h": 7,
+        "w": 8,
+        "y": 21
+      },
+      "type": "timeseries",
+      "title": "活跃请求",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(gateway_attempts_total[1m])) by(model)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "h": 7,
+        "w": 8,
+        "y": 21
+      },
+      "type": "timeseries",
+      "title": "上游尝试速率",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 13,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(gateway_tokens_total{kind=\"input\"}[1m])) by(app)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "h": 7,
+        "w": 8,
+        "y": 28
+      },
+      "type": "timeseries",
+      "title": "输入 Token 速率",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 14,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(gateway_tokens_total{kind=\"output\"}[1m])) by(app)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "h": 7,
+        "w": 8,
+        "y": 28
+      },
+      "type": "timeseries",
+      "title": "输出 Token 速率",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 15,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(gateway_cost_micro_total[1m])) by(app)/1000000"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyCNY"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "h": 7,
+        "w": 8,
+        "y": 28
+      },
+      "type": "timeseries",
+      "title": "成本速率 CNY",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 16,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(gateway_cache_operations_total{result=\"hit\"}[5m])) / clamp_min(sum(rate(gateway_cache_operations_total[5m])),0.001)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "h": 7,
+        "w": 8,
+        "y": 35
+      },
+      "type": "timeseries",
+      "title": "缓存命中率",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 17,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(gateway_cache_operations_total{result=\"error\"}[5m]))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "h": 7,
+        "w": 8,
+        "y": 35
+      },
+      "type": "timeseries",
+      "title": "缓存失败速率",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 18,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(gateway_event_publish_errors_total[5m]))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "h": 7,
+        "w": 8,
+        "y": 35
+      },
+      "type": "timeseries",
+      "title": "计量发布失败",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 19,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "gateway_config_version"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "h": 7,
+        "w": 8,
+        "y": 42
+      },
+      "type": "timeseries",
+      "title": "实例配置版本",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 20,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "go_goroutines"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "h": 7,
+        "w": 8,
+        "y": 42
+      },
+      "type": "timeseries",
+      "title": "Go 协程数量",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 21,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "go_memstats_heap_alloc_bytes"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "h": 7,
+        "w": 8,
+        "y": 42
+      },
+      "type": "timeseries",
+      "title": "Go 堆内存",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 22,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "process_resident_memory_bytes"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "h": 7,
+        "w": 8,
+        "y": 49
+      },
+      "type": "timeseries",
+      "title": "进程驻留内存",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 23,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(process_cpu_seconds_total[1m])"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "h": 7,
+        "w": 8,
+        "y": 49
+      },
+      "type": "timeseries",
+      "title": "进程 CPU",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 24,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up{job=~\"gateway|admin|worker\"}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "h": 7,
+        "w": 8,
+        "y": 49
+      },
+      "type": "timeseries",
+      "title": "实例可达状态",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 25,
+      "type": "timeseries",
+      "title": "计量消费积压",
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 56,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "gateway_metering_lag_records"
+        }
+      ]
+    },
+    {
+      "id": 26,
+      "type": "timeseries",
+      "title": "接单许可剩余秒数",
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 56,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "gateway_metering_permit_expires_seconds{job=\"worker\"} - time()"
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "type": "timeseries",
+      "title": "待核验应用",
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 56,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "gateway_metering_unchecked_apps"
+        }
+      ]
+    },
+    {
+      "id": 28,
+      "type": "timeseries",
+      "title": "应用核验轮转秒数",
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 63,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "gateway_metering_rotation_seconds"
+        }
+      ]
+    },
+    {
+      "id": 29,
+      "type": "timeseries",
+      "title": "补偿载荷与预留字节",
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 63,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "gateway_metering_outbox_bytes"
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "SQL 连接等待秒数",
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 63,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(gateway_sql_pool_wait_seconds_total[1m])"
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "SQL 活跃连接",
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 70,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "gateway_sql_pool_in_use"
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "核验失败次数",
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 70,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "increase(gateway_metering_audit_failures_total[5m])"
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "type": "timeseries",
+      "title": "计量阶段 P95（含失败）",
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 77,
+        "w": 12,
+        "h": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, stage, kind, result) (rate(gateway_metering_stage_seconds_bucket[5m])))",
+          "legendFormat": "{{stage}} / {{kind}} / {{result}}"
+        }
+      ]
+    },
+    {
+      "id": 34,
+      "type": "timeseries",
+      "title": "计量拒绝原因",
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 77,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (reason) (rate(gateway_metering_rejections_total[5m]))",
+          "legendFormat": "{{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 35,
+      "type": "timeseries",
+      "title": "消费位置平均提交批次",
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 84,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(gateway_metering_commit_batch_records_sum[5m])) / clamp_min(sum(rate(gateway_metering_commit_batch_records_count[5m])), 0.001)"
+        }
+      ]
+    }
+  ],
+  "uid": "llm-gateway",
+  "timezone": "browser",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "editable": true,
+  "title": "LLM Gateway 运行监控"
+}

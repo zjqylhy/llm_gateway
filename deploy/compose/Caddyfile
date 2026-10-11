@@ -1,0 +1,6 @@
+https://localhost {
+    tls internal
+    reverse_proxy admin:8081 {
+        flush_interval -1
+    }
+}

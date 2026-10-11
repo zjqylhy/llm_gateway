@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-config
+data:
+  GW_ADMIN_ORIGIN: https://console.example.com
+  GW_KAFKA_TOPIC: gateway-events
+  GW_KAFKA_TLS: "true"
+  GW_MILVUS_COLLECTION: gateway_cache
+  GW_WEB_DIR: /app/web/dist
+  GW_ADMIN_USER: admin
+  GOMEMLIMIT: 768MiB
+  GW_MAX_CONCURRENT_REQUESTS: "16"
+  GW_MAX_METERING_INFLIGHT: "8"
+  GW_METERING_COMMIT_BATCH_SIZE: "32"
+  GW_METERING_COMMIT_INTERVAL_MS: "100"
+  GW_MAX_ADMIN_REQUESTS: "8"
+  GW_MAX_CONNECTIONS: "256"
+  GW_OUTBOX_GLOBAL_BYTES: "536870912"
+  GW_OUTBOX_APP_BYTES: "67108864"

@@ -1,0 +1,177 @@
+{
+  "run": "gw_acceptance_075e23a00365",
+  "date": "2026-10-11",
+  "environment": {
+    "docker_cpu": 32,
+    "docker_memory_bytes": 16303157248,
+    "gateway_instances": 2,
+    "gateway_cpu_each": 2,
+    "gateway_memory_bytes_each": 268435456,
+    "worker_cpu": 1,
+    "worker_memory_bytes": 268435456,
+    "upstream_cpu": 1,
+    "upstream_memory_bytes": 134217728,
+    "quota_redis_cpu": 1,
+    "quota_redis_memory_bytes": 268435456,
+    "quota_redis_maxmemory_bytes": 8388608,
+    "cache_maxmemory_bytes": 4194304,
+    "shared_dependencies_have_no_container_cpu_or_memory_limit": true
+  },
+  "settings": {
+    "http_concurrency_each": 128,
+    "metering_inflight_each": 8,
+    "outbox_app_bytes": 67108864,
+    "outbox_global_bytes": 536870912,
+    "kafka_partitions": 3,
+    "kafka_replication": 1,
+    "redis_appendfsync": "always"
+  },
+  "samples": [
+    {
+      "concurrency": 10,
+      "requests": 500,
+      "stream": false,
+      "failed": 0,
+      "protected_rejections": 427,
+      "accepted": 73,
+      "accepted_rps": 13.81825803026297,
+      "accepted_p95_ms": 806.009,
+      "accepted_p99_ms": 812.013,
+      "seconds": 5.2828656,
+      "rps": 94.64560294700664,
+      "p50_ms": 2.672,
+      "p95_ms": 701.191,
+      "p99_ms": 798.904,
+      "ledger_drain_seconds": 9.1799186
+    },
+    {
+      "concurrency": 50,
+      "requests": 1000,
+      "stream": false,
+      "failed": 0,
+      "protected_rejections": 937,
+      "accepted": 63,
+      "accepted_rps": 16.162512990619817,
+      "accepted_p95_ms": 2162.674,
+      "accepted_p99_ms": 2224.752,
+      "seconds": 3.8979087,
+      "rps": 256.5478252479336,
+      "p50_ms": 8.003,
+      "p95_ms": 1176.248,
+      "p99_ms": 2063.945,
+      "ledger_drain_seconds": 7.8391415
+    },
+    {
+      "concurrency": 100,
+      "requests": 2000,
+      "stream": false,
+      "failed": 0,
+      "protected_rejections": 1937,
+      "accepted": 63,
+      "accepted_rps": 15.737439556054325,
+      "accepted_p95_ms": 2217.058,
+      "accepted_p99_ms": 2272.741,
+      "seconds": 4.0031925,
+      "rps": 499.60125574775634,
+      "p50_ms": 16.96,
+      "p95_ms": 1003.205,
+      "p99_ms": 1960.183,
+      "ledger_drain_seconds": 7.9438517
+    },
+    {
+      "concurrency": 50,
+      "requests": 200,
+      "stream": true,
+      "failed": 0,
+      "protected_rejections": 137,
+      "accepted": 63,
+      "accepted_rps": 15.746856533764447,
+      "accepted_p95_ms": 2274.799,
+      "accepted_p99_ms": 2321.531,
+      "seconds": 4.0007985,
+      "rps": 49.99002074210935,
+      "p50_ms": 1001.438,
+      "p95_ms": 2129.006,
+      "p99_ms": 2309.727,
+      "accepted_first_event_p95_ms": 1329.422,
+      "ledger_drain_seconds": 7.945059
+    }
+  ],
+  "overhead": {
+    "purpose": "inference",
+    "count": 272,
+    "sum_seconds": 279.683998286,
+    "mean_seconds": 1.0282499936985294,
+    "p99_histogram_estimate_seconds": 1.9807092198581557,
+    "buckets": [
+      {
+        "upper_seconds": 0.001,
+        "cumulative_count": 0
+      },
+      {
+        "upper_seconds": 0.005,
+        "cumulative_count": 0
+      },
+      {
+        "upper_seconds": 0.01,
+        "cumulative_count": 0
+      },
+      {
+        "upper_seconds": 0.03,
+        "cumulative_count": 0
+      },
+      {
+        "upper_seconds": 0.05,
+        "cumulative_count": 0
+      },
+      {
+        "upper_seconds": 0.15,
+        "cumulative_count": 1
+      },
+      {
+        "upper_seconds": 0.5,
+        "cumulative_count": 95
+      },
+      {
+        "upper_seconds": 1,
+        "cumulative_count": 131
+      },
+      {
+        "upper_seconds": 2,
+        "cumulative_count": 272
+      },
+      {
+        "upper_seconds": 5,
+        "cumulative_count": 272
+      },
+      {
+        "upper_seconds": 15,
+        "cumulative_count": 272
+      },
+      {
+        "upper_seconds": 60,
+        "cumulative_count": 272
+      },
+      {
+        "upper_seconds": 120,
+        "cumulative_count": 272
+      },
+      {
+        "upper_seconds": "Inf",
+        "cumulative_count": 272
+      }
+    ]
+  },
+  "sql_pools": [
+    {
+      "instance": 1,
+      "wait_count": 0,
+      "wait_seconds": 0
+    },
+    {
+      "instance": 2,
+      "wait_count": 0,
+      "wait_seconds": 0
+    }
+  ]
+}

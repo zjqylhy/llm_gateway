@@ -1,0 +1,31 @@
+# 先修改镜像地址及 command，依次运行 migrate、bootstrap、cache-init；不要每次启动执行 DDL。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gateway-setup
+  namespace: llm-gateway
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      serviceAccountName: gateway
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: setup
+          image: REPLACE_REGISTRY/llm-gateway:REPLACE_COMMIT
+          command: [/app/migrate]
+          envFrom:
+            - configMapRef: {name: gateway-config}
+            - secretRef: {name: gateway-runtime}
+          env:
+            - name: GW_ADMIN_PASSWORD
+              valueFrom: {secretKeyRef: {name: gateway-bootstrap, key: GW_ADMIN_PASSWORD}}
+            - name: GW_CACHE_DIMENSIONS
+              value: "1536"
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}

@@ -1,0 +1,18 @@
+{$GW_API_HOST} {
+    handle /v1/* {
+        reverse_proxy gateway:8080 {
+            flush_interval -1
+        }
+    }
+    handle {
+        respond 404
+    }
+}
+
+{$GW_CONSOLE_HOST} {
+    @internal path /metrics /healthz /readyz
+    respond @internal 404
+    reverse_proxy admin:8081 {
+        flush_interval -1
+    }
+}

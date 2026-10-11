@@ -1,0 +1,45 @@
+# 仅供 verify-lite.ps1 的随机隔离项目；生产部署不要加载此文件。
+services:
+  mysql:
+    volumes: ["${GW_LITE_RUN_DIR:?}:/acceptance:ro"]
+    ports: ["127.0.0.1:${GW_LITE_MYSQL_PORT:?}:3306"]
+  redis:
+    volumes: ["${GW_LITE_RUN_DIR:?}:/acceptance:ro"]
+    ports: ["127.0.0.1:${GW_LITE_REDIS_PORT:?}:6379"]
+  etcd:
+    volumes: ["${GW_LITE_RUN_DIR:?}:/acceptance:ro"]
+    ports: ["127.0.0.1:${GW_LITE_ETCD_PORT:?}:2379"]
+  kafka:
+    volumes: ["${GW_LITE_RUN_DIR:?}:/acceptance:ro"]
+    ports: ["127.0.0.1:${GW_LITE_KAFKA_PORT:?}:19092"]
+    environment:
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:19092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://127.0.0.1:${GW_LITE_KAFKA_PORT:?}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+  gateway:
+    entrypoint: [/acceptance/gateway.test]
+    command: [-test.run=^TestReliabilityProcess$, -test.timeout=100m, -test.v]
+    environment: {GW_RELIABILITY_ROLE: gateway}
+    volumes: ["${GW_LITE_RUN_DIR:?}:/acceptance:ro"]
+    ports: ["127.0.0.1:${GW_LITE_GATEWAY_PORT:?}:8080"]
+  admin:
+    entrypoint: [/acceptance/gateway.test]
+    command: [-test.run=^TestReliabilityProcess$, -test.timeout=100m, -test.v]
+    environment: {GW_RELIABILITY_ROLE: admin}
+    volumes: ["${GW_LITE_RUN_DIR:?}:/acceptance:ro"]
+  worker:
+    entrypoint: [/acceptance/gateway.test]
+    command: [-test.run=^TestReliabilityProcess$, -test.timeout=100m, -test.v]
+    environment: {GW_RELIABILITY_ROLE: worker}
+    volumes: ["${GW_LITE_RUN_DIR:?}:/acceptance:ro"]
+  upstream:
+    image: ${GW_IMAGE:?}
+    entrypoint: [/acceptance/gateway.test]
+    command: [-test.run=^TestReliabilityProcess$, -test.timeout=100m, -test.v]
+    environment: {GW_RELIABILITY_ROLE: upstream}
+    volumes: ["${GW_LITE_RUN_DIR:?}:/acceptance:ro"]
+    mem_limit: 128m
+    restart: "no"
+    ports: ["127.0.0.1:${GW_LITE_UPSTREAM_PORT:?}:8080"]
+  edge-local:
+    volumes: ["${GW_LITE_RUN_DIR:?}:/acceptance:ro"]

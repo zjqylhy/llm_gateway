@@ -1,0 +1,536 @@
+{
+  "date": "2026-10-11",
+  "environment": {
+    "gateway_instances": 2,
+    "workers": 1,
+    "kafka_partitions": 3,
+    "kafka_replication_factor": 1,
+    "gateway_http_inflight_per_instance": 128,
+    "gateway_metering_inflight_per_instance": 8,
+    "outbox_application_bytes": 67108864,
+    "outbox_global_bytes": 536870912,
+    "roles": "each gateway and worker: 1 CPU/256MiB; mock upstream: 1 CPU/128MiB",
+    "quota_redis": "1 CPU/256MiB; maxmemory 8MiB; noeviction; AOF always",
+    "cache_redis": "maxmemory 4MiB; allkeys-lru",
+    "dependencies": "shared local MySQL/Kafka/etcd/Milvus; no dedicated CPU/memory limits; other applications running",
+    "comparison_limits": "sequential short runs, not replicated controlled benchmarks; final seed has two additional idle apps during bursts",
+    "metric_snapshot_scope": "end of burst phase, before fixed-arrival and later fault scenarios; kinds aggregated because baseline completed included request summaries",
+    "fixed_arrival_scope": "five 20-second samples; two apps across two gateways; client inflight maximum 32; slow mock adds 250ms"
+  },
+  "baseline": {
+    "run_id": "gw_acceptance_6e8030ba67b1",
+    "pressure": [
+      {
+        "concurrency": 10,
+        "requests": 500,
+        "stream": false,
+        "failed": 0,
+        "protected_rejections": 427,
+        "accepted": 73,
+        "accepted_rps": 14.152280986133265,
+        "accepted_p95_ms": 707.028,
+        "accepted_p99_ms": 732.243,
+        "seconds": 5.1581791,
+        "rps": 96.93343141187168,
+        "p50_ms": 2.681,
+        "p95_ms": 679.617,
+        "p99_ms": 705.081,
+        "ledger_drain_seconds": 9.1874581
+      },
+      {
+        "concurrency": 50,
+        "requests": 1000,
+        "stream": false,
+        "failed": 0,
+        "protected_rejections": 937,
+        "accepted": 63,
+        "accepted_rps": 15.842959356170297,
+        "accepted_p95_ms": 2249.102,
+        "accepted_p99_ms": 2291.712,
+        "seconds": 3.9765298,
+        "rps": 251.47554533603648,
+        "p50_ms": 8.033,
+        "p95_ms": 1294.507,
+        "p99_ms": 2131.275,
+        "ledger_drain_seconds": 7.949701
+      },
+      {
+        "concurrency": 100,
+        "requests": 2000,
+        "stream": false,
+        "failed": 0,
+        "protected_rejections": 1937,
+        "accepted": 63,
+        "accepted_rps": 15.363380528988015,
+        "accepted_p95_ms": 2303.886,
+        "accepted_p99_ms": 2365.062,
+        "seconds": 4.10066,
+        "rps": 487.72636599961953,
+        "p50_ms": 17.578,
+        "p95_ms": 1002.583,
+        "p99_ms": 2057.517,
+        "ledger_drain_seconds": 7.9479898
+      },
+      {
+        "concurrency": 50,
+        "requests": 200,
+        "stream": true,
+        "failed": 0,
+        "protected_rejections": 137,
+        "accepted": 63,
+        "accepted_rps": 15.336639231123154,
+        "accepted_p95_ms": 2358.892,
+        "accepted_p99_ms": 2424.604,
+        "seconds": 4.10781,
+        "rps": 48.68774359086716,
+        "p50_ms": 1001.078,
+        "p95_ms": 2244.116,
+        "p99_ms": 2398.173,
+        "accepted_first_event_p95_ms": 1372.771,
+        "ledger_drain_seconds": 7.9472946
+      }
+    ],
+    "metric_snapshot": {
+      "gateway-1": {
+        "stages_aggregated_across_kind": {
+          "kafka_ack/ok": {
+            "seconds": 0.8902883200000001,
+            "observations": 509,
+            "mean_ms": 1.749092966601179
+          },
+          "outbox_mark/ok": {
+            "seconds": 6.802604081999998,
+            "observations": 509,
+            "mean_ms": 13.364644561886047
+          },
+          "outbox_save/ok": {
+            "seconds": 221.25688282700006,
+            "observations": 509,
+            "mean_ms": 434.68935722396867
+          },
+          "outbox_capacity_lock/ok": {
+            "seconds": 160.65710152999998,
+            "observations": 513,
+            "mean_ms": 313.17173787524365
+          },
+          "admission/error": {
+            "seconds": 210.81795353200047,
+            "observations": 2031,
+            "mean_ms": 103.80007559428877
+          },
+          "outbox_save/error": {
+            "seconds": 0.87383309,
+            "observations": 4,
+            "mean_ms": 218.4582725
+          },
+          "admission/ok": {
+            "seconds": 67.52279589600002,
+            "observations": 235,
+            "mean_ms": 287.33104636595755
+          },
+          "permit_read/ok": {
+            "seconds": 1.524633697999999,
+            "observations": 2110,
+            "mean_ms": 0.7225752123222744
+          }
+        },
+        "other_samples": {
+          "gateway_metering_commit_batch_records_sum": 0,
+          "gateway_metering_commit_batch_records_count": 0,
+          "gateway_overhead_seconds_sum{purpose=\"inference\"}": 144.35684232900005,
+          "gateway_overhead_seconds_count{purpose=\"inference\"}": 137
+        }
+      },
+      "gateway-2": {
+        "stages_aggregated_across_kind": {
+          "kafka_ack/ok": {
+            "seconds": 0.8657027700000002,
+            "observations": 506,
+            "mean_ms": 1.7108750395256922
+          },
+          "outbox_mark/ok": {
+            "seconds": 6.725708676000001,
+            "observations": 506,
+            "mean_ms": 13.291914379446643
+          },
+          "outbox_save/ok": {
+            "seconds": 230.70527360699987,
+            "observations": 506,
+            "mean_ms": 455.9392759031618
+          },
+          "outbox_capacity_lock/ok": {
+            "seconds": 162.52702757700015,
+            "observations": 511,
+            "mean_ms": 318.05680543444254
+          },
+          "admission/error": {
+            "seconds": 206.88762382400014,
+            "observations": 1398,
+            "mean_ms": 147.9882859971389
+          },
+          "outbox_save/error": {
+            "seconds": 1.605624829,
+            "observations": 5,
+            "mean_ms": 321.1249658
+          },
+          "admission/ok": {
+            "seconds": 67.39826808100003,
+            "observations": 236,
+            "mean_ms": 285.58588169915265
+          },
+          "permit_read/ok": {
+            "seconds": 1.033563874999999,
+            "observations": 1478,
+            "mean_ms": 0.6992989682002699
+          }
+        },
+        "other_samples": {
+          "gateway_metering_commit_batch_records_sum": 0,
+          "gateway_metering_commit_batch_records_count": 0,
+          "gateway_overhead_seconds_sum{purpose=\"inference\"}": 144.29876907999997,
+          "gateway_overhead_seconds_count{purpose=\"inference\"}": 135
+        }
+      },
+      "worker": {
+        "stages_aggregated_across_kind": {
+          "ledger_apply/ok": {
+            "seconds": 14.548966967999997,
+            "observations": 1017,
+            "mean_ms": 14.30576889675516
+          },
+          "outbox_deliver/ok": {
+            "seconds": 31.723952775,
+            "observations": 1017,
+            "mean_ms": 31.193660545722715
+          },
+          "redis_settle/ok": {
+            "seconds": 3.616745226999998,
+            "observations": 1017,
+            "mean_ms": 3.5562883254670576
+          },
+          "settlement_watermark/ok": {
+            "seconds": 6.361415501999998,
+            "observations": 1017,
+            "mean_ms": 6.255079156342181
+          },
+          "offset_commit/ok": {
+            "seconds": 6.43026171,
+            "observations": 1020,
+            "mean_ms": 6.304178147058823
+          },
+          "outbox_capacity_lock/ok": {
+            "seconds": 19.328693986999994,
+            "observations": 1017,
+            "mean_ms": 19.005598807276296
+          }
+        },
+        "other_samples": {
+          "gateway_metering_commit_batch_records_sum": 0,
+          "gateway_metering_commit_batch_records_count": 0
+        }
+      }
+    }
+  },
+  "final": {
+    "run_id": "gw_acceptance_8b1d7477b571",
+    "pressure": [
+      {
+        "concurrency": 10,
+        "requests": 500,
+        "stream": false,
+        "failed": 0,
+        "protected_rejections": 430,
+        "accepted": 70,
+        "accepted_rps": 20.683292665547818,
+        "accepted_p95_ms": 490.024,
+        "accepted_p99_ms": 497.768,
+        "seconds": 3.3843741,
+        "rps": 147.737804753913,
+        "p50_ms": 2.182,
+        "p95_ms": 446.765,
+        "p99_ms": 488.006,
+        "ledger_drain_seconds": 7.4223555
+      },
+      {
+        "concurrency": 50,
+        "requests": 1000,
+        "stream": false,
+        "failed": 0,
+        "protected_rejections": 936,
+        "accepted": 64,
+        "accepted_rps": 20.880767068028725,
+        "accepted_p95_ms": 2129.905,
+        "accepted_p99_ms": 2237.451,
+        "seconds": 3.0650215,
+        "rps": 326.2619854379488,
+        "p50_ms": 10.423,
+        "p95_ms": 1444.952,
+        "p99_ms": 1993.633,
+        "ledger_drain_seconds": 7.0107223
+      },
+      {
+        "concurrency": 100,
+        "requests": 2000,
+        "stream": false,
+        "failed": 0,
+        "protected_rejections": 1934,
+        "accepted": 66,
+        "accepted_rps": 19.461091704733253,
+        "accepted_p95_ms": 1948.939,
+        "accepted_p99_ms": 2095.883,
+        "seconds": 3.3913822,
+        "rps": 589.7300516585834,
+        "p50_ms": 17.497,
+        "p95_ms": 1002.66,
+        "p99_ms": 1739.897,
+        "ledger_drain_seconds": 7.7274115
+      },
+      {
+        "concurrency": 50,
+        "requests": 200,
+        "stream": true,
+        "failed": 0,
+        "protected_rejections": 136,
+        "accepted": 64,
+        "accepted_rps": 22.180940257682224,
+        "accepted_p95_ms": 1933.358,
+        "accepted_p99_ms": 2038.035,
+        "seconds": 2.8853600999999998,
+        "rps": 69.31543830525695,
+        "p50_ms": 286.886,
+        "p95_ms": 1842.111,
+        "p99_ms": 2011.983,
+        "accepted_first_event_p95_ms": 1380.789,
+        "ledger_drain_seconds": 7.0085202
+      }
+    ],
+    "metric_snapshot": {
+      "gateway-1": {
+        "stages_aggregated_across_kind": {
+          "kafka_ack/ok": {
+            "seconds": 0.9021140920000001,
+            "observations": 542,
+            "mean_ms": 1.6644171439114395
+          },
+          "outbox_mark/ok": {
+            "seconds": 9.874217591999997,
+            "observations": 542,
+            "mean_ms": 18.21811363837638
+          },
+          "outbox_save/ok": {
+            "seconds": 187.88996276199998,
+            "observations": 542,
+            "mean_ms": 346.660447900369
+          },
+          "outbox_capacity_lock/ok": {
+            "seconds": 132.00330108700004,
+            "observations": 439,
+            "mean_ms": 300.69089085877
+          },
+          "admission/error": {
+            "seconds": 120.72017977500013,
+            "observations": 1559,
+            "mean_ms": 77.4343680404106
+          },
+          "outbox_save/error": {
+            "seconds": 9.955174676999999,
+            "observations": 34,
+            "mean_ms": 292.79925520588233
+          },
+          "admission/ok": {
+            "seconds": 80.13312267399999,
+            "observations": 268,
+            "mean_ms": 299.00418908208957
+          },
+          "permit_read/ok": {
+            "seconds": 0.8700475830000002,
+            "observations": 1769,
+            "mean_ms": 0.4918301769361222
+          }
+        },
+        "other_samples": {
+          "gateway_metering_commit_batch_records_sum": 0,
+          "gateway_metering_commit_batch_records_count": 0,
+          "gateway_overhead_seconds_sum{purpose=\"inference\"}": 97.14409100299997,
+          "gateway_overhead_seconds_count{purpose=\"inference\"}": 137
+        }
+      },
+      "gateway-2": {
+        "stages_aggregated_across_kind": {
+          "kafka_ack/ok": {
+            "seconds": 0.8941386480000001,
+            "observations": 538,
+            "mean_ms": 1.661967747211896
+          },
+          "outbox_mark/ok": {
+            "seconds": 9.729655645,
+            "observations": 538,
+            "mean_ms": 18.084861793680297
+          },
+          "outbox_save/ok": {
+            "seconds": 178.436731699,
+            "observations": 538,
+            "mean_ms": 331.66678754460963
+          },
+          "outbox_capacity_lock/ok": {
+            "seconds": 130.65739156599997,
+            "observations": 435,
+            "mean_ms": 300.361819691954
+          },
+          "admission/error": {
+            "seconds": 125.13580891899987,
+            "observations": 1809,
+            "mean_ms": 69.1740237252625
+          },
+          "outbox_save/error": {
+            "seconds": 7.368423129999999,
+            "observations": 34,
+            "mean_ms": 216.71832735294115
+          },
+          "admission/ok": {
+            "seconds": 79.22044687799999,
+            "observations": 264,
+            "mean_ms": 300.0774502954545
+          },
+          "permit_read/ok": {
+            "seconds": 0.9628474829999991,
+            "observations": 2010,
+            "mean_ms": 0.47902859850746227
+          }
+        },
+        "other_samples": {
+          "gateway_metering_commit_batch_records_sum": 0,
+          "gateway_metering_commit_batch_records_count": 0,
+          "gateway_overhead_seconds_sum{purpose=\"inference\"}": 99.87202499999998,
+          "gateway_overhead_seconds_count{purpose=\"inference\"}": 137
+        }
+      },
+      "worker": {
+        "stages_aggregated_across_kind": {
+          "ledger_apply/ok": {
+            "seconds": 14.080351685000004,
+            "observations": 1082,
+            "mean_ms": 13.013264034195936
+          },
+          "outbox_deliver/ok": {
+            "seconds": 25.277826682999994,
+            "observations": 1082,
+            "mean_ms": 23.36213186968576
+          },
+          "redis_settle/ok": {
+            "seconds": 3.8100913509999996,
+            "observations": 1082,
+            "mean_ms": 3.521341359519408
+          },
+          "settlement_watermark/ok": {
+            "seconds": 7.007808774999998,
+            "observations": 1082,
+            "mean_ms": 6.4767179066543425
+          },
+          "offset_commit/ok": {
+            "seconds": 1.5958733939999998,
+            "observations": 257,
+            "mean_ms": 6.209624101167314
+          },
+          "outbox_capacity_lock/ok": {
+            "seconds": 13.205386203999993,
+            "observations": 1082,
+            "mean_ms": 12.20460832162661
+          }
+        },
+        "other_samples": {
+          "gateway_metering_commit_batch_records_sum": 1082,
+          "gateway_metering_commit_batch_records_count": 254
+        }
+      }
+    },
+    "fixed_arrival": [
+      {
+        "offered_rps": 2,
+        "offered_seconds": 20,
+        "stream": false,
+        "slow_upstream": false,
+        "applications": 2,
+        "requests": 40,
+        "accepted": 40,
+        "protected_rejections": 0,
+        "scheduler_dropped": 0,
+        "protocol_failures": 0,
+        "accepted_p95_ms": 143.014,
+        "accepted_p99_ms": 145.095,
+        "wall_seconds": 19.6157128,
+        "ledger_drain_seconds": 0.1050132,
+        "max_dispatch_lag_ms": 0.531
+      },
+      {
+        "offered_rps": 5,
+        "offered_seconds": 20,
+        "stream": false,
+        "slow_upstream": false,
+        "applications": 2,
+        "requests": 100,
+        "accepted": 100,
+        "protected_rejections": 0,
+        "scheduler_dropped": 0,
+        "protocol_failures": 0,
+        "accepted_p95_ms": 138.806,
+        "accepted_p99_ms": 157.72,
+        "wall_seconds": 19.906306999999998,
+        "ledger_drain_seconds": 0.1053393,
+        "max_dispatch_lag_ms": 0.637
+      },
+      {
+        "offered_rps": 10,
+        "offered_seconds": 20,
+        "stream": false,
+        "slow_upstream": false,
+        "applications": 2,
+        "requests": 200,
+        "accepted": 200,
+        "protected_rejections": 0,
+        "scheduler_dropped": 0,
+        "protocol_failures": 0,
+        "accepted_p95_ms": 281.341,
+        "accepted_p99_ms": 449.376,
+        "wall_seconds": 20.0519509,
+        "ledger_drain_seconds": 1.7533881,
+        "max_dispatch_lag_ms": 1.045
+      },
+      {
+        "offered_rps": 2,
+        "offered_seconds": 20,
+        "stream": true,
+        "slow_upstream": false,
+        "applications": 2,
+        "requests": 40,
+        "accepted": 40,
+        "protected_rejections": 0,
+        "scheduler_dropped": 0,
+        "protocol_failures": 0,
+        "accepted_p95_ms": 145.322,
+        "accepted_p99_ms": 152.891,
+        "accepted_first_event_p95_ms": 56.179,
+        "wall_seconds": 19.6276002,
+        "ledger_drain_seconds": 0.1064509,
+        "max_dispatch_lag_ms": 0.741
+      },
+      {
+        "offered_rps": 2,
+        "offered_seconds": 20,
+        "stream": false,
+        "slow_upstream": true,
+        "applications": 2,
+        "requests": 40,
+        "accepted": 40,
+        "protected_rejections": 0,
+        "scheduler_dropped": 0,
+        "protocol_failures": 0,
+        "accepted_p95_ms": 382.591,
+        "accepted_p99_ms": 384.587,
+        "wall_seconds": 19.8591838,
+        "ledger_drain_seconds": 0.2089632,
+        "max_dispatch_lag_ms": 0.658
+      }
+    ]
+  }
+}

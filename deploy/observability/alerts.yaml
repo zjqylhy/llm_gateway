@@ -1,0 +1,47 @@
+groups:
+  - name: gateway
+    rules:
+      - alert: GatewayMeteringPermitExpired
+        expr: max(gateway_metering_permit_expires_seconds{job="worker"}) < time()
+        for: 10s
+        labels: {severity: critical}
+        annotations: {summary: "接单许可过期，检查计量依赖和消费水位"}
+      - alert: GatewayMeteringAuditFailure
+        expr: sum(increase(gateway_metering_audit_failures_total[5m])) > 0
+        labels: {severity: critical}
+        annotations: {summary: "应用对账失败并保持冻结，查看计量核验报告"}
+      - alert: GatewayMeteringAuditCoverage
+        expr: max(gateway_metering_unchecked_apps) > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "持续五分钟存在到期未核验应用，检查冻结应用和核验容量"}
+      - alert: GatewayOverloaded
+        expr: sum(rate(gateway_overload_rejections_total[5m])) > 0
+        for: 1m
+        labels: {severity: warning}
+        annotations: {summary: "实例并发容量不足，请检查慢客户端、上游延迟或扩容"}
+      - alert: GatewayUnavailable
+        expr: up{job=~"gateway|admin|worker"} == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations: {summary: "网关组件不可达"}
+      - alert: GatewayMeteringFailures
+        expr: sum(rate(gateway_event_publish_errors_total[5m])) > 0
+        for: 1m
+        labels: {severity: critical}
+        annotations: {summary: "持久化计量事件失败，检查 Kafka 和预占状态"}
+      - alert: GatewayErrorBudgetBurn
+        expr: sum(rate(gateway_requests_total{status=~"failed|stream_error"}[5m])) / clamp_min(sum(rate(gateway_requests_total[5m])), 0.001) > 0.005
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "失败率持续超过 0.5%"}
+      - alert: GatewayOverheadHigh
+        expr: histogram_quantile(0.99, sum(rate(gateway_overhead_seconds_bucket{purpose="inference"}[5m])) by (le)) > 0.03
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "转发与计量开销 P99 超过 30ms"}
+      - alert: GatewayConfigDivergence
+        expr: max(gateway_config_version) - min(gateway_config_version) > 0
+        for: 10s
+        labels: {severity: warning}
+        annotations: {summary: "实例配置版本不一致"}
