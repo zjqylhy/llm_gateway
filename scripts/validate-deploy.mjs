@@ -38,6 +38,11 @@ for (const name of ['gateway', 'admin', 'worker', 'migrate', 'bootstrap']) {
       service.environment.GW_MYSQL_MAX_OPEN_CONNS !== '12' || service.environment.GW_REDIS_POOL_SIZE !== '8') {
     throw Error(`lite ${name}: cache or pool budget mismatch`);
   }
+  if (service.environment.GW_MAX_ADMIN_REQUESTS !== '8' ||
+      service.environment.GW_MAX_CONCURRENT_REQUESTS !== '2' ||
+      service.environment.GW_MAX_METERING_INFLIGHT !== '2') {
+    throw Error(`lite ${name}: console/business concurrency mismatch`);
+  }
 }
 for (const name of ['mysql', 'redis', 'kafka', 'etcd', 'gateway', 'admin', 'worker']) {
   if (lite.services[name].ports) throw Error(`lite ${name}: unexpected host port`);
