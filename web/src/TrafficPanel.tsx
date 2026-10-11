@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import {
   fetchTraffic,
   failureTrafficSeries,
+  combinedTrafficSeries,
   trafficSeriesKey,
   trafficSeriesTitle,
   type TrafficSeries,
@@ -69,11 +70,21 @@ function TrafficChart({
   );
   if (!finitePoints.length)
     return <p className="muted">所选区间暂无趋势采样。</p>;
-  const peak = Math.max(...finitePoints.map((point) => point.value));
-  const max = (peak || 1) * 1.1;
+  // 调用速率共用左轴，上限单独使用右轴，避免高上限压平低流量曲线。
+  const callPeak = series
+    .filter((line) => line.kind !== "limit")
+    .flatMap((line) => line.points)
+    .reduce((peak, point) => Math.max(peak, point.value), 0);
+  const limitPeak = series
+    .filter((line) => line.kind === "limit")
+    .flatMap((line) => line.points)
+    .reduce((peak, point) => Math.max(peak, point.value), 0);
+  const max = (callPeak || 1) * 1.1;
+  const limitMax = (limitPeak || 1) * 1.1;
   const x = (timestamp: string) =>
-    54 + ((new Date(timestamp).getTime() - from) / (to - from)) * 850;
-  const y = (value: number) => 190 - (value / max) * 165;
+    60 + ((new Date(timestamp).getTime() - from) / (to - from)) * 820;
+  const y = (value: number, limit = false) =>
+    190 - (value / (limit ? limitMax : max)) * 155;
   return (
     <>
       <svg
@@ -82,18 +93,35 @@ function TrafficChart({
         role="img"
         aria-label={`${app.name} 的${title}`}
       >
+        <text x={60} y={16}>
+          调用 QPS（左轴）
+        </text>
+        {limitPeak > 0 && (
+          <text x={880} y={16} textAnchor="end" className="traffic-limit-axis">
+            历史上限 QPS（右轴）
+          </text>
+        )}
         {[0, 0.5, 1].map((fraction) => (
           <g key={fraction}>
             <line
-              x1={54}
-              x2={904}
+              x1={60}
+              x2={880}
               y1={y(max * fraction)}
               y2={y(max * fraction)}
               stroke="#e4eaf3"
             />
-            <text x={46} y={y(max * fraction) + 4} textAnchor="end">
+            <text x={52} y={y(max * fraction) + 4} textAnchor="end">
               {qpsText(max * fraction)}
             </text>
+            {limitPeak > 0 && (
+              <text
+                x={888}
+                y={y(max * fraction) + 4}
+                className="traffic-limit-axis"
+              >
+                {qpsText(limitMax * fraction)}
+              </text>
+            )}
           </g>
         ))}
         {series.map((series, seriesIndex) =>
@@ -101,6 +129,7 @@ function TrafficChart({
             <g
               key={`${trafficSeriesKey(series)}-${index}`}
               data-series={trafficSeriesKey(series)}
+              data-axis={series.kind === "limit" ? "right" : "left"}
             >
               <polyline
                 fill="none"
@@ -108,7 +137,10 @@ function TrafficChart({
                 strokeWidth={2}
                 strokeDasharray={series.kind === "limit" ? "6 4" : undefined}
                 points={points
-                  .map((point) => `${x(point.at)},${y(point.value)}`)
+                  .map(
+                    (point) =>
+                      `${x(point.at)},${y(point.value, series.kind === "limit")}`,
+                  )
                   .join(" ")}
               />
               {points
@@ -121,7 +153,7 @@ function TrafficChart({
                   <circle
                     key={point.at}
                     cx={x(point.at)}
-                    cy={y(point.value)}
+                    cy={y(point.value, series.kind === "limit")}
                     r={points.length === 1 ? 3 : 5}
                     fill={color(series, seriesIndex)}
                     opacity={points.length === 1 ? 1 : 0}
@@ -129,17 +161,19 @@ function TrafficChart({
                   >
                     <title>
                       {new Date(point.at).toLocaleString("zh-CN")} ·
-                      {trafficSeriesTitle(series)} {qpsText(point.value)}
+                      {trafficSeriesTitle(series)}
+                      {series.kind === "limit" ? "（右轴）" : ""}{" "}
+                      {qpsText(point.value)}
                     </title>
                   </circle>
                 ))}
             </g>
           )),
         )}
-        <text x={54} y={215}>
+        <text x={60} y={215}>
           {new Date(data.from).toLocaleString("zh-CN")}
         </text>
-        <text x={904} y={215} textAnchor="end">
+        <text x={880} y={215} textAnchor="end">
           {new Date(data.to).toLocaleString("zh-CN")}
         </text>
       </svg>
@@ -148,6 +182,7 @@ function TrafficChart({
           <span key={trafficSeriesKey(line)}>
             <i style={{ background: color(line, index) }} />{" "}
             {trafficSeriesTitle(line)}
+            {line.kind === "limit" ? "（右轴）" : ""}
           </span>
         ))}
       </div>
@@ -178,15 +213,8 @@ function TrafficTrends({
     : "";
   return (
     <>
-      <h4>成功 QPS 与历史上限</h4>
-      <TrafficChart
-        app={app}
-        data={data}
-        series={app.series.filter((line) => line.kind !== "failure")}
-        title="成功 QPS 与历史上限趋势"
-      />
       <div className="section-head traffic-failure-head">
-        <h4>失败 QPS · 按错误码</h4>
+        <h4>调用 QPS · 成功与分错误码失败</h4>
         {failures.length > 0 && (
           <label className="field">
             失败错误码
@@ -208,20 +236,15 @@ function TrafficTrends({
           </label>
         )}
       </div>
-      {failures.length > 0 ? (
-        <TrafficChart
-          app={app}
-          data={data}
-          series={failureTrafficSeries(app.series, selection)}
-          title="按错误码拆分的失败 QPS 趋势"
-          colors={colors}
-        />
-      ) : (
-        <p className="muted">
-          {app.failure_qps === 0
-            ? "所选区间未观测到失败调用。"
-            : "所选区间暂无失败趋势采样。"}
-        </p>
+      <TrafficChart
+        app={app}
+        data={data}
+        series={combinedTrafficSeries(app.series, selection)}
+        title="成功、分错误码失败 QPS 与历史上限趋势"
+        colors={colors}
+      />
+      {app.failure_qps === 0 && (
+        <p className="muted">所选区间未观测到失败调用。</p>
       )}
     </>
   );

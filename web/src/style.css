@@ -665,3 +665,7 @@ footer {
   font-size: 12px;
   cursor: pointer;
 }
+
+.traffic-chart .traffic-limit-axis {
+  fill: #a66e12;
+}

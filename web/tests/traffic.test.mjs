@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   fetchTraffic,
   failureTrafficSeries,
+  combinedTrafficSeries,
   trafficSeriesKey,
   trafficSeriesTitle,
   qpsText,
@@ -123,4 +124,40 @@ test("failure drilldown isolates HTTP and business code pairs and preserves gaps
     unavailable,
     "display sorting must not reorder API data",
   );
+});
+
+test("combined chart drilldown keeps success and limit alongside the chosen error", () => {
+  const success = {
+    kind: "success",
+    points: [{ at: "2026-10-11T10:00:00Z", value: 0.01 }],
+  };
+  const limit = {
+    kind: "limit",
+    points: [{ at: "2026-10-11T10:00:00Z", value: 100 }],
+  };
+  const invalid = {
+    kind: "failure",
+    http_status: "400",
+    error_code: "invalid_request_error",
+    points: success.points,
+  };
+  const forbidden = {
+    ...invalid,
+    http_status: "403",
+    error_code: "model_not_allowed",
+  };
+  const all = [limit, forbidden, success, invalid];
+  assert.deepEqual(combinedTrafficSeries(all), [
+    success,
+    invalid,
+    forbidden,
+    limit,
+  ]);
+  assert.deepEqual(combinedTrafficSeries(all, "403:model_not_allowed"), [
+    success,
+    forbidden,
+    limit,
+  ]);
+  assert.deepEqual(combinedTrafficSeries([limit, success]), [success, limit]);
+  assert.deepEqual(all, [limit, forbidden, success, invalid]);
 });

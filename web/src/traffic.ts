@@ -37,6 +37,15 @@ export function failureTrafficSeries(series: TrafficSeries[], selected = "") {
     .filter((line) => !selected || trafficSeriesKey(line) === selected);
 }
 
+// 下钻只筛选失败维度，成功流量和历史上限仍用于同时对照。
+export function combinedTrafficSeries(series: TrafficSeries[], selected = "") {
+  return [
+    ...series.filter((line) => line.kind === "success"),
+    ...failureTrafficSeries(series, selected),
+    ...series.filter((line) => line.kind === "limit"),
+  ];
+}
+
 export function trafficSeriesTitle(series: TrafficSeries) {
   return series.kind === "failure"
     ? `HTTP ${series.http_status} · ${series.error_code}`
