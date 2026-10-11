@@ -56,3 +56,17 @@ cd /opt/llm_gateway
 - 本次没有新增付费模型请求。重排厂商真实调用仍需配置相应百炼凭据、模型及路由，接口权限检查不能代替厂商成功调用验证。
 - Grafana 面板配置已同步到云端，Lite 本次未运行独立 Grafana 容器，控制台通过私有 Prometheus 直接查询。
 - 未更改公网入口或执行持续压测。部署结果留在本机 data/cloud-release/app-traffic-20261012/；真实监控截图保存在本机 data/acceptance/cloud-app-traffic-20261012.jpg，不上传实际业务监控截图到 Git。
+
+## 2026-10-12 合并 QPS 图表正式发布
+
+用户确认验收后，将 codex/combined-qps-chart 分支推送至既有 zjqylhy/llm_gateway 远端，并发布已验收镜像。分支包含最新 master 0b5d2b4（PR #3 Token 用量及费用明细）；合并图表代码为 74315c7，后端使用同一分支中 01b1427 的已验证 Go 源码，后续提交仅调整前端及记录。
+
+三个运行服务 gateway/admin/worker 统一使用 llm-gateway:combined-qps-20261012-74315c7，镜像 ID 为 sha256:cfdd701663cfa385fc426ca9f464c9437d4147e1c5e17b39249ecce43c22cf13。镜像标签记录完整代码修订 74315c789604a2a2811682336be7e567e6826513。Prometheus 继续使用既有私有镜像及采样卷。前端包 SHA-256 为 407f5b62696f69d2c057430b2baacabb4cc26d159f0404221d17daba2214c162；构建前验证归档及文件哈希。
+
+发布前备份原环境和各服务镜像，停止接单并确认 outbox/admission 为 0，再切换 worker/gateway/admin。没有执行数据库迁移或 bootstrap。管理并发上限仍为 8，业务容量配置保持既有值。备份目录为 /opt/llm_gateway/releases/combined-qps-20261012/backup，env.previous 权限为 0600；rollback-images.yaml 记录各自原镜像，作为最后一个 Compose 覆盖文件配合 env.previous 恢复，可用于后续回滚。未执行回滚演练。
+
+发布后检查通过：三个 Go 服务 readyz 和 Prometheus 就绪，三个采集目标均为 up；正式 HTTPS 验证证书、管理员登录和最新前端资源；真实 1 小时/24 小时查询返回按 400 invalid_request_error、403 model_not_allowed 拆分的失败趋势，25 小时请求返回 400。真实 MySQL 成本报表两组的费用分项加未分摊费用等于总费用，保留已合入的 Token 明细功能。
+
+浏览器在正式 HTTPS 页面验证每个应用只显示一张合并图，成功和分错误码失败共用左轴，上限使用明确标注的右轴。选中 400 时同时保留 success/400/limit，刷新监控后仍保持该选择；恢复全部错误码后同时显示两种失败曲线。正式截图保存在本机 data/acceptance/combined-qps-deployed-20261012.jpg，发布检查记录保存在 data/cloud-release/combined-qps-20261012/，均不提交实际业务截图及部署秘密。此次发布验证没有新增付费模型请求。
+
+临时预览容器、预览 SSH 隧道及临时环境副本已清理，正式访问继续使用既有 https://localhost:9443 隧道。完整回滚需按前述计量排空顺序安排停写窗口，再恢复原配置和镜像。
