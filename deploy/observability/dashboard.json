@@ -1035,6 +1035,108 @@
           "expr": "sum(rate(gateway_metering_commit_batch_records_sum[5m])) / clamp_min(sum(rate(gateway_metering_commit_batch_records_count[5m])), 0.001)"
         }
       ]
+    },
+    {
+      "id": 36,
+      "type": "timeseries",
+      "title": "应用成功 QPS",
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 91,
+        "w": 8,
+        "h": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(app) (max by(app,source) (rate(gateway_calls_total{app=~\"$app\",job=~\"gateway|admin\",outcome=\"success\"}[1m])))",
+          "legendFormat": "{{app}}"
+        }
+      ],
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 37,
+      "type": "timeseries",
+      "title": "应用失败 QPS（按错误码）",
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 91,
+        "w": 8,
+        "h": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(app,http_status,error_code) (max by(app,source,http_status,error_code) (rate(gateway_calls_total{app=~\"$app\",job=~\"gateway|admin\",outcome=\"error\"}[1m]))) > 0",
+          "legendFormat": "{{app}} / {{http_status}} / {{error_code}}"
+        }
+      ],
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 38,
+      "type": "timeseries",
+      "title": "应用生效 QPS 上限（0 不限制）",
+      "datasource": {
+        "uid": "prometheus",
+        "type": "prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 91,
+        "w": 8,
+        "h": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by(app) (gateway_app_qps_limit{app=~\"$app\",job=~\"gateway|admin\"})",
+          "legendFormat": "{{app}}"
+        }
+      ],
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "displayMode": "list"
+        }
+      }
     }
   ],
   "uid": "llm-gateway",
@@ -1044,5 +1146,27 @@
     "to": "now"
   },
   "editable": true,
-  "title": "LLM Gateway 运行监控"
+  "title": "LLM Gateway 运行监控",
+  "templating": {
+    "list": [
+      {
+        "name": "app",
+        "label": "应用",
+        "type": "query",
+        "datasource": {
+          "uid": "prometheus",
+          "type": "prometheus"
+        },
+        "query": "label_values(gateway_app_qps_limit, app)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  }
 }

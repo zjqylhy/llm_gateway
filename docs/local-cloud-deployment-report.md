@@ -109,3 +109,7 @@ dc start
 ```
 
 使用 `stop/start` 保留配置与数据，不执行 `down -v`。备份时同时保存主密钥和数据；后续域名切换、备份、磁盘告警及资源观察沿用[部署指南](lite-deployment.md)。
+
+## 重排与应用监控更新（2026-10-12）
+
+用户授权后已更新 ECS 的 gateway/admin/worker，启用私有 Prometheus，并验证最近一天的实际监控查询。控制台低 QPS 显示修复也已上线；管理接口并发保持 8。实际版本、验证边界、备份和运维入口见 [本次部署记录](cloud-app-traffic-deployment.md)。

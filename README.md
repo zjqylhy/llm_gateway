@@ -2,7 +2,9 @@
 
 Go 数据面、管理面、计量 worker 与 React 控制台。按已确认的 [需求规格](docs/spec.md) 和 [技术方案](docs/design.md) 实现，首批接入 DeepSeek、Qwen、OpenAI 的 OpenAI 兼容接口。真实模型名称、能力、价格及 Qwen 地域通过控制台配置。
 
-支持文本 Chat、SSE、工具调用透传、结构化输出、Embedding、应用密钥与 RBAC、显式路由、降级与熔断、全局配额、预算预占、语义缓存、幂等计量、成本报表、灰度回滚和安全审计。
+支持文本 Chat、SSE、工具调用透传、结构化输出、Embedding、文本 Rerank、应用密钥与 RBAC、显式路由、降级与熔断、全局配额、预算预占、语义缓存、幂等计量、成本报表、灰度回滚和安全审计。
+
+文本重排接口为 `POST /v1/rerank`（亦支持 `/v1/reranks`），统一输入查询和候选文档，兼容百炼兼容接口与 DashScope 文本排序接口。配置方法、请求示例及计量边界见 [重排规格](docs/rerank-spec.md)。
 
 ## 本地运行
 
@@ -52,6 +54,6 @@ GitHub Actions 配置包含 Linux race 测试、构建与 Docker 镜像构建。
 
 配置保存后发布版本；发布失败会显示待生效，并保留新签发的一次性 Key。密钥吊销后，数据面在 3 秒内同步；配置失联超过 3 秒拒绝鉴权。流式响应开始后禁止降级混入其他模型输出。
 
-控制台概览采用最近记录样本；正式容量和分位数使用 [24 项 Grafana 监控](deploy/observability/dashboard.json)。万级并发和延迟目标尚未完成容量验收。
+控制台应用调用监控支持最近 24 小时内任意区间，展示成功 QPS、按 HTTP 状态码和业务错误码拆分的失败 QPS、QPS 上限及趋势。需配置 `GW_PROMETHEUS_URL`；未接入或缺失采样时明确显示无数据。其他概览统计采用最近记录样本；容量和分位数使用 [Grafana 监控](deploy/observability/dashboard.json)。万级并发和延迟目标尚未完成容量验收。
 
 ![本地验收：降级后的成本与待核实记录](docs/images/console.jpg)

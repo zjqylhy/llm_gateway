@@ -52,4 +52,12 @@ if (!lite.services.edge.profiles.includes('public') || !lite.services['edge-loca
 }
 if (!lite.services.redis.command.join(' ').includes('--maxmemory-policy noeviction') ||
     !lite.services.redis.command.join(' ').includes('--appendfsync always')) throw Error('lite Redis durability changed');
+const liteMonitoring = parse(fs.readFileSync(path.join(root, 'deploy/lite/compose.monitoring.yaml'), 'utf8'));
+const collector = liteMonitoring.services.prometheus;
+if (collector.ports || collector.mem_limit !== '256m' || !collector.read_only ||
+    !collector.command.includes('--storage.tsdb.retention.time=26h') ||
+    !collector.command.includes('--storage.tsdb.retention.size=256MB') ||
+    liteMonitoring.services.admin.environment.GW_PROMETHEUS_URL !== 'http://prometheus:9090') {
+  throw Error('lite monitoring: private access or resource budget mismatch');
+}
 console.log(`PASS: ${count} YAML documents; ${dashboard.panels.length} monitoring panels. Container and cluster integration must run separately.`);

@@ -30,6 +30,8 @@ worker 在独占 SQL 连接锁下检查来源、SQL 控制、Redis generation �
 
 ## 安全与边界
 
+文本重排通过模型 `rerank_protocol` 显式选择兼容或 DashScope 协议，分别转换请求与响应。模型声明文档数、单条输入及总输入限制；保守预占考虑查询参与每个文档评分。厂商 `total_tokens` 作为纯输入用量结算，未知用量保持估算；结果验证失败也保留已报告的有效用量。两种接口共用既有请求治理与 attempt 计量链路，控制台可配置模型及路由，详情见 [rerank-spec.md](rerank-spec.md)。
+
 管理 Cookie 为 HttpOnly、SameSite=Strict，生产环境 Secure；写操作校验 CSRF 和 Origin。凭据用 AES-GCM，加密主密钥由部署 Secret 提供。日志不打印 token、请求正文或上游完整错误体。厂商地址在管理时校验 HTTPS，生产禁止内网及重定向，以降低 SSRF 风险。
 
 缓存响应和向量属于应用数据。实时请求由应用请求头明确声明；敏感字段检测是额外保护，不能代替应用正确标记。缓存匹配时同时核对 route/model/parameter scope 和有效期。

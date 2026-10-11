@@ -32,6 +32,7 @@ type Admin struct {
 	Sessions      SessionStore
 	MaxConcurrent int
 	admission     admission
+	Prometheus    *TrafficPrometheus
 }
 
 func NewAdmin(e *Engine, secure bool, origin string) *Admin {
@@ -100,6 +101,7 @@ func (a *Admin) Handler() http.Handler {
 	mux.HandleFunc("GET /admin/payload/{id}", a.payload)
 	mux.HandleFunc("GET /admin/cost-report", a.cost)
 	mux.HandleFunc("GET /admin/metrics", a.metrics)
+	mux.HandleFunc("GET /admin/app-traffic", a.appTraffic)
 	mux.HandleFunc("GET /admin/audit", a.audit)
 	mux.HandleFunc("GET /admin/metering", a.meteringStatus)
 	mux.HandleFunc("GET /admin/instances", a.instances)
@@ -470,13 +472,17 @@ func (a *Admin) saveModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, cap := range m.Capabilities {
-		if !Contains([]string{"chat", "embedding", "stream", "tools", "json_object", "json_schema", "seed"}, cap) {
+		if !Contains([]string{"chat", "embedding", "rerank", "rerank_instruct", "stream", "tools", "json_object", "json_schema", "seed"}, cap) {
 			APIError(w, 400, "invalid_capability", "unknown capability")
 			return
 		}
 	}
 	if Contains(m.Capabilities, "embedding") && m.Dimensions <= 0 {
 		APIError(w, 400, "invalid_dimensions", "embedding requires dimensions")
+		return
+	}
+	if !validRerankModel(m) {
+		APIError(w, 400, "invalid_rerank_model", "invalid rerank protocol, limits, capabilities or pricing")
 		return
 	}
 	cfg, e := a.mutate(r, "model.save", func(c *Config) error {
@@ -494,7 +500,7 @@ func (a *Admin) saveModel(w http.ResponseWriter, r *http.Request) {
 	mutationResult(w, cfg, e)
 }
 func ValidateRoute(c Config, r Route) error {
-	if !identifier.MatchString(r.Alias) || !Contains([]string{"chat", "embedding"}, r.Kind) || !Contains([]string{"priority", "weight", "cost", "latency"}, r.Strategy) || len(r.Candidates) == 0 || len(r.Candidates) > 20 {
+	if !identifier.MatchString(r.Alias) || !Contains([]string{"chat", "embedding", "rerank"}, r.Kind) || !Contains([]string{"priority", "weight", "cost", "latency"}, r.Strategy) || len(r.Candidates) == 0 || len(r.Candidates) > 20 {
 		return errors.New("invalid route")
 	}
 	sum := 0
@@ -504,6 +510,9 @@ func ValidateRoute(c Config, r Route) error {
 		m, ok := c.Models[x.ModelID]
 		if !ok || !Contains(m.Capabilities, r.Kind) || seen[m.ID] || x.Weight < 0 {
 			return errors.New("invalid candidate")
+		}
+		if r.Kind == "rerank" && !validRerankModel(m) {
+			return errors.New("invalid rerank candidate configuration")
 		}
 		seen[m.ID] = true
 		sum += x.Weight

@@ -36,10 +36,17 @@ type Metrics struct {
 	Config                prometheus.Gauge
 	Overhead              *prometheus.HistogramVec
 	Overload              *prometheus.CounterVec
+	Calls                 *prometheus.CounterVec
+	QPSLimits             *prometheus.GaugeVec
+	appState              appMetricState
 }
 
 func NewMetrics() *Metrics {
 	m := &Metrics{Registry: prometheus.NewRegistry()}
+	m.Calls = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_calls_total", Help: "Client model calls including early and streamed failures, without upstream retry duplication", ConstLabels: prometheus.Labels{"source": ID("metrics_")}}, []string{"app", "outcome", "http_status", "error_code"})
+	m.QPSLimits = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "gateway_app_qps_limit", Help: "Applied application token-bucket QPS limit; zero means unlimited"}, []string{"app"})
+	m.Registry.MustRegister(m.Calls, m.QPSLimits)
+	m.initializeCalls("_unknown")
 	m.MeteringStages = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "gateway_metering_stage_seconds", Help: "Metering operation duration including failed operations", Buckets: []float64{.001, .005, .01, .03, .05, .1, .25, .5, 1, 2, 5}}, []string{"stage", "kind", "result"})
 	m.MeteringRejections = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_metering_rejections_total", Help: "Metering admission or started persistence rejection reasons"}, []string{"reason"})
 	m.MeteringCommitBatch = prometheus.NewHistogram(prometheus.HistogramOpts{Name: "gateway_metering_commit_batch_records", Help: "Contiguously settled records included in successful offset commits", Buckets: []float64{1, 2, 4, 8, 16, 32, 64, 128, 256}})

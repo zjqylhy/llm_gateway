@@ -248,6 +248,13 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 		}
 	}
 	out.Admin = NewAdmin(e, !dev, os.Getenv("GW_ADMIN_ORIGIN"))
+	out.Admin.Prometheus, err = newTrafficPrometheus(os.Getenv("GW_PROMETHEUS_URL"))
+	if err != nil {
+		return nil, err
+	}
+	if out.Admin.Prometheus != nil {
+		out.closers = append(out.closers, out.Admin.Prometheus.Client.CloseIdleConnections)
+	}
 	out.Admin.MaxConcurrent = adminConcurrency
 	if out.Redis != nil {
 		out.Admin.Sessions = RedisSessions{out.Redis}
