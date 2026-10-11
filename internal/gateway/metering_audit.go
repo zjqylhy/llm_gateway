@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -164,6 +165,19 @@ func auditMetering(c context.Context, r *Runtime, initializing bool) (MeteringAu
 				if readErr != nil || ledgerApp != app {
 					return result, fmt.Errorf("unmatched Redis attempt %s", attempt)
 				}
+				if !initializing {
+					var raw []byte
+					var event Event
+					if err = s.DB.QueryRowContext(c, `SELECT payload FROM gw_attempts WHERE attempt_id=?`, attempt).Scan(&raw); err != nil {
+						return result, err
+					}
+					if err = json.Unmarshal(raw, &event); err != nil {
+						return result, err
+					}
+					if fields["hash"] != eventDigest(event) {
+						return result, errors.New("Redis event digest does not match SQL")
+					}
+				}
 				value := func(name string) int64 { n, _ := strconv.ParseInt(fields[name], 10, 64); return n }
 				if kind == "started" {
 					if value("revision") != 0 || fields["reserved"] != "1" || value("rt") != rt || value("rm") != rm {
@@ -231,16 +245,43 @@ func ResumeMetering(c context.Context, r *Runtime) (MeteringAudit, error) {
 		return result, err
 	}
 	defer tx.Rollback()
+	reportID := ID("report_")
+	actor, reason := env("GW_METERING_ACTOR", "recovery-command"), env("GW_METERING_REASON", "verified offline recovery")
+	raw, _ := json.Marshal(result)
+	if _, err = tx.ExecContext(c, `INSERT INTO gw_metering_reports(id,app_id,actor,reason,passed,at,payload) VALUES(?,'*',?,?,1,UTC_TIMESTAMP(6),?)`, reportID, actor, reason, raw); err != nil {
+		return result, err
+	}
+	if _, err = tx.ExecContext(c, `UPDATE gw_metering_apps SET state='healthy',reason='',generation=?,report_id=?,checked_at=UTC_TIMESTAMP(6)`, ID("appgen_"), reportID); err != nil {
+		return result, err
+	}
+	cfg, err := s.Load(c)
+	if err != nil {
+		return result, err
+	}
+	for app := range cfg.Apps {
+		if _, err = tx.ExecContext(c, `INSERT IGNORE INTO gw_metering_apps(app_id,state,generation,reason,report_id,checked_at) VALUES(?,'healthy',?,'',?,UTC_TIMESTAMP(6))`, app, ID("appgen_"), reportID); err != nil {
+			return result, err
+		}
+	}
+	if _, err = tx.ExecContext(c, `DELETE FROM gw_metering_admissions`); err != nil {
+		return result, err
+	}
 	if _, err = tx.ExecContext(c, `UPDATE gw_metering_control SET state='healthy',reason='',generation=?,updated_at=UTC_TIMESTAMP(6) WHERE id=1`, ID("gen_")); err != nil {
 		return result, err
 	}
-	if _, err = tx.ExecContext(c, `INSERT INTO gw_audit(id,actor,action,version,at) SELECT ?,'recovery-command','metering.resume',version,UTC_TIMESTAMP(6) FROM gw_config WHERE id=1`, ID("aud_")); err != nil {
+	if _, err = tx.ExecContext(c, `INSERT INTO gw_audit(id,actor,action,version,at) SELECT ?,?, ?,version,UTC_TIMESTAMP(6) FROM gw_config WHERE id=1`, ID("aud_"), actor, "metering.resume:"+reportID); err != nil {
 		return result, err
 	}
 	if err = tx.Commit(); err != nil {
 		return result, err
 	}
-	if err = r.Redis.Del(c, "gw:metering:frozen").Err(); err != nil {
+	if err = initializeMeteringEvidence(c, s, RedisGuard{Client: r.Redis}); err == nil {
+		err = syncApplicationEvidence(c, r)
+	}
+	if err == nil {
+		err = r.Redis.Del(c, "gw:metering:frozen").Err()
+	}
+	if err != nil {
 		freeze, finish := context.WithTimeout(context.WithoutCancel(c), time.Second)
 		_ = s.FreezeMetering(freeze, "resume_publish_failure")
 		finish()

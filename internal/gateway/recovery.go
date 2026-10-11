@@ -39,6 +39,9 @@ func InitializeQuota(ctx context.Context, e *Engine) error {
 	if n != 0 {
 		return errors.New("existing outbox requires offline quota-rebuild")
 	}
+	if err = initializeMeteringEvidence(ctx, s, g); err != nil {
+		return err
+	}
 	return g.Client.Set(ctx, "gw:quota:state", "ready", 0).Err()
 }
 func RebuildQuota(ctx context.Context, r *Runtime) error {

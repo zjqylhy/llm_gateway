@@ -11,24 +11,42 @@ import (
 )
 
 type Metrics struct {
-	Registry *prometheus.Registry
-	Requests *prometheus.CounterVec
-	Attempts *prometheus.CounterVec
-	Tokens   *prometheus.CounterVec
-	Cost     *prometheus.CounterVec
-	Latency  *prometheus.HistogramVec
-	Upstream *prometheus.HistogramVec
-	First    *prometheus.HistogramVec
-	CacheOps *prometheus.CounterVec
-	Events   prometheus.Counter
-	Active   prometheus.Gauge
-	Config   prometheus.Gauge
-	Overhead *prometheus.HistogramVec
-	Overload *prometheus.CounterVec
+	MeteringLag           prometheus.Gauge
+	MeteringPermit        prometheus.Gauge
+	MeteringUnchecked     prometheus.Gauge
+	MeteringAuditLast     prometheus.Gauge
+	MeteringAuditSeconds  prometheus.Histogram
+	MeteringAuditFailures prometheus.Counter
+	MeteringRotation      prometheus.Gauge
+	MeteringOutboxBytes   prometheus.Gauge
+	Registry              *prometheus.Registry
+	Requests              *prometheus.CounterVec
+	Attempts              *prometheus.CounterVec
+	Tokens                *prometheus.CounterVec
+	Cost                  *prometheus.CounterVec
+	Latency               *prometheus.HistogramVec
+	Upstream              *prometheus.HistogramVec
+	First                 *prometheus.HistogramVec
+	CacheOps              *prometheus.CounterVec
+	Events                prometheus.Counter
+	Active                prometheus.Gauge
+	Config                prometheus.Gauge
+	Overhead              *prometheus.HistogramVec
+	Overload              *prometheus.CounterVec
 }
 
 func NewMetrics() *Metrics {
 	m := &Metrics{Registry: prometheus.NewRegistry()}
+	m.MeteringLag = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_metering_lag_records", Help: "Captured Kafka end minus committed positions"})
+	m.MeteringPermit = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_metering_permit_expires_seconds", Help: "Last successful permit expiry, zero on unavailable evidence"})
+	m.MeteringUnchecked = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_metering_unchecked_apps", Help: "Applications without a recent barrier audit"})
+	m.MeteringAuditLast = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_metering_last_audit_seconds", Help: "Last successful application audit timestamp"})
+	m.MeteringAuditSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{Name: "gateway_metering_audit_seconds", Help: "Application barrier and comparison duration", Buckets: []float64{.1, 1, 5, 15, 60, 120, 150}})
+	m.MeteringAuditFailures = prometheus.NewCounter(prometheus.CounterOpts{Name: "gateway_metering_audit_failures_total", Help: "Failed application audits; application stays frozen"})
+	m.MeteringRotation = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_metering_rotation_seconds", Help: "Last completed application cursor rotation duration"})
+	m.MeteringOutboxBytes = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_metering_outbox_bytes", Help: "Global logical outbox payload plus completion reservations"})
+	m.Registry.MustRegister(m.MeteringRotation, m.MeteringOutboxBytes)
+	m.Registry.MustRegister(m.MeteringLag, m.MeteringPermit, m.MeteringUnchecked, m.MeteringAuditLast, m.MeteringAuditSeconds, m.MeteringAuditFailures)
 	m.Requests = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_requests_total", Help: "Completed gateway requests"}, []string{"app", "alias", "status", "cached"})
 	m.Attempts = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_attempts_total", Help: "Upstream attempts"}, []string{"app", "model", "purpose", "status", "quality"})
 	m.Tokens = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_tokens_total", Help: "Observed upstream token consumption"}, []string{"app", "model", "kind"})

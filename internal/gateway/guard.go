@@ -159,6 +159,13 @@ func quotaKeys(a, m, id string) []string {
 }
 
 const reserveLua = `if ARGV[6]=='true' and redis.call('GET','gw:quota:state')~='ready' then return -1 end
+if ARGV[8]=='true' then
+ local tm=redis.call('TIME');local now=tm[1]*1000+math.floor(tm[2]/1000)
+ if ARGV[9]=='' or tonumber(ARGV[10])<=now or redis.call('GET','gw:metering:generation')~=ARGV[9] then return -1 end
+ local raw=redis.call('GET','gw:metering:permit');if not raw then return -1 end
+ local ok,p=pcall(cjson.decode,raw);if not ok or p.generation~=ARGV[9] or p.expires<tonumber(ARGV[10]) or p.expires<=now then return -1 end
+ local app=redis.call('HMGET',ARGV[11],'state','generation');if app[1]~='healthy' or app[2]~=ARGV[12] then return -1 end
+end
 if redis.call('HEXISTS',KEYS[2],'reserved')==1 or redis.call('HEXISTS',KEYS[2],'revision')==1 then return 1 end
 if ARGV[8]=='true' and redis.call('EXISTS','gw:metering:frozen')==1 then return -1 end
 if ARGV[7]=='true' then
@@ -176,7 +183,8 @@ func (g RedisGuard) Reserve(c context.Context, a App, r Reservation) error {
 	c, cancel := context.WithTimeout(c, time.Second)
 	defer cancel()
 	// 90% 水位拒绝新增预占，余量留给已发生费用的结算；INFO/策略无法核验时失败关闭。
-	v, e := g.Client.Eval(c, reserveLua, quotaKeys(a.ID, r.Month, r.ID), r.Tokens, r.Micro, a.MonthlyTokens, a.BudgetMicro, a.BudgetAction, strconv.FormatBool(g.RequireReady), strconv.FormatBool(g.EnforceMemory), strconv.FormatBool(g.RequireReady && !g.Replay)).Int()
+	proof, _ := c.Value(admissionProofKey{}).(admissionProof)
+	v, e := g.Client.Eval(c, reserveLua, quotaKeys(a.ID, r.Month, r.ID), r.Tokens, r.Micro, a.MonthlyTokens, a.BudgetMicro, a.BudgetAction, strconv.FormatBool(g.RequireReady), strconv.FormatBool(g.EnforceMemory), strconv.FormatBool(g.RequireReady && !g.Replay), proof.Permit.Generation, proof.Permit.Expires, appControlKey(a.ID), proof.AppGeneration).Int()
 	if e != nil {
 		return ErrUnavailable
 	}
@@ -190,9 +198,9 @@ func (g RedisGuard) Reserve(c context.Context, a App, r Reservation) error {
 }
 
 const settleLua = `if ARGV[4]=='true' and redis.call('GET','gw:quota:state')~='ready' then return -1 end
-local old=redis.call('HMGET',KEYS[2],'revision','tokens','micro','rt','rm');local rev=tonumber(old[1]) or 0;if rev>=tonumber(ARGV[1]) then return 1 end
+local old=redis.call('HMGET',KEYS[2],'revision','tokens','micro','rt','rm','hash');local rev=tonumber(old[1]) or 0;if rev==tonumber(ARGV[1]) and old[6] and old[6]~=ARGV[5] then return -1 end;if rev>=tonumber(ARGV[1]) then return 1 end
 if rev==0 then redis.call('HINCRBY',KEYS[1],'rt',-(tonumber(old[4]) or 0));redis.call('HINCRBY',KEYS[1],'rm',-(tonumber(old[5]) or 0)) end
-redis.call('HINCRBY',KEYS[1],'tokens',tonumber(ARGV[2])-(tonumber(old[2]) or 0));redis.call('HINCRBY',KEYS[1],'micro',tonumber(ARGV[3])-(tonumber(old[3]) or 0));redis.call('HSET',KEYS[2],'revision',ARGV[1],'tokens',ARGV[2],'micro',ARGV[3]);return 1`
+redis.call('HINCRBY',KEYS[1],'tokens',tonumber(ARGV[2])-(tonumber(old[2]) or 0));redis.call('HINCRBY',KEYS[1],'micro',tonumber(ARGV[3])-(tonumber(old[3]) or 0));redis.call('HSET',KEYS[2],'revision',ARGV[1],'tokens',ARGV[2],'micro',ARGV[3],'hash',ARGV[5]);return 1`
 
 func (g RedisGuard) Settle(c context.Context, e Event) error {
 	c, cancel := context.WithTimeout(c, time.Second)
@@ -200,7 +208,7 @@ func (g RedisGuard) Settle(c context.Context, e Event) error {
 	if e.Revision < 2 {
 		return errors.New("completed event requires revision >= 2")
 	}
-	v, err := g.Client.Eval(c, settleLua, quotaKeys(e.AppID, e.Month, e.AttemptID), e.Revision, e.Usage.Total, e.CostMicro, strconv.FormatBool(g.RequireReady)).Int()
+	v, err := g.Client.Eval(c, settleLua, quotaKeys(e.AppID, e.Month, e.AttemptID), e.Revision, e.Usage.Total, e.CostMicro, strconv.FormatBool(g.RequireReady), eventDigest(e)).Int()
 	if err != nil || v == -1 {
 		return ErrUnavailable
 	}
@@ -217,6 +225,9 @@ func (g RedisGuard) Counters(c context.Context, a, m string) (Counters, error) {
 	for i, x := range v {
 		if x != nil {
 			z, ok := new(big.Int).SetString(x.(string), 10)
+			if !ok || !z.IsInt64() {
+				return Counters{}, ErrUnavailable
+			}
 			if ok {
 				out[i] = z.Int64()
 			}

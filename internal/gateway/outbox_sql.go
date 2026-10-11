@@ -75,12 +75,18 @@ func saveOutbox(c context.Context, tx *sql.Tx, e Event, globalLimit, appLimit in
 		return err
 	}
 	if e.Kind == "started" {
-		var state string
-		if err = tx.QueryRowContext(c, `SELECT state FROM gw_metering_control WHERE id=1 FOR SHARE`).Scan(&state); err != nil {
+		if err = checkAppBarrier(c, tx, e.AppID, false); err != nil {
+			return err
+		}
+		var state, gen string
+		if err = tx.QueryRowContext(c, `SELECT state,generation FROM gw_metering_control WHERE id=1 FOR SHARE`).Scan(&state, &gen); err != nil {
 			return err
 		}
 		if state != "healthy" {
 			return ErrUnavailable
+		}
+		if proof, ok := c.Value(admissionProofKey{}).(admissionProof); ok && (proof.Permit.Generation != gen || proof.Permit.Expires <= time.Now().UnixMilli()) {
+			return errMeteringBarrier
 		}
 	}
 	var remaining int64
@@ -149,6 +155,9 @@ func (s *SQLStore) CorrectOutbox(c context.Context, actor, key string, e Event, 
 		return Event{}, err
 	}
 	defer tx.Rollback()
+	if err = checkAppBarrier(c, tx, e.AppID, true); err != nil {
+		return Event{}, err
+	}
 	var raw []byte
 	if err = tx.QueryRowContext(c, `SELECT payload FROM gw_config WHERE id=1 FOR UPDATE`).Scan(&raw); err != nil {
 		return Event{}, err

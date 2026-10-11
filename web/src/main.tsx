@@ -267,6 +267,18 @@ function Console({
   >({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [metering, setMetering] = useState<{
+    state: string;
+    reason?: string;
+    applications?: { app_id: string; state: string; reason: string }[];
+    reports?: {
+      id?: string;
+      app_id?: string;
+      passed?: boolean;
+      error?: string;
+      seconds?: number;
+    }[];
+  }>({ state: "unknown" });
   const [busy, setBusy] = useState(false);
   const [refresh, setRefresh] = useState(true);
   const [formApp, setFormApp] = useState<App | null>(null);
@@ -377,12 +389,14 @@ function Console({
       setMetrics(results[2]);
       setAlerts(results[3]);
       if (session.role === "admin") {
-        const [c, nodes] = await Promise.all([
+        const [c, nodes, meter] = await Promise.all([
           api<Config>("config"),
           api<typeof instances>("instances"),
+          api<typeof metering>("metering"),
         ]);
         setCfg(c);
         setInstances(nodes);
+        setMetering(meter);
         setRuleText(JSON.stringify(c.rules, null, 2));
       }
     } catch (e) {
@@ -643,6 +657,26 @@ function Console({
                     <p>
                       期望配置版本 <strong>v{cfg?.version ?? "—"}</strong>
                     </p>
+                    <p>
+                      计量状态 <Badge value={metering.state} />
+                      {metering.reason && <small> {metering.reason}</small>}
+                    </p>
+                    {metering.reports?.slice(0, 5).map((report, i) => (
+                      <div className="state-row" key={report.id ?? i}>
+                        <span title={report.error}>
+                          {report.app_id ?? "全局离线核验"}
+                        </span>
+                        <Badge value={report.passed ? "ready" : "failed"} />
+                        <small>{report.seconds?.toFixed(2) ?? "—"} 秒</small>
+                      </div>
+                    ))}
+                    {metering.applications
+                      ?.filter((app) => app.state !== "healthy")
+                      .map((app) => (
+                        <div className="warning" key={app.app_id}>
+                          {app.app_id}：{app.state}（{app.reason}）
+                        </div>
+                      ))}
                     {Object.entries(instances).map(([id, node]) => (
                       <div className="state-row" key={id}>
                         <span title={id}>{id.slice(0, 18)}</span>

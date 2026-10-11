@@ -21,7 +21,14 @@ type snapshot struct {
 	cfg  Config
 	keys map[string]Key
 }
+
+type requestMeteringKey struct{}
+type requestMetering struct {
+	Paid     bool
+	Rejected bool
+}
 type Engine struct {
+	Metering      *Runtime
 	Store         Store
 	Bus           Bus
 	Guard         Guard
@@ -176,12 +183,18 @@ func (e *Engine) handle(w http.ResponseWriter, r *http.Request, kind string) {
 	e.Metrics.Active.Inc()
 	defer e.Metrics.Active.Dec()
 	ctx, span := otel.Tracer("gateway").Start(ctx, "gateway.request")
+	financial := &requestMetering{}
+	ctx = context.WithValue(ctx, requestMeteringKey{}, financial)
 	defer span.End()
 	span.SetAttributes(attribute.String("request.id", id), attribute.String("app.id", a.ID))
 	finalStatus := "failed"
 	cached := false
 	defer func() {
 		e.Metrics.Request(a.ID, req.Alias, finalStatus, cached, time.Since(start))
+		// 门禁拒绝尚未产生费用，避免重试洪峰继续挤压已经滞后的计量队列。
+		if e.Metering != nil && financial.Rejected && !financial.Paid {
+			return
+		}
 		event := Event{ID: id + ":result", RequestID: id, AttemptID: id, Revision: 2, Kind: "completed", Purpose: "request", AppID: a.ID, Department: a.Department, Alias: req.Alias, At: start.UTC(), Month: month(start), Status: finalStatus, Cached: cached, DurationMS: time.Since(start).Milliseconds()}
 		pc, done := context.WithTimeout(context.WithoutCancel(ctx), 9*time.Second)
 		defer done()
@@ -453,6 +466,12 @@ func (e *Engine) result(id string, err error) {
 	e.breakers[id] = b
 }
 func (e *Engine) attempt(ctx context.Context, cfg Config, a App, m Model, r Request, requestID, purpose string, gray bool, w http.ResponseWriter) (body []byte, committed bool, err error) {
+	financial, _ := ctx.Value(requestMeteringKey{}).(*requestMetering)
+	defer func() {
+		if financial != nil && errors.Is(err, ErrUnavailable) {
+			financial.Rejected = true
+		}
+	}()
 	ctx, span := otel.Tracer("gateway").Start(ctx, "provider.attempt")
 	defer span.End()
 	span.SetAttributes(attribute.String("gen_ai.provider.name", cfg.Providers[m.ProviderID].Kind), attribute.String("gen_ai.request.model", m.Upstream))
@@ -461,6 +480,28 @@ func (e *Engine) attempt(ctx context.Context, cfg Config, a App, m Model, r Requ
 	event := Event{ID: id + ":1", RequestID: requestID, AttemptID: id, Revision: 1, Kind: "started", Purpose: purpose, AppID: a.ID, Department: a.Department, Alias: r.Alias, Model: m, At: started.UTC(), Month: month(started), Status: "started", Quality: "pending", Gray: gray, ReserveTokens: r.InputEstimate + r.MaxOutput, ReserveMicro: Cost(m, Usage{Input: r.InputEstimate, Output: r.MaxOutput})}
 	if gray {
 		event.GrayRun = cfg.Routes[r.Alias].Gray.RunID
+	}
+	if _, ok := e.Store.(*SQLStore); ok {
+		if e.Metering == nil {
+			err = ErrUnavailable
+			return
+		}
+		var finish func()
+		raw, encodeErr := eventBytes(event)
+		if encodeErr != nil {
+			err = ErrUnavailable
+			return
+		}
+		limit := e.Bus.(*DurableBus).AppBytes
+		if a.OutboxBytes > 0 {
+			limit = a.OutboxBytes
+		}
+		ctx, finish, err = e.Metering.beginAdmission(ctx, a.ID, id, int64(len(raw))+maxEventBytes, limit)
+		if err != nil {
+			err = ErrUnavailable
+			return
+		}
+		defer finish()
 	}
 	limitID := Hash(m.ProviderID + ":" + m.Upstream)
 	if err = e.Guard.Rate(ctx, "model:"+limitID, m.RPM, time.Minute); err != nil {
@@ -499,6 +540,9 @@ func (e *Engine) attempt(ctx context.Context, cfg Config, a App, m Model, r Requ
 		return
 	}
 	upstreamStart := time.Now()
+	if financial != nil {
+		financial.Paid = true
+	}
 	upstreamDuration := time.Duration(0)
 	defer func() {
 		e.Metrics.Overhead.WithLabelValues(purpose).Observe((time.Since(started) - upstreamDuration).Seconds())

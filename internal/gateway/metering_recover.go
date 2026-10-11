@@ -392,6 +392,9 @@ func rebuildQuotaLedger(c context.Context, r *Runtime) error {
 		}
 		if e.Kind == "started" {
 			err = g.Reserve(c, App{ID: e.AppID}, Reservation{e.AttemptID, e.AppID, e.Month, e.ReserveTokens, e.ReserveMicro})
+			if err == nil {
+				err = stampReservation(c, g, e)
+			}
 		} else {
 			err = g.Settle(c, e)
 		}
@@ -461,6 +464,13 @@ func rebuildQuotaLedger(c context.Context, r *Runtime) error {
 		return err
 	}
 	rows.Close()
+	if err = initializeMeteringEvidence(c, s, RedisGuard{Client: r.Redis}); err != nil {
+		return err
+	}
+	// 停写重建可以清理入口登记，但未知 started 仍留在账本/预占中等待核实。
+	if _, err = s.execMetering(c, `DELETE FROM gw_metering_admissions`); err != nil {
+		return err
+	}
 	return r.Redis.Set(c, "gw:quota:state", "ready", 0).Err()
 }
 

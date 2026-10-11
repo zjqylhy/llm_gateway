@@ -25,6 +25,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/segmentio/kafka-go"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 // 测试角色只编译到验收二进制；不向生产命令增加 mock 开关。
@@ -63,6 +64,7 @@ func TestReliabilityProcess(t *testing.T) {
 	defer server.Close()
 	go func() { <-ctx.Done(); _ = server.Close() }()
 	if role == "worker" {
+		go r.RunMeteringMonitor(ctx)
 		if bus, ok := e.Bus.(*DurableBus); ok {
 			go bus.RunRelay(ctx)
 		}
@@ -172,17 +174,22 @@ type reliabilityResult struct {
 }
 
 type reliabilitySample struct {
-	Concurrency  int     `json:"concurrency"`
-	Requests     int     `json:"requests"`
-	Stream       bool    `json:"stream"`
-	Failed       int     `json:"failed"`
-	Seconds      float64 `json:"seconds"`
-	RPS          float64 `json:"rps"`
-	P50MS        float64 `json:"p50_ms"`
-	P95MS        float64 `json:"p95_ms"`
-	P99MS        float64 `json:"p99_ms"`
-	FirstP95MS   float64 `json:"first_event_p95_ms,omitempty"`
-	DrainSeconds float64 `json:"ledger_drain_seconds"`
+	Concurrency   int     `json:"concurrency"`
+	Requests      int     `json:"requests"`
+	Stream        bool    `json:"stream"`
+	Failed        int     `json:"failed"`
+	Rejected      int     `json:"protected_rejections"`
+	Accepted      int     `json:"accepted"`
+	AcceptedRPS   float64 `json:"accepted_rps"`
+	AcceptedP95MS float64 `json:"accepted_p95_ms,omitempty"`
+	AcceptedP99MS float64 `json:"accepted_p99_ms,omitempty"`
+	Seconds       float64 `json:"seconds"`
+	RPS           float64 `json:"rps"`
+	P50MS         float64 `json:"p50_ms"`
+	P95MS         float64 `json:"p95_ms"`
+	P99MS         float64 `json:"p99_ms"`
+	FirstP95MS    float64 `json:"accepted_first_event_p95_ms,omitempty"`
+	DrainSeconds  float64 `json:"ledger_drain_seconds"`
 }
 
 func TestReliabilityIntegration(t *testing.T) {
@@ -221,7 +228,7 @@ func TestReliabilityIntegration(t *testing.T) {
 	defer func() {
 		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
 		defer done()
-		_, _ = publisher.Client.Delete(cleanup, publisher.Prefix+"/config")
+		_, _ = publisher.Client.Delete(cleanup, publisher.Prefix+"/", clientv3.WithPrefix())
 	}()
 	dir := os.Getenv("GW_RELIABILITY_DIRECTORY")
 	docker := func(args ...string) (string, error) {
@@ -231,6 +238,7 @@ func TestReliabilityIntegration(t *testing.T) {
 		return strings.TrimSpace(string(out)), err
 	}
 	checkT := t
+	acceptanceT := t
 	mustDocker := func(args ...string) string {
 		checkT.Helper()
 		out, err := docker(args...)
@@ -270,6 +278,11 @@ func TestReliabilityIntegration(t *testing.T) {
 		deadline := time.Now().Add(timeout)
 		for !check() {
 			if time.Now().After(deadline) || ctx.Err() != nil {
+				probe, cancel := context.WithTimeout(context.Background(), time.Second)
+				var state, reason string
+				err := s.DB.QueryRowContext(probe, `SELECT state,reason FROM gw_metering_control WHERE id=1`).Scan(&state, &reason)
+				cancel()
+				checkT.Log("metering diagnostic", state, reason, err)
 				checkT.Fatal("timeout: " + label)
 			}
 			time.Sleep(100 * time.Millisecond)
@@ -407,6 +420,16 @@ func TestReliabilityIntegration(t *testing.T) {
 	runCase("only_worker_joins_metering_group", func(t *testing.T) {
 		singleConsumer()
 	})
+	runCase("worker_periodic_application_audit_persists_report", func(t *testing.T) {
+		if _, err := s.DB.ExecContext(ctx, `UPDATE gw_metering_apps SET checked_at=UTC_TIMESTAMP(6)-INTERVAL 61 SECOND WHERE app_id='redis-fault'`); err != nil {
+			t.Fatal(err)
+		}
+		wait("periodic successful audit report", 30*time.Second, func() bool {
+			var count int
+			err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_metering_reports r JOIN gw_metering_apps a ON a.report_id=r.id WHERE r.app_id='redis-fault' AND r.actor='system' AND r.reason='periodic' AND r.passed=1 AND a.state='healthy'`).Scan(&count)
+			return err == nil && count > 0
+		})
+	})
 	for _, app := range []string{"token", "budget"} {
 		runCase("two_instances_compete_for_"+app, func(t *testing.T) {
 			results := make(chan reliabilityResult, 100)
@@ -456,6 +479,7 @@ func TestReliabilityIntegration(t *testing.T) {
 		})
 	}
 	samples := []reliabilitySample{}
+	acceptedTotal := 0
 	runCase("bounded_pressure_and_stream_protocol", func(t *testing.T) {
 		if os.Getenv("GW_RELIABILITY_SKIP_PRESSURE") == "1" {
 			t.Skip("fault-only iteration; full acceptance must include pressure")
@@ -464,6 +488,12 @@ func TestReliabilityIntegration(t *testing.T) {
 			vus, requests int
 			stream        bool
 		}{{10, 500, false}, {50, 1000, false}, {100, 2000, false}, {50, 200, true}} {
+			ready(gateways[0])
+			wait("load application exits audit barrier", time.Minute, func() bool {
+				var state string
+				err := s.DB.QueryRowContext(ctx, `SELECT state FROM gw_metering_apps WHERE app_id='load'`).Scan(&state)
+				return err == nil && state == "healthy"
+			})
 			results := make(chan reliabilityResult, stage.requests)
 			var next atomic.Int64
 			start := time.Now()
@@ -475,24 +505,46 @@ func TestReliabilityIntegration(t *testing.T) {
 				}(i)
 			}
 			latencies, firsts := []float64{}, []float64{}
-			failed := 0
+			acceptedLatency := []float64{}
+			failed, rejected := 0, 0
 			for i := 0; i < stage.requests; i++ {
 				result := <-results
 				latencies = append(latencies, result.ElapsedMS)
-				firsts = append(firsts, result.FirstMS)
+				if result.Error == "" && result.Status == 503 && (strings.Contains(result.Body, `"governance_unavailable"`) || strings.Contains(result.Body, `"overloaded"`)) {
+					rejected++
+					continue
+				}
 				if result.Status != 200 || result.Error != "" || (stage.stream && !strings.HasSuffix(result.Body, "data: [DONE]\n\n")) || (!stage.stream && !strings.Contains(result.Body, `"choices"`)) {
 					failed++
 					if failed <= 3 {
 						t.Logf("pressure failure: %+v", result)
 					}
+				} else {
+					acceptedLatency = append(acceptedLatency, result.ElapsedMS)
+					if stage.stream {
+						firsts = append(firsts, result.FirstMS)
+					}
 				}
 			}
 			seconds := time.Since(start).Seconds()
+			// 延迟必须区分已接受调用和保护性拒绝，不能把快速 503 当成容量成绩。
 			sort.Float64s(latencies)
 			sort.Float64s(firsts)
 			percentile := func(values []float64, percent int) float64 { return values[(len(values)-1)*percent/100] }
 			sample := reliabilitySample{Concurrency: stage.vus, Requests: stage.requests, Stream: stage.stream, Failed: failed, Seconds: seconds, RPS: float64(stage.requests) / seconds, P50MS: percentile(latencies, 50), P95MS: percentile(latencies, 95), P99MS: percentile(latencies, 99)}
-			if stage.stream {
+			sample.Rejected = rejected
+			sample.Accepted = stage.requests - rejected - failed
+			acceptedTotal += sample.Accepted
+			if sample.Accepted == 0 {
+				t.Error("profile accepted no paid requests; cannot verify successful protocol under load")
+			}
+			sample.AcceptedRPS = float64(sample.Accepted) / seconds
+			if len(acceptedLatency) > 0 {
+				sort.Float64s(acceptedLatency)
+				sample.AcceptedP95MS = percentile(acceptedLatency, 95)
+				sample.AcceptedP99MS = percentile(acceptedLatency, 99)
+			}
+			if len(firsts) > 0 {
 				sample.FirstP95MS = percentile(firsts, 95)
 			}
 			if failed != 0 {
@@ -504,6 +556,14 @@ func TestReliabilityIntegration(t *testing.T) {
 			samples = append(samples, sample)
 			t.Logf("pressure: %+v", sample)
 			reconcile("load")
+			var paid int
+			if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_attempts WHERE app_id='load' AND purpose<>'request' AND status<>'cancelled'`).Scan(&paid); err != nil || paid != acceptedTotal {
+				t.Fatal("protected rejection generated paid usage", paid, acceptedTotal, err)
+			}
+			counts := reconcile("load")
+			if counts.Tokens != int64(acceptedTotal)*32 || counts.Micro != int64(acceptedTotal)*52 || counts.ReservedTokens != 0 {
+				t.Fatal("protected rejection incurred usage", counts, acceptedTotal)
+			}
 		}
 		b, _ := json.MarshalIndent(samples, "", "  ")
 		if err := os.WriteFile(filepath.Join(dir, "pressure.json"), b, 0600); err != nil {
@@ -525,12 +585,26 @@ func TestReliabilityIntegration(t *testing.T) {
 		drain()
 		mustDocker("kill", run+"-worker")
 		requests := []string{}
+		before, _ := stats()
 		for i := 0; i < 20; i++ {
 			result := call(gateways[i%2], "worker-fault", "while worker is down", false)
+			if result.Status == 503 && result.Error == "" {
+				continue
+			}
 			if result.Status != 200 || result.Error != "" {
 				t.Fatal(result)
 			}
 			requests = append(requests, result.RequestID)
+		}
+		time.Sleep(4 * time.Second)
+		for i := 0; i < 4; i++ {
+			result := call(gateways[i%2], "worker-fault", "expired permit", false)
+			if result.Status != 503 || result.Error != "" {
+				t.Fatal("worker loss did not expire admission", result)
+			}
+		}
+		if after, _ := stats(); after-before != int64(len(requests)) {
+			t.Fatal("expired permit called provider", before, after, len(requests))
 		}
 		for _, id := range requests {
 			rows, err := s.Records(ctx, Filter{RequestID: id})
@@ -542,7 +616,7 @@ func TestReliabilityIntegration(t *testing.T) {
 		ready(workerURL)
 		singleConsumer()
 		drain()
-		if counts := reconcile("worker-fault"); counts.Tokens != 640 || counts.Micro != 1040 || counts.ReservedTokens != 0 {
+		if counts := reconcile("worker-fault"); counts.Tokens != int64(len(requests))*32 || counts.Micro != int64(len(requests))*52 || counts.ReservedTokens != 0 {
 			t.Fatal("worker replay lost or duplicated billing", counts)
 		}
 	})
@@ -567,6 +641,32 @@ func TestReliabilityIntegration(t *testing.T) {
 		for _, app := range []string{"token", "budget", "load", "worker-fault"} {
 			reconcile(app)
 		}
+		// AOF 恢复数据不等于重新获得接单许可；停写核验并切换代次后才恢复入口。
+		mustDocker("stop", "--time", "5", run+"-gateway-1", run+"-gateway-2")
+		drain()
+		mustDocker("stop", "--time", "5", run+"-worker")
+		wait("worker leaves group for audited resume", 30*time.Second, func() bool { return r.ensureGroupStopped(ctx) == nil })
+		// 实际恢复 CLI 建立新连接，不沿用故障前 Redis 池中的失效 socket。
+		fresh, err := OpenRuntime(ctx, false)
+		if err != nil {
+			t.Fatal("open fresh recovery runtime", err)
+		}
+		acceptanceT.Cleanup(func() { fresh.Close() })
+		r = fresh
+		t.Setenv("GW_METERING_RECOVERY_ACK", "writers-stopped")
+		t.Setenv("GW_METERING_ACTOR", "acceptance")
+		t.Setenv("GW_METERING_REASON", "verify AOF restore before admission")
+		if _, err := ResumeMetering(ctx, r); err != nil {
+			t.Fatal("AOF evidence failed explicit resume", err)
+		}
+		if n, err := r.Redis.Exists(ctx, "gw:metering:permit").Result(); err != nil || n != 0 {
+			t.Fatal("resume minted an admission permit without a worker")
+		}
+		mustDocker("start", run+"-worker")
+		ready(workerURL)
+		mustDocker("start", run+"-gateway-1", run+"-gateway-2")
+		ready(gateways[0])
+		ready(gateways[1])
 		result := call(gateways[0], "redis-fault", "Redis recovered", false)
 		if result.Status != 200 || result.Error != "" {
 			t.Fatal(result)

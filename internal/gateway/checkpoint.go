@@ -179,6 +179,28 @@ func (r *Runtime) KafkaRanges(c context.Context) (StreamIdentity, []PartitionRan
 		}
 		positions[p.Partition].Committed = p.CommittedOffset
 	}
+	// 终点与提交位置不是原子快照；消费推进时重读终点，避免把正常进度误判为损坏。
+	refresh := []kafka.OffsetRequest{}
+	for _, id := range ids {
+		if positions[id].Committed > positions[id].End {
+			refresh = append(refresh, kafka.LastOffsetOf(id))
+		}
+	}
+	if len(refresh) > 0 {
+		latest, e := r.KafkaClient.ListOffsets(c, &kafka.ListOffsetsRequest{Topics: map[string][]kafka.OffsetRequest{cfg.Topic: refresh}})
+		if e != nil {
+			return source, nil, e
+		}
+		for _, p := range latest.Topics[cfg.Topic] {
+			if p.Error != nil {
+				return source, nil, p.Error
+			}
+			if positions[p.Partition] == nil {
+				return source, nil, ErrCheckpoint
+			}
+			positions[p.Partition].End = p.LastOffset
+		}
+	}
 	parts := []PartitionRange{}
 	for _, id := range ids {
 		p := positions[id]

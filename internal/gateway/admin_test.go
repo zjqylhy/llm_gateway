@@ -125,6 +125,7 @@ func TestRedisQuotaAtomicSettlementAndSharedSessions(t *testing.T) {
 	_ = client.Set(context.Background(), "gw:quota:state", "ready", 0).Err()
 	ctx := context.Background()
 	app := App{ID: "app", MonthlyTokens: 100, BudgetAction: "reject", BudgetMicro: 100}
+	ctx = testPermitContext(t, client, ctx, "app", "b")
 	var wg sync.WaitGroup
 	var allowed atomic.Int32
 	for i := 0; i < 100; i++ {

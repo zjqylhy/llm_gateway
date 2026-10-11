@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/segmentio/kafka-go"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 // 验收复用真实依赖，但数据库、消息、配置、向量和 Redis 均与运行中的应用隔离。
@@ -62,7 +63,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 	defer func() {
 		cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
 		defer done()
-		if _, err := publisher.Client.Delete(cleanup, publisher.Prefix+"/config"); err != nil {
+		if _, err := publisher.Client.Delete(cleanup, publisher.Prefix+"/", clientv3.WithPrefix()); err != nil {
 			t.Errorf("acceptance config cleanup: %v", err)
 		}
 		if err := cache.call(cleanup, "collections/drop", map[string]any{"collectionName": run}, nil); err != nil {
@@ -88,6 +89,8 @@ func TestInfrastructureIntegration(t *testing.T) {
 	}))
 	defer upstream.Close()
 	e := r.Engine
+	// 手工事件属于重放 fixture，真实 HTTP 请求仍经过完整许可与入口登记。
+	fixtureGuard := RedisGuard{Client: r.Redis, RequireReady: true, EnforceMemory: true, Replay: true}
 	e.Client = NewHTTPClient(true)
 	checkT := t
 	update := func(action string, fn func(*Config) error) Config {
@@ -127,6 +130,9 @@ func TestInfrastructureIntegration(t *testing.T) {
 		return nil
 	})
 	var workerCancel context.CancelFunc
+	if _, _, err := r.nextAuditApp(ctx, ""); err != nil {
+		t.Fatal("initialize empty application controls", err)
+	}
 	var workerDone chan error
 	startWorker := func() {
 		workerCtx, stop := context.WithCancel(ctx)
@@ -186,6 +192,9 @@ func TestInfrastructureIntegration(t *testing.T) {
 	}
 	request := func(app, path string, body any) *httptest.ResponseRecorder {
 		checkT.Helper()
+		_, _, _ = r.nextAuditApp(ctx, "")
+		// 旧用例会主动损坏依赖；不能在辅助方法里修复其控制状态。
+		_ = r.renewPermit(ctx)
 		if err := e.Refresh(ctx); err != nil {
 			checkT.Fatal(err)
 		}
@@ -247,7 +256,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 	})
 	event := Event{ID: ID("event_"), RequestID: ID("request_"), AttemptID: ID("attempt_"), Revision: 1, Kind: "started", Purpose: "inference", AppID: "integration", At: time.Now().UTC(), Month: month(time.Now()), Status: "started", ReserveTokens: 100, ReserveMicro: 100, Model: Model{ID: "integration"}}
 	runCase("duplicate_out_of_order_and_correction", func(t *testing.T) {
-		if err := e.Guard.Reserve(ctx, App{ID: event.AppID}, Reservation{ID: event.AttemptID, AppID: event.AppID, Month: event.Month, Tokens: 100, Micro: 100}); err != nil {
+		if err := fixtureGuard.Reserve(ctx, App{ID: event.AppID}, Reservation{ID: event.AttemptID, AppID: event.AppID, Month: event.Month, Tokens: 100, Micro: 100}); err != nil {
 			t.Fatal(err)
 		}
 		publish(event)
@@ -380,6 +389,32 @@ func TestInfrastructureIntegration(t *testing.T) {
 			t.Fatal("backlog replay was not idempotent", counts)
 		}
 	})
+	runCase("metering_probe_SQL_pool_timeout_is_not_checkpoint_corruption", func(t *testing.T) {
+		drain()
+		pool := s.DB.Stats().MaxOpenConnections
+		s.DB.SetMaxOpenConns(1)
+		defer s.DB.SetMaxOpenConns(pool)
+		conn, err := s.DB.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		before := s.DB.Stats().WaitCount
+		probe, cancel := context.WithTimeout(ctx, time.Second)
+		defer cancel()
+		_, _, err = r.permitEvidence(probe)
+		if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrCheckpoint) || s.DB.Stats().WaitCount <= before {
+			t.Fatal("pool pressure misclassified as permanent corruption", err, s.DB.Stats())
+		}
+	})
+	runCase("short_permit_online_barrier_partial_loss_and_explicit_repair", func(t *testing.T) { drain(); testOnlineMetering(t, r, ctx, stopWorker, startWorker); drain() })
+	for _, dependency := range []string{"sql", "kafka"} {
+		runCase("completion_"+dependency+"_real_connection_loss", func(t *testing.T) {
+			drain()
+			testCompletionNetworkFailure(t, r, ctx, dependency, stopWorker, startWorker)
+			drain()
+		})
+	}
 	runCase("lost_quota_fails_closed_and_rebuild_drains_Kafka", func(t *testing.T) {
 		drain()
 		stopWorker()
@@ -557,7 +592,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 		drain()
 		app := App{ID: "acceptance-headroom", BudgetAction: "warn"}
 		reservation := Reservation{ID: "headroom", AppID: app.ID, Month: month(time.Now()), Tokens: 10, Micro: 10}
-		if err := e.Guard.Reserve(ctx, app, reservation); err != nil {
+		if err := fixtureGuard.Reserve(ctx, app, reservation); err != nil {
 			t.Fatal(err)
 		}
 		defer func() {
@@ -588,7 +623,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 		if err := r.Redis.ConfigSet(ctx, "maxmemory", strconv.FormatInt(used*105/100, 10)).Err(); err != nil {
 			t.Fatal(err)
 		}
-		if err := e.Guard.Reserve(ctx, app, reservation); err != nil {
+		if err := fixtureGuard.Reserve(ctx, app, reservation); err != nil {
 			t.Fatal("existing reserve replay blocked at watermark", err)
 		}
 		calls := upstreamCalls.Load()
@@ -608,7 +643,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 		if err := r.Redis.ConfigSet(ctx, "maxmemory-policy", "allkeys-lru").Err(); err != nil {
 			t.Fatal(err)
 		}
-		if err := e.Guard.Reserve(ctx, app, Reservation{ID: "unsafe-policy", AppID: app.ID, Month: reservation.Month, Tokens: 1}); !errors.Is(err, ErrUnavailable) {
+		if err := fixtureGuard.Reserve(ctx, app, Reservation{ID: "unsafe-policy", AppID: app.ID, Month: reservation.Month, Tokens: 1}); !errors.Is(err, ErrUnavailable) {
 			t.Fatal("unsafe quota eviction policy accepted", err)
 		}
 	})
@@ -677,7 +712,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 		other.ID = "outbox-b:1"
 		other.AttemptID = "outbox-b"
 		other.AppID = "outbox-other"
-		if err := e.Guard.Reserve(ctx, App{ID: other.AppID}, Reservation{other.AttemptID, other.AppID, other.Month, 100, 100}); err != nil {
+		if err := fixtureGuard.Reserve(ctx, App{ID: other.AppID}, Reservation{other.AttemptID, other.AppID, other.Month, 100, 100}); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.SaveOutbox(ctx, other, 8<<20, 2<<20); err != nil {
@@ -700,12 +735,17 @@ func TestInfrastructureIntegration(t *testing.T) {
 		if err := s.SaveOutbox(ctx, conflict, 8<<20, 2<<20); !errors.Is(err, ErrEventConflict) {
 			t.Fatal("outbox conflict ignored", err)
 		}
-		if err := e.Guard.Reserve(ctx, App{ID: base.AppID}, Reservation{base.AttemptID, base.AppID, base.Month, 100, 100}); err != nil {
+		if err := fixtureGuard.Reserve(ctx, App{ID: base.AppID}, Reservation{base.AttemptID, base.AppID, base.Month, 100, 100}); err != nil {
 			t.Fatal(err)
 		}
 		for _, item := range []Event{base, completed, other} {
 			if err := s.Apply(ctx, item); err != nil {
 				t.Fatal(err)
+			}
+			if item.Kind == "started" {
+				if err := stampReservation(ctx, fixtureGuard, item); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if item.Kind == "completed" {
 				if err := e.Guard.Settle(ctx, item); err != nil {
@@ -736,7 +776,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 		original := e.Bus.(*DurableBus)
 		bus := &DurableBus{Store: s, Transport: failedBus{original.Transport, true}, GlobalBytes: 512 << 20, AppBytes: 64 << 20}
 		started := Event{ID: "relay-attempt:1", AttemptID: "relay-attempt", RequestID: "relay-request", AppID: "relay-app", Kind: "started", Revision: 1, Purpose: "inference", At: time.Now().UTC(), Month: month(time.Now()), ReserveTokens: 100, ReserveMicro: 100}
-		if err := e.Guard.Reserve(ctx, App{ID: started.AppID}, Reservation{started.AttemptID, started.AppID, started.Month, 100, 100}); err != nil {
+		if err := fixtureGuard.Reserve(ctx, App{ID: started.AppID}, Reservation{started.AttemptID, started.AppID, started.Month, 100, 100}); err != nil {
 			t.Fatal(err)
 		}
 		if err := bus.Publish(ctx, started); err != nil {
@@ -815,7 +855,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 		original := e.Bus.(*DurableBus)
 		bus := &DurableBus{Store: failedCompletionOutbox{s}, Transport: original.Transport, GlobalBytes: 512 << 20, AppBytes: 64 << 20}
 		started := Event{ID: "kafka-only:1", AttemptID: "kafka-only", RequestID: "kafka-only-request", AppID: "kafka-only-app", Kind: "started", Revision: 1, Purpose: "inference", At: time.Now().UTC(), Month: month(time.Now()), ReserveTokens: 100, ReserveMicro: 100}
-		if err := e.Guard.Reserve(ctx, App{ID: started.AppID}, Reservation{started.AttemptID, started.AppID, started.Month, 100, 100}); err != nil {
+		if err := fixtureGuard.Reserve(ctx, App{ID: started.AppID}, Reservation{started.AttemptID, started.AppID, started.Month, 100, 100}); err != nil {
 			t.Fatal(err)
 		}
 		if err := bus.Publish(ctx, started); err != nil {
@@ -857,7 +897,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 			tasks.Add(1)
 			go func(event Event) {
 				defer tasks.Done()
-				if err := e.Guard.Reserve(ctx, App{ID: event.AppID}, Reservation{event.AttemptID, event.AppID, event.Month, 100, 100}); err != nil {
+				if err := fixtureGuard.Reserve(ctx, App{ID: event.AppID}, Reservation{event.AttemptID, event.AppID, event.Month, 100, 100}); err != nil {
 					failures <- err
 					return
 				}
@@ -975,7 +1015,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 		drain()
 		stopWorker()
 		started := Event{ID: "rebuild-outbox:1", AttemptID: "rebuild-outbox", RequestID: "rebuild-outbox-request", AppID: "rebuild-outbox-app", Kind: "started", Revision: 1, Purpose: "inference", At: time.Now().UTC(), Month: month(time.Now()), ReserveTokens: 100, ReserveMicro: 100}
-		if err := e.Guard.Reserve(ctx, App{ID: started.AppID}, Reservation{started.AttemptID, started.AppID, started.Month, 100, 100}); err != nil {
+		if err := fixtureGuard.Reserve(ctx, App{ID: started.AppID}, Reservation{started.AttemptID, started.AppID, started.Month, 100, 100}); err != nil {
 			t.Fatal(err)
 		}
 		completed := started

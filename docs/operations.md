@@ -30,7 +30,7 @@ worker 按事件 ID 去重、按 attempt revision 更新账本和配额。MySQL 
 
 生产模式启动前需完成新迁移。网关保存 outbox，不更新账本；worker 后台重试，消费入账并结算 Redis 后清除冗余载荷、释放逻辑容量。未交付容量默认全局 512MiB、每应用 64MiB，环境变量为 `GW_OUTBOX_GLOBAL_BYTES`、`GW_OUTBOX_APP_BYTES`；应用 `outbox_bytes` 可覆盖默认，每个新调用为 completed 预留 1MiB。限额不覆盖索引、已交付元数据及其他 SQL 表，不能代替磁盘、备份和连接池监控。
 
-网关保存/发布计量失败及消费者事件冲突会触发 SQL/Redis 冻结并使 readyz 返回 503；启动新网关也要检查 SQL 控制状态。已有结算继续，新付费调用停止。worker 静默停止和消费积压的自动健康门禁仍待后续许可/进度方案；消费处理故障与来源/检查点异常会冻结，不应把本轮当作实时检测全部依赖异常。两路 completed 保存都失败或上游未返回 usage 时，精确费用仍可能需要厂商记录核实；不自动释放 pending。普通计量失败返回 `metering_unavailable`，可能已经产生费用，请按 X-Request-Id 检查记录再决定重试。
+网关保存/发布计量失败及消费者事件冲突会触发 SQL/Redis 冻结并使 readyz 返回 503；启动新网关也要检查 SQL 控制状态。已有结算继续，新付费调用停止。worker 每秒核验消费/结算水位并续发 3 秒许可；worker 停止或依赖无法核验时许可失效。累计积压超过 10,000 条或未交付 outbox 的调度年龄超过 30 秒时不续期；这不是瞬时检测所有 Redis 键损坏。两路 completed 保存都失败或上游未返回 usage 时，精确费用仍可能需要厂商记录核实；不自动释放 pending。普通计量失败返回 `metering_unavailable`，可能已经产生费用，请按 X-Request-Id 检查记录再决定重试。
 
 以下命令仅用于确认所有写入者已停止后的维护窗口，不要在正常 consumer/outbox sender/管理员修正仍运行时执行：
 
@@ -45,7 +45,7 @@ go run ./cmd/metering-resume
 
 命令使用当前环境中的生产模式连接配置。容器对应 `/app/quota-rebuild`、`/app/metering-audit`、`/app/metering-resume`，同样传入上述确认变量。audit 校验 SQL/Redis 月度结算与预占、attempt/revision、未交付 outbox 和消费位置；最多 10,000 个应用月份及 100,000 个 Redis 键，超限明确失败，不截断为成功。resume 要求无未解决 started，并记录审计，清除 SQL/Redis 冻结后重启业务进程以清除本实例故障闩锁。
 
-有未知 started 时先核实费用、通过管理修正保存持久事件，再停止写入者、排空与重新核验；不能为恢复接单把未知用量改零。CLI 的 writers-stopped 是操作者承诺；恢复、核验、解冻与基线初始化共用 SQL GET_LOCK 独占锁，恢复事务复用该连接，且检查正常消费组没有活跃成员。在线周期对账、短期接单许可和任意 Redis 损坏检测留到阶段 3。
+有未知 started 时先核实费用、通过管理修正保存持久事件，再停止写入者、排空与重新核验；不能为恢复接单把未知用量改零。CLI 的 writers-stopped 是操作者承诺；恢复、核验、解冻与基线初始化共用 SQL GET_LOCK 独占锁，恢复事务复用该连接，且检查正常消费组没有活跃成员。在线应用屏障对账与短期许可已接入；任意键损坏仍存在发现窗口，以完整核验轮转时间衡量。
 
 恢复结束后核对各应用当前月份的 token、金额、预占及待核实记录，再重新启动服务和开放入口。恢复命令需要独占消费组；不得在生产 worker 同时运行时执行。历史数据被清理、Kafka 超出保留窗口或账本损坏时，需要备份恢复或人工对账，不能只运行重建命令。
 
@@ -72,7 +72,19 @@ go run ./cmd/metering-resume  # 未知 started 必须先核实并修正，禁止
 
 来源核验包含集群、分区集合、stream ID、新消息 header 和上条已入账消息指纹。客户端未暴露 topic UUID，这些核验不能等同 UUID，不能防止授权写入者伪造源消息。锚点或检查点超出保留区间、topic 被重建后位置/指纹变化、拓扑变化会拒绝回放，保持冻结。计量 topic 要求 `cleanup.policy=delete`，Kafka ACL 需允许读取 topic 配置、DescribeGroup 和维护时提交组 offset。超过保留窗口需要一致性备份、binlog 或人工核账，禁止静默 earliest/latest reset。
 
-恢复补发 outbox 后重新捕获终点，按 SQL 最新账本重建 Redis 结算/预占/幂等记录，再对齐组位置并核验；未解决 pending 不释放。审计记录关联 manifest 哈希，恢复任务完成仍保持 frozen。显式 resume 后重启故障闩锁实例，再启动入口。Redis generation 的 Lua 校验、短期许可和在线周期核验仍待阶段 3。
+恢复补发 outbox 后重新捕获终点，按 SQL 最新账本重建 Redis 结算/预占/幂等记录，再对齐组位置并核验；未解决 pending 不释放。审计记录关联 manifest 哈希，恢复任务完成仍保持 frozen。显式 resume 后重启故障闩锁实例，再启动入口。重建和显式恢复会更新 Redis generation/水位，旧许可失效；启动 worker 后等待新许可，再启动付费入口。
+
+## 接单许可与应用核验
+
+生产模式依赖 worker 续发许可。只启动 gateway/admin 不会获得付费接单资格。许可为 etcd lease 3 秒，Redis 同时保存绝对到期时间，旧 AOF 的 TTL 不会重新激活已经过期的许可。应用、worker 与 Redis 的主机应同步时钟。正常检测不会修改丢失的 Redis generation 或结算水位；出现来源/水位异常必须按离线恢复流程修复。
+
+准备阶段先登记 gw_metering_admissions 再预占；退出时删除登记。进程崩溃留下登记不能按年龄自动删除。应用核验将其置 quiescing，等候准备/在途退出，排空固定消费水位后比较 SQL 与 Redis。超过 150 秒、未知 started、哈希冲突或孤立记录均保持冻结，其他应用可在公共依赖健康时继续。等待屏障与扫描本身会导致该应用出现 503，持续吞吐和可用性必须包含这部分影响。
+
+worker 在核验中退出（包括正常发布重启）也会使本次核验失败并保留应用冻结；清理保存失败时可能留下 quiescing。不要直接修改控制表恢复接单，按停写、重建、核验和显式 resume 流程处理。当前版本没有自动接续被中断的在线核验，发布前应检查应用状态及报告。
+
+管理员 GET /admin/metering 可查看全局状态、最近 100 份报告和最多 100 个应用状态；按返回 next 作为 after 参数继续分页。控制台概览展示近期核验结果与异常应用。离线 metering-resume 重新核验，记录报告及 gw_audit 关联标识，可设置 GW_METERING_ACTOR/GW_METERING_REASON 记录操作者和原因；默认 recovery-command/verified offline recovery。显式恢复新代次后仍需正常 worker 颁发许可，不能手工改 ready 或删除冻结键来代替核验。
+
+关注 gateway_metering_lag_records、gateway_metering_permit_expires_seconds、gateway_metering_unchecked_apps、gateway_metering_rotation_seconds、gateway_metering_outbox_bytes 和 SQL 连接池等待指标。未核验数量包含冻结应用。每次核验最多 100,000 个 attempt、10,000 个月份、110,000 个 Redis 键；超出边界失败，不输出截断的成功账单。应用控制总数上限 10,000。详细核验逐应用轮转，不能宣称全部应用在一个 60 秒周期内完成。
 
 ## 缓存与灰度
 

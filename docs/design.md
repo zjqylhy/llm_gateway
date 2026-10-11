@@ -20,7 +20,13 @@ Redis 治理操作有 1 秒总期限；建连及池等待各上限 1 秒，读�
 
 usage 修正事务合并版本分配、审计与 outbox，支持 Idempotency-Key 重试。计量依赖故障通过 SQL 控制状态和 Redis 冻结标记停止新增付费调用，既有重放及结算继续；readyz 同时核验计量状态。清除冻结需停写核验，未知 started 必须核实用量后修正。
 
-消费者在同一 SQL 事务写账本与分区 next_offset，再结算 Redis、确认 outbox 交付，最后提交 Kafka offset。已实现只读 metering-recover plan、显式 apply、存量 checkpoint-init 及共用独占维护锁；恢复可中断续跑，完成保持冻结。来源核验使用集群/分区、stream header 与消息指纹，当前客户端不提供 topic UUID。短期接单许可、Redis generation 强制校验和在线周期对账仍属于阶段 3，完整规格见 [metering-recovery-spec.md](metering-recovery-spec.md)。
+消费者在同一 SQL 事务写账本与分区 next_offset，再结算 Redis、确认 outbox 交付、推进 Redis 分区结算水位，最后提交 Kafka offset。已实现只读 metering-recover plan、显式 apply、存量 checkpoint-init 及共用独占维护锁；恢复可中断续跑，完成保持冻结。来源核验使用集群/分区、stream header 与消息指纹，当前客户端不提供 topic UUID。完整规格见 [metering-recovery-spec.md](metering-recovery-spec.md)。
+
+worker 在独占 SQL 连接锁下检查来源、SQL 控制、Redis generation 和已提交 Kafka/Redis 水位，每秒续发有效期 3 秒的 etcd 许可。冻结状态与许可同处配置前缀下的 metering 命名空间；网关通过 etcd 事务读取两者，登记准备/在途 attempt，Redis Lua 再检查绝对到期时间、全局和应用代次。许可不可续期或存储不明时拒绝新费用；SQL 检查点可以领先 Redis，不按正常异步延迟冻结。
+
+正式核验将目标应用置 quiescing，串行化新入口登记、started 保存与管理修正，等待在途登记退出，再捕获 Kafka 固定水位并排空该应用补偿。分页比较月份计数、预占、最新版本、事件哈希以及孤立键；失败保持该应用 frozen，未知 started 不按超时清零。详细核验串行轮转，成功后至少隔 60 秒再核验同一应用，最多等待 150 秒；该应用期间会拒绝新付费调用。控制台与指标展示报告、冻结原因、未核验数量和轮转时间，这不是无中断或所有租户 10 秒内必检的方案。
+
+每实例默认最多 8 个付费在途 attempt（GW_MAX_METERING_INFLIGHT），槽位覆盖准备、上游调用及完成计量收尾，等待最多 1 秒；started/completed 保存各最多 8 并发，started 保存槽位满直接拒绝。仅限制登记并发会把已接单费用集中到完成队列并耗尽 SQL 预算，不能保护收尾。登记前预检 outbox 剩余容量以减少满容量时的预占/取消洪峰；最终容量检查仍在原子 outbox 事务中。生产门禁拒绝且尚未调用厂商时保留指标，不再把请求汇总加入受压队列；已经产生的费用、取消和完成事件仍须持久化。
 
 ## 安全与边界
 

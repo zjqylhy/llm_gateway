@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +30,11 @@ func settleMetering(c context.Context, s *SQLStore, g Guard, e Event) error {
 		if err := g.Reserve(c, App{ID: e.AppID}, Reservation{ID: e.AttemptID, AppID: e.AppID, Month: e.Month, Tokens: e.ReserveTokens, Micro: e.ReserveMicro}); err != nil {
 			return err
 		}
+		if rg, ok := g.(RedisGuard); ok {
+			if err := stampReservation(c, rg, e); err != nil {
+				return err
+			}
+		}
 	} else if e.Purpose != "request" {
 		if err := g.Settle(c, e); err != nil {
 			return err
@@ -37,11 +43,17 @@ func settleMetering(c context.Context, s *SQLStore, g Guard, e Event) error {
 	return s.DeliveredOutbox(c, e)
 }
 func (r *Runtime) freezeConsumer(c context.Context) {
+	if c.Err() != nil {
+		return
+	}
 	ctx, done := context.WithTimeout(context.WithoutCancel(c), time.Second)
 	_ = r.Engine.Store.(*SQLStore).FreezeMetering(ctx, "consumer_recovery_required")
 	done()
 	ctx, done = context.WithTimeout(context.WithoutCancel(c), time.Second)
 	_ = r.Redis.Set(ctx, "gw:metering:frozen", "consumer_recovery_required", 0).Err()
+	done()
+	ctx, done = context.WithTimeout(context.WithoutCancel(c), time.Second)
+	r.freezeEtcd(ctx)
 	done()
 }
 func (r *Runtime) commitPositions(c context.Context, generation int, member string, offsets []kafka.OffsetCommit) error {
@@ -83,6 +95,12 @@ func (r *Runtime) ensureGroupStopped(c context.Context) error {
 
 // 显式管理 Kafka generation，分区 reader 不另行加入消费组。
 func (r *Runtime) ConsumeMetering(parent context.Context) (result error) {
+	// database/sql 的上下文取消可能表现为 ErrTxDone，正常停机统一返回父上下文错误。
+	defer func() {
+		if parent.Err() != nil && errors.Is(result, sql.ErrTxDone) {
+			result = parent.Err()
+		}
+	}()
 	s := r.Engine.Store.(*SQLStore)
 	source, _, err := s.Checkpoints(parent)
 	if err != nil {
@@ -139,7 +157,7 @@ func (r *Runtime) ConsumeMetering(parent context.Context) (result error) {
 				defer stop()
 				err := r.consumeAssignment(partCtx, generation, assignment)
 				// generation 已结束时 AfterFunc 可能尚未传播取消；不把取消事务误判为财务故障。
-				if err != nil && partCtx.Err() == nil && genCtx.Err() == nil && parent.Err() == nil {
+				if err != nil && !errors.Is(err, ErrFenced) && partCtx.Err() == nil && genCtx.Err() == nil && parent.Err() == nil {
 					r.freezeConsumer(partCtx)
 					select {
 					case failures <- err:
@@ -167,6 +185,13 @@ func (r *Runtime) consumeAssignment(c context.Context, generation *kafka.Generat
 	}
 	if start > p.Next {
 		return fmt.Errorf("%w: partition %d group ahead of SQL", ErrCheckpoint, p.Partition)
+	}
+	gen, err := r.generation(c)
+	if err != nil {
+		return err
+	}
+	if err = r.advanceWatermark(c, gen, p.Partition, start, start); err != nil {
+		return err
 	}
 	actual, ranges, err := r.KafkaRanges(c)
 	if err != nil {
@@ -211,6 +236,9 @@ func (r *Runtime) consumeAssignment(c context.Context, generation *kafka.Generat
 			return err
 		}
 		if err = settleMetering(c, s, r.Engine.Guard, e); err != nil {
+			return err
+		}
+		if err = r.advanceWatermark(c, gen, p.Partition, cursor, m.Offset+1); err != nil {
 			return err
 		}
 		if err = r.commitPositions(c, int(generation.ID), generation.MemberID, []kafka.OffsetCommit{{Partition: p.Partition, Offset: m.Offset + 1}}); err != nil {

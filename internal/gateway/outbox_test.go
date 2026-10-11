@@ -288,3 +288,79 @@ func TestCancelledCallerDoesNotFreezeHealthyMetering(t *testing.T) {
 		t.Fatal("healthy request was blocked", err)
 	}
 }
+
+func TestApplicationBarrierDoesNotFreezeGlobalMetering(t *testing.T) {
+	s, transport := newTestOutbox(), &recordingBus{}
+	s.saveError = func(Event) error { return errMeteringBarrier }
+	b := &DurableBus{Store: s, Transport: transport, GlobalBytes: 512 << 20, AppBytes: 64 << 20}
+	e := Event{ID: "barrier:1", AttemptID: "barrier", RequestID: "request", AppID: "app", Kind: "started", Revision: 1}
+	if err := b.Publish(context.Background(), e); err == nil {
+		t.Fatal("barrier admitted paid attempt")
+	}
+	if s.frozen || b.stopped.Load() || len(transport.events) != 0 {
+		t.Fatal("application pause caused global freeze or publication")
+	}
+}
+
+type heldStartedOutbox struct {
+	*testOutbox
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s heldStartedOutbox) SaveOutbox(c context.Context, e Event, global, app int64) error {
+	if e.Kind == "started" {
+		s.entered <- struct{}{}
+		select {
+		case <-s.release:
+		case <-c.Done():
+			return c.Err()
+		}
+	}
+	return s.testOutbox.SaveOutbox(c, e, global, app)
+}
+
+func TestBusyStartedDoesNotConsumeSQLBudgetOrBlockCompletion(t *testing.T) {
+	s := heldStartedOutbox{newTestOutbox(), make(chan struct{}, 8), make(chan struct{})}
+	transport := &recordingBus{}
+	b := &DurableBus{Store: s, Transport: transport, GlobalBytes: 512 << 20, AppBytes: 64 << 20}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	results := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		e := Event{ID: ID("event_"), AttemptID: ID("attempt_"), RequestID: "request", AppID: "app", Kind: "started", Revision: 1}
+		go func() { results <- b.Publish(ctx, e) }()
+	}
+	for i := 0; i < 8; i++ {
+		select {
+		case <-s.entered:
+		case <-ctx.Done():
+			t.Fatal("SQL saves did not enter", ctx.Err())
+		}
+	}
+	released := false
+	defer func() {
+		if !released {
+			close(s.release)
+		}
+	}()
+	start := time.Now()
+	e := Event{ID: "busy:1", AttemptID: "busy", RequestID: "request", AppID: "app", Kind: "started", Revision: 1}
+	if err := b.Publish(ctx, e); !errors.Is(err, ErrUnavailable) || time.Since(start) > time.Second {
+		t.Fatal("started admission queued", err, time.Since(start))
+	}
+	e.Kind, e.Revision, e.ID = "completed", 2, "busy:2"
+	if err := b.Publish(ctx, e); err != nil {
+		t.Fatal("existing completion blocked", err)
+	}
+	close(s.release)
+	released = true
+	for i := 0; i < 8; i++ {
+		if err := <-results; err != nil {
+			t.Fatal("held save failed", err)
+		}
+	}
+	if s.frozen || b.stopped.Load() {
+		t.Fatal("ordinary admission pressure froze metering")
+	}
+}

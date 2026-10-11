@@ -76,6 +76,14 @@ func (b *DurableBus) save(c context.Context, e Event) error {
 	slots := b.completedSlots
 	if e.Kind == "started" {
 		slots = b.startedSlots
+		// 新接单不排队消耗 SQL 预算；已有费用使用独立槽位等待持久化。
+		select {
+		case slots <- struct{}{}:
+			defer func() { <-slots }()
+		default:
+			return errOutboxBusy
+		}
+		return b.Store.SaveOutbox(c, e, b.GlobalBytes, b.AppBytes)
 	}
 	select {
 	case slots <- struct{}{}:
@@ -128,7 +136,8 @@ func (b *DurableBus) Publish(c context.Context, e Event) error {
 		return ErrUnavailable
 	}
 	if err != nil && e.Kind == "started" {
-		if c.Err() == nil && !errors.Is(err, ErrOutboxCapacity) && !errors.Is(err, errOutboxBusy) {
+		if c.Err() == nil && !errors.Is(err, ErrOutboxCapacity) && !errors.Is(err, errOutboxBusy) && !errors.Is(err, errMeteringBarrier) {
+			slog.Warn("metering started persistence failed", "error", err)
 			b.freeze(c, "outbox_unavailable")
 		}
 		return ErrUnavailable
@@ -138,6 +147,7 @@ func (b *DurableBus) Publish(c context.Context, e Event) error {
 	pubErr := b.Transport.Publish(send, e)
 	cancel()
 	if c.Err() == nil && e.Purpose != "request" && (pubErr != nil || err != nil && !errors.Is(err, ErrOutboxCapacity) && !errors.Is(err, errOutboxBusy)) {
+		slog.Warn("metering delivery failed", "kind", e.Kind, "save_error", err, "publish_error", pubErr)
 		b.freeze(c, "metering_delivery_failure")
 	}
 	if pubErr != nil {

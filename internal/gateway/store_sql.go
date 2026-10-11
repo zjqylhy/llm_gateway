@@ -46,6 +46,9 @@ func NewSQLStore(c context.Context, dsn string) (*SQLStore, error) {
 // 迁移由显式 migrate 命令执行，运行服务不持有 DDL 权限。
 func (s *SQLStore) Migrate(c context.Context) error {
 	statements := []string{
+		`CREATE TABLE IF NOT EXISTS gw_metering_apps (app_id VARCHAR(64) PRIMARY KEY, state VARCHAR(16) NOT NULL, generation VARCHAR(64) NOT NULL, reason VARCHAR(64) NOT NULL, report_id VARCHAR(64) NOT NULL, checked_at DATETIME(6) NULL)`,
+		`CREATE TABLE IF NOT EXISTS gw_metering_admissions (attempt_id VARCHAR(64) PRIMARY KEY, app_id VARCHAR(64) NOT NULL, at DATETIME(6) NOT NULL, INDEX(app_id,at))`,
+		`CREATE TABLE IF NOT EXISTS gw_metering_reports (id VARCHAR(64) PRIMARY KEY, app_id VARCHAR(64) NOT NULL, actor VARCHAR(128) NOT NULL, reason VARCHAR(128) NOT NULL, passed BOOLEAN NOT NULL, at DATETIME(6) NOT NULL, payload MEDIUMBLOB NOT NULL, INDEX(app_id,at))`,
 		`CREATE TABLE IF NOT EXISTS gw_config (id INT PRIMARY KEY, version BIGINT NOT NULL, payload JSON NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS gw_audit (id VARCHAR(64) PRIMARY KEY, actor VARCHAR(128) NOT NULL, action VARCHAR(128) NOT NULL, version BIGINT NOT NULL, at DATETIME(6) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS gw_events (id VARCHAR(128) PRIMARY KEY, attempt_id VARCHAR(64) NOT NULL, revision BIGINT NOT NULL, payload JSON NOT NULL, at DATETIME(6) NOT NULL, INDEX(attempt_id))`,

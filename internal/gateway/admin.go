@@ -102,6 +102,7 @@ func (a *Admin) Handler() http.Handler {
 	mux.HandleFunc("GET /admin/cost-report", a.cost)
 	mux.HandleFunc("GET /admin/metrics", a.metrics)
 	mux.HandleFunc("GET /admin/audit", a.audit)
+	mux.HandleFunc("GET /admin/metering", a.meteringStatus)
 	mux.HandleFunc("GET /admin/instances", a.instances)
 	mux.HandleFunc("GET /admin/alerts", a.alerts)
 	mux.HandleFunc("POST /admin/playground", a.playground)

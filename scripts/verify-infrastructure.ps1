@@ -15,6 +15,8 @@ $mysql = & docker @composeArgs ps -q mysql
 if ($LASTEXITCODE -or -not $mysql) { throw 'Start the local MySQL dependency first' }
 $kafka = & docker @composeArgs ps -q kafka
 if ($LASTEXITCODE -or -not $kafka) { throw 'Start the local Kafka dependency first' }
+$etcd = & docker @composeArgs ps -q etcd
+if ($LASTEXITCODE -or -not $etcd) { throw 'Start the local etcd dependency first' }
 $run = 'gw_acceptance_' + [guid]::NewGuid().ToString('N').Substring(0, 12)
 # 名称由本脚本生成；清理只针对本次资源，现有数据库和应用容器不参与故障注入。
 if ($run -notmatch '^gw_acceptance_[a-f0-9]{12}$') { throw 'Invalid acceptance resource name' }
@@ -43,6 +45,7 @@ $testEnv = @{
     OTEL_EXPORTER_OTLP_ENDPOINT = ''
     # 历史多实例压力实验使用 128 槽；默认 16 槽的过载行为由独立回归验证。
     GW_MAX_CONCURRENT_REQUESTS = '128'
+    GW_MAX_METERING_INFLIGHT = '8'
     GW_MAX_ADMIN_REQUESTS = '8'
 }
 $redisCreated = $false
@@ -148,6 +151,9 @@ try {
         & docker rm -f -v $cacheRedisName | Out-Null
         if ($LASTEXITCODE) { Write-Warning "Temporary cache Redis cleanup failed: $cacheRedisName" }
     }
+    # 角色退出后再清理；测试函数结束时 worker 仍可能续发许可并重新创建前缀。
+    $deletedKeys = & docker exec $etcd etcdctl --endpoints=http://127.0.0.1:2379 del "/$run/" --prefix
+    if ($LASTEXITCODE) { Write-Warning "Temporary etcd cleanup failed: $run" }
     if ($topicCreated) {
         # SIGKILL 的成员可能仍在 Kafka 会话有效期内，等待失效后删除专用组。
         $groupDeleted = $false

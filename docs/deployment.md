@@ -119,11 +119,15 @@ Ingress 必须关闭响应缓冲，读取/发送超时至少 130 秒，负载均
 
 ## outbox 版本升级
 
+许可/屏障版本新增 gw_metering_apps、gw_metering_admissions、gw_metering_reports。已有 checkpoint 的存量部署也需停写备份、migrate、quota-rebuild、metering-resume，建立事件哈希、Redis generation 和结算水位；不能因旧 ready 尚在而跳过重建。先启 worker 等待许可，再启入口；此过程不会由应用启动自动执行。etcd 权限须覆盖同一 GW_ETCD_PREFIX 下 /metering/：gateway/admin 读取许可及状态、写入 /metering/state 发布冻结；worker 读写状态和许可并管理 lease。生产当前使用独立非 Cluster 配额 Redis，Lua 访问全局与应用键，不支持 Redis Cluster 跨槽执行。
+
 检查点版本还新增 stream、checkpoint、recovery 表。存量升级先用旧 worker/sender 排空，摘流量并停止所有写入者，保留一致性备份，执行新 migrate；确认停写后用 `/app/metering-checkpoint-init` 建基线、核验并显式恢复接单，再启新角色。新 worker 遇到缺失检查点不会在线猜位置。新部署 bootstrap 只对空 SQL/Kafka 自动初始化。已具备检查点的旧备份通过 metering-recover plan/apply 回放，详见 operations.md。
 
 新增 outbox、容量、冻结控制与修正幂等表，运行服务不会自动执行 DDL。首次升级在维护窗口摘流量，停止 gateway/admin/worker 和其他计量写入者，备份 SQL/Redis 并记录 Kafka 位置；构建新镜像，用迁移凭据执行 `/app/migrate`，再更新角色。已有账本/配额不清空，不执行 down -v。
 
 Compose 与云 ConfigMap 均提供 `GW_OUTBOX_GLOBAL_BYTES=536870912`、`GW_OUTBOX_APP_BYTES=67108864`。应用可配置 `outbox_bytes` 覆盖默认，每应用逻辑限额与全局共享限额同时生效；这不是物理磁盘隔离。新接单与 completed 保存各最多 8 个 SQL 保存槽，后台发送按最多 32 条/4MiB 领取，数据库总连接数仍需按角色副本数核算。
+
+`GW_MAX_METERING_INFLIGHT` 默认每实例 8，约束整个付费 attempt 到计量收尾，独立于 HTTP 请求并发限制。上游慢时它也会占用槽位；调大前必须验证 completed SQL 保存、Kafka ACK 与消费者的容量，不能只按入口能处理多少请求来配置。全局 SQL 容量行仍是共享瓶颈，水平扩网关不保证计量容量同步增长。
 
 启动后核对 worker 消费与 outbox 状态、配额和 readyz；有计量冻结按 operations.md 停写重建/核验再恢复。新同步 SQL 写入与额外事务改变了成本和延迟，既有配额压测结果不能作为新版本容量保证。本轮代码与隔离验收不等于已更新现有容器或完成云预发。
 
