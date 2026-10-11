@@ -6,6 +6,8 @@ WORKDIR /src/web
 COPY web/package*.json ./
 RUN npm ci
 COPY web/ ./
+ARG VITE_ICP_NUMBER=""
+ENV VITE_ICP_NUMBER=${VITE_ICP_NUMBER}
 RUN npm run build
 
 FROM ${GO_IMAGE} AS go

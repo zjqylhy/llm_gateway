@@ -1,0 +1,13 @@
+https://localhost {
+    tls internal
+    handle /v1/* {
+        reverse_proxy gateway:8080 {
+            flush_interval -1
+        }
+    }
+    handle {
+        reverse_proxy admin:8081 {
+            flush_interval -1
+        }
+    }
+}

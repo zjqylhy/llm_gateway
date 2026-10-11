@@ -30,6 +30,8 @@ go run ./cmd/dev
 
 ## 部署与验证
 
+- [阿里云 2 核 4 GiB 个人部署指南](docs/lite-deployment.md)：域名、备案、SSH、构建、初始化及 HTTPS；关闭语义缓存，规格需按验收报告确认。
+- [低配验收报告](docs/lite-deployment-report.md)：真实依赖、资源限额、故障恢复和未验证项。
 - [部署说明](docs/deployment.md)：容器联调、云 Kubernetes、Secrets、健康检查、SSE、升级与回滚。
 - [运维说明](docs/operations.md)：计量对账、配额恢复、缓存、告警及数据保留。
 - [验证报告](docs/validation.md)：已执行的回归与尚未执行的基础设施、真实厂商和压测项目。

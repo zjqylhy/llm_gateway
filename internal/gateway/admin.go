@@ -271,7 +271,10 @@ func (a *Admin) config(w http.ResponseWriter, r *http.Request) {
 		x.PasswordHash = ""
 		c.Users[k] = x
 	}
-	JSON(w, c)
+	JSON(w, struct {
+		Config
+		RuntimeCapabilities map[string]bool `json:"runtime_capabilities"`
+	}{c, map[string]bool{"cache_enabled": !a.Engine.CacheDisabled}})
 }
 func (a *Admin) apps(w http.ResponseWriter, r *http.Request) {
 	u, c, _, _ := a.identity(r)
@@ -316,6 +319,13 @@ func (a *Admin) saveApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg, e := a.mutate(r, "app.save", func(c *Config) error {
+		if app.Cache && a.Engine.CacheDisabled {
+			// 旧应用仍可编辑并保留原策略，但不能在低配部署中新增启用。
+			old, ok := c.Apps[app.ID]
+			if !ok || !old.Cache {
+				return errors.New("semantic cache is disabled for this deployment")
+			}
+		}
 		if app.Owner != "" {
 			if _, ok := c.Users[app.Owner]; !ok {
 				return errors.New("owner user does not exist")

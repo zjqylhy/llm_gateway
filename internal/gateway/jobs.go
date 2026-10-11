@@ -147,7 +147,7 @@ func RunMaintenance(c context.Context, e *Engine) {
 		case <-c.Done():
 			return
 		case <-tick.C:
-			if cache, ok := e.Cache.(MilvusCache); ok && !time.Now().Before(nextCacheCleanup) {
+			if cache, ok := e.Cache.(MilvusCache); ok && !e.CacheDisabled && !time.Now().Before(nextCacheCleanup) {
 				cleanup, done := context.WithTimeout(c, 3*time.Second)
 				if err := cache.Prune(cleanup); err != nil {
 					slog.Warn("expired cache vector cleanup unavailable")

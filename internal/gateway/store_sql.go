@@ -43,6 +43,10 @@ func gatewayMySQLConfig(dsn string) (*mysql.Config, error) {
 	return cfg, nil
 }
 func NewSQLStore(c context.Context, dsn string) (*SQLStore, error) {
+	open, idle, e := mysqlPoolOptions()
+	if e != nil {
+		return nil, e
+	}
 	cfg, e := gatewayMySQLConfig(dsn)
 	if e != nil {
 		return nil, e
@@ -51,8 +55,8 @@ func NewSQLStore(c context.Context, dsn string) (*SQLStore, error) {
 	if e != nil {
 		return nil, e
 	}
-	db.SetMaxOpenConns(30)
-	db.SetMaxIdleConns(10)
+	db.SetMaxOpenConns(open)
+	db.SetMaxIdleConns(idle)
 	db.SetConnMaxLifetime(5 * time.Minute)
 	if e = db.PingContext(c); e != nil {
 		db.Close()

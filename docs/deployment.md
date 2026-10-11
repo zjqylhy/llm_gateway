@@ -1,5 +1,7 @@
 # 本地联调与云部署
 
+自己试用、少量调用时，使用 [2 核 4 GiB 新手指南](lite-deployment.md)和独立 `deploy/lite/compose.yaml`，不要直接启动本文的完整联调栈。低配方案全局关闭语义缓存，保留真实计量依赖；实际容量边界见 [低配验收报告](lite-deployment-report.md)。
+
 ## 两种运行方式
 
 `cmd/dev` 组合运行三个模块，适合离线调试。`gateway`、`admin`、`worker` 分别运行，使用共享外部服务，适合单台云主机容器或云 Kubernetes。生产模式缺少必要依赖配置会退出，不自动切换内存。

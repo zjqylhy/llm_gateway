@@ -46,6 +46,7 @@ type Cost = {
   pending: number;
 };
 type Config = {
+  runtime_capabilities?: { cache_enabled: boolean };
   version: number;
   apps: Record<string, App>;
   keys: Record<
@@ -837,19 +838,21 @@ function Console({
                               >
                                 签发密钥
                               </button>
-                              {a.cache && (
-                                <button
-                                  className="quiet"
-                                  onClick={() =>
-                                    void action(
-                                      `apps/${a.id}/cache/clear`,
-                                      "POST",
-                                    )
-                                  }
-                                >
-                                  清除缓存
-                                </button>
-                              )}
+                              {a.cache &&
+                                cfg?.runtime_capabilities?.cache_enabled !==
+                                  false && (
+                                  <button
+                                    className="quiet"
+                                    onClick={() =>
+                                      void action(
+                                        `apps/${a.id}/cache/clear`,
+                                        "POST",
+                                      )
+                                    }
+                                  >
+                                    清除缓存
+                                  </button>
+                                )}
                             </>
                           )}
                         </td>
@@ -1029,6 +1032,9 @@ function Console({
                 </Field>
                 <Field label="缓存向量模型">
                   <select
+                    disabled={
+                      cfg?.runtime_capabilities?.cache_enabled === false
+                    }
                     value={formApp.embedding_model}
                     onChange={(e) =>
                       setFormApp({
@@ -1058,6 +1064,10 @@ function Console({
                   <input
                     type="checkbox"
                     checked={formApp.cache}
+                    disabled={
+                      cfg?.runtime_capabilities?.cache_enabled === false &&
+                      !formApp.cache
+                    }
                     onChange={(e) =>
                       setFormApp({ ...formApp, cache: e.target.checked })
                     }
@@ -1066,7 +1076,9 @@ function Console({
                 </label>
               </div>
               <p className="small muted">
-                缓存只用于无工具、单轮、非实时问答；敏感请求自动绕过。
+                {cfg?.runtime_capabilities?.cache_enabled === false
+                  ? "当前部署已关闭语义缓存。已有策略会保留，所有请求均绕过缓存；取消勾选后无法在此部署重新开启。"
+                  : "缓存只用于无工具、单轮、非实时问答；敏感请求自动绕过。"}
               </p>
               <div className="actions">
                 <button disabled={busy}>保存并发布</button>
@@ -1776,5 +1788,12 @@ function Root() {
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <Root />
+    {import.meta.env.VITE_ICP_NUMBER && (
+      <footer className="filing-footer">
+        <a href="https://beian.miit.gov.cn/" target="_blank" rel="noreferrer">
+          {import.meta.env.VITE_ICP_NUMBER}
+        </a>
+      </footer>
+    )}
   </React.StrictMode>,
 );

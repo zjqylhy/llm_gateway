@@ -51,6 +51,16 @@ func env(k, fallback string) string {
 }
 func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 	out = &Runtime{}
+	cacheEnabled, err := semanticCacheEnabled()
+	if err != nil {
+		return nil, err
+	}
+	if _, _, err = mysqlPoolOptions(); err != nil {
+		return nil, err
+	}
+	if _, err = poolEnv("GW_REDIS_POOL_SIZE", 32, 1); err != nil {
+		return nil, err
+	}
 	out.commitBatchSize, out.commitInterval, err = meteringCommitOptions()
 	if err != nil {
 		return nil, err
@@ -83,6 +93,7 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 		return nil, err
 	}
 	e := &Engine{Vault: vault, Client: NewHTTPClient(dev), Dev: dev, InstanceID: env("HOSTNAME", ID("node_")), Metrics: NewMetrics()}
+	e.CacheDisabled = !cacheEnabled
 	e.MaxConcurrent, err = concurrencyEnv("GW_MAX_CONCURRENT_REQUESTS", defaultGatewayConcurrency)
 	if err != nil {
 		return nil, err
@@ -102,7 +113,9 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 		e.Store = s
 		e.Guard = g
 		e.Bus = LocalBus{s, g}
-		e.Cache = NewMemoryCache()
+		if cacheEnabled {
+			e.Cache = NewMemoryCache()
+		}
 		e.Publisher = LocalPublisher{s}
 		mock := httptest.NewServer(http.HandlerFunc(MockProvider))
 		out.closers = append(out.closers, mock.Close)
@@ -142,7 +155,11 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 		}
 		fmt.Println("本地测试应用一次性 API Key：", token)
 	} else {
-		for _, k := range []string{"GW_MYSQL_DSN", "GW_REDIS_URL", "GW_CACHE_REDIS_URL", "GW_KAFKA_BROKERS", "GW_ETCD_ENDPOINTS", "GW_MILVUS_URL", "GW_ADMIN_ORIGIN"} {
+		required := []string{"GW_MYSQL_DSN", "GW_REDIS_URL", "GW_KAFKA_BROKERS", "GW_ETCD_ENDPOINTS", "GW_ADMIN_ORIGIN"}
+		if cacheEnabled {
+			required = append(required, "GW_CACHE_REDIS_URL", "GW_MILVUS_URL")
+		}
+		for _, k := range required {
 			if os.Getenv(k) == "" {
 				return nil, fmt.Errorf("%s is required in production", k)
 			}
@@ -154,7 +171,16 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 		e.Store = sqlStore
 		e.Metrics.Registry.MustRegister(prometheus.NewCounterFunc(prometheus.CounterOpts{Name: "gateway_sql_pool_wait_total", Help: "Cumulative waits for a SQL connection"}, func() float64 { return float64(sqlStore.DB.Stats().WaitCount) }), prometheus.NewCounterFunc(prometheus.CounterOpts{Name: "gateway_sql_pool_wait_seconds_total", Help: "Cumulative SQL pool wait duration"}, func() float64 { return sqlStore.DB.Stats().WaitDuration.Seconds() }), prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "gateway_sql_pool_in_use", Help: "SQL connections currently in use"}, func() float64 { return float64(sqlStore.DB.Stats().InUse) }))
 		out.closers = append(out.closers, func() { _ = sqlStore.DB.Close() })
-		opts, cacheOpts, re := isolatedRedisOptions(os.Getenv("GW_REDIS_URL"), os.Getenv("GW_CACHE_REDIS_URL"))
+		opts, re := quotaRedisOptions(os.Getenv("GW_REDIS_URL"))
+		var cacheRedis *redis.Client
+		if re == nil && cacheEnabled {
+			var cacheOpts *redis.Options
+			opts, cacheOpts, re = isolatedRedisOptions(os.Getenv("GW_REDIS_URL"), os.Getenv("GW_CACHE_REDIS_URL"))
+			if re == nil {
+				cacheRedis = redis.NewClient(cacheOpts)
+				out.closers = append(out.closers, func() { _ = cacheRedis.Close() })
+			}
+		}
 		if re != nil {
 			return nil, re
 		}
@@ -167,9 +193,6 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 		e.Metering = out
 		out.closers = append(out.closers, func() { _ = rc.Close() })
 		e.Guard = RedisGuard{Client: rc, RequireReady: true, EnforceMemory: true}
-		// 缓存连接可以失效并绕过；配额与会话绝不能使用可淘汰实例。
-		cacheRedis := redis.NewClient(cacheOpts)
-		out.closers = append(out.closers, func() { _ = cacheRedis.Close() })
 		brokers := strings.Split(os.Getenv("GW_KAFKA_BROKERS"), ",")
 		transport := &kafka.Transport{DialTimeout: 3 * time.Second}
 		dialer := &kafka.Dialer{Timeout: 3 * time.Second}
@@ -220,7 +243,9 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 		}
 		out.closers = append(out.closers, func() { _ = et.Close() })
 		e.Publisher = EtcdPublisher{et, env("GW_ETCD_PREFIX", "/llm-gateway")}
-		e.Cache = MilvusCache{URL: strings.TrimRight(os.Getenv("GW_MILVUS_URL"), "/"), Token: os.Getenv("GW_MILVUS_TOKEN"), Collection: env("GW_MILVUS_COLLECTION", "gateway_cache"), Client: &http.Client{Timeout: 3 * time.Second}, Redis: cacheRedis}
+		if cacheEnabled {
+			e.Cache = MilvusCache{URL: strings.TrimRight(os.Getenv("GW_MILVUS_URL"), "/"), Token: os.Getenv("GW_MILVUS_TOKEN"), Collection: env("GW_MILVUS_COLLECTION", "gateway_cache"), Client: &http.Client{Timeout: 3 * time.Second}, Redis: cacheRedis}
+		}
 	}
 	out.Admin = NewAdmin(e, !dev, os.Getenv("GW_ADMIN_ORIGIN"))
 	out.Admin.MaxConcurrent = adminConcurrency
@@ -256,6 +281,13 @@ func (r *Runtime) Close() {
 	}
 }
 func Main(mode string) {
+	if mode == "cache-init" {
+		enabled, err := semanticCacheEnabled()
+		if err != nil || !enabled {
+			slog.Error("cache-init unavailable: semantic cache is disabled or GW_CACHE_ENABLED is invalid")
+			os.Exit(1)
+		}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	startup, cancel := context.WithTimeout(ctx, 15*time.Second)

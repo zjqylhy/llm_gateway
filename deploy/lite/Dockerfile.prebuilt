@@ -1,0 +1,10 @@
+# 构建上下文由 build-lite.ps1 生成，只含 Linux 二进制和前端成品。
+ARG RUNTIME_IMAGE=gcr.io/distroless/static-debian12:nonroot
+FROM ${RUNTIME_IMAGE}
+WORKDIR /app
+COPY bin/ /app/
+COPY web/ /app/web/dist/
+ENV GW_WEB_DIR=/app/web/dist
+USER 65532:65532
+EXPOSE 8080 8081 8082
+CMD ["/app/gateway"]

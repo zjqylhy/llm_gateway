@@ -28,11 +28,13 @@ type requestMetering struct {
 	Rejected bool
 }
 type Engine struct {
-	Metering      *Runtime
-	Store         Store
-	Bus           Bus
-	Guard         Guard
-	Cache         Cache
+	Metering *Runtime
+	Store    Store
+	Bus      Bus
+	Guard    Guard
+	Cache    Cache
+	// 部署开关独立于应用配置，旧应用可以保留策略而不访问缓存基础设施。
+	CacheDisabled bool
 	Publisher     Publisher
 	Vault         *Vault
 	Client        *http.Client
@@ -222,7 +224,7 @@ func (e *Engine) handle(w http.ResponseWriter, r *http.Request, kind string) {
 	}
 	var scope string
 	var vector []float32
-	if a.Cache && req.Cacheable && a.EmbeddingModel != "" {
+	if !e.CacheDisabled && a.Cache && req.Cacheable && a.EmbeddingModel != "" {
 		m, exists := cfg.Models[a.EmbeddingModel]
 		if exists && Contains(m.Capabilities, "embedding") {
 			eraw, _ := json.Marshal(map[string]any{"model": "internal", "input": req.Text})
@@ -280,7 +282,7 @@ func (e *Engine) handle(w http.ResponseWriter, r *http.Request, kind string) {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write(result)
 			}
-			if a.Cache && req.Cacheable && len(result) > 0 && len(vector) > 0 && scope == CacheScope(a, cfg, req, candidate.model) {
+			if !e.CacheDisabled && a.Cache && req.Cacheable && len(result) > 0 && len(vector) > 0 && scope == CacheScope(a, cfg, req, candidate.model) {
 				ttl := a.CacheTTL
 				if ttl <= 0 {
 					ttl = 300

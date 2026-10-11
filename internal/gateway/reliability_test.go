@@ -57,6 +57,15 @@ func TestReliabilityProcess(t *testing.T) {
 	e := r.Engine
 	e.Client = NewHTTPClient(true)
 	go e.RunRefresh(ctx)
+	if role == "admin" {
+		server := &http.Server{Addr: ":8081", Handler: r.Admin.Handler(), ReadHeaderTimeout: 5 * time.Second}
+		defer server.Close()
+		go func() { <-ctx.Done(); _ = server.Close() }()
+		if err = serveBounded(server, r.MaxConnections); err != nil && err != http.ErrServerClosed {
+			t.Fatal(err)
+		}
+		return
+	}
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", e.Metrics.Handler())
 	mux.Handle("/", e.Handler())
@@ -64,6 +73,9 @@ func TestReliabilityProcess(t *testing.T) {
 	defer server.Close()
 	go func() { <-ctx.Done(); _ = server.Close() }()
 	if role == "worker" {
+		if e.CacheDisabled {
+			go RunMaintenance(ctx, e)
+		}
 		go r.RunMeteringMonitor(ctx)
 		if bus, ok := e.Bus.(*DurableBus); ok {
 			go bus.RunRelay(ctx)
@@ -81,7 +93,7 @@ func TestReliabilityProcess(t *testing.T) {
 	if role != "gateway" {
 		t.Fatal("unknown acceptance role")
 	}
-	if err = server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err = serveBounded(server, r.MaxConnections); err != nil && err != http.ErrServerClosed {
 		t.Fatal(err)
 	}
 }
