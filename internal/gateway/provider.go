@@ -29,6 +29,7 @@ type Request struct {
 	SafetyText    string
 	Capabilities  []string
 	Cacheable     bool
+	Rerank        *rerankInput
 }
 
 func DecodeRequest(raw []byte, kind string) (Request, error) {
@@ -38,6 +39,9 @@ func DecodeRequest(raw []byte, kind string) (Request, error) {
 	}
 	if e := json.Unmarshal(r.Raw["model"], &r.Alias); e != nil || r.Alias == "" {
 		return r, errors.New("model is required")
+	}
+	if kind == "rerank" {
+		return decodeRerank(r)
 	}
 	if b, ok := r.Raw["stream"]; ok && json.Unmarshal(b, &r.Stream) != nil {
 		return r, errors.New("stream must be boolean")
@@ -226,6 +230,9 @@ func DecodeRequest(raw []byte, kind string) (Request, error) {
 	return r, nil
 }
 func (r Request) Payload(m Model) ([]byte, error) {
+	if r.Kind == "rerank" {
+		return r.rerankPayload(m)
+	}
 	p := map[string]json.RawMessage{}
 	for k, v := range r.Raw {
 		p[k] = v
@@ -306,6 +313,12 @@ func OpenUpstream(c context.Context, client *http.Client, p Provider, m Model, r
 	path := "/chat/completions"
 	if r.Kind == "embedding" {
 		path = "/embeddings"
+	}
+	if r.Kind == "rerank" {
+		path = "/reranks"
+		if m.RerankProtocol == "dashscope" {
+			path = "/services/rerank/text-rerank/text-rerank"
+		}
 	}
 	u, e := url.Parse(strings.TrimRight(p.URL, "/") + path)
 	if e != nil {

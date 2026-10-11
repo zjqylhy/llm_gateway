@@ -2,7 +2,9 @@
 
 Go 数据面、管理面、计量 worker 与 React 控制台。按已确认的 [需求规格](docs/spec.md) 和 [技术方案](docs/design.md) 实现，首批接入 DeepSeek、Qwen、OpenAI 的 OpenAI 兼容接口。真实模型名称、能力、价格及 Qwen 地域通过控制台配置。
 
-支持文本 Chat、SSE、工具调用透传、结构化输出、Embedding、应用密钥与 RBAC、显式路由、降级与熔断、全局配额、预算预占、语义缓存、幂等计量、成本报表、灰度回滚和安全审计。
+支持文本 Chat、SSE、工具调用透传、结构化输出、Embedding、文本 Rerank、应用密钥与 RBAC、显式路由、降级与熔断、全局配额、预算预占、语义缓存、幂等计量、成本报表、灰度回滚和安全审计。
+
+文本重排接口为 `POST /v1/rerank`（亦支持 `/v1/reranks`），统一输入查询和候选文档，兼容百炼兼容接口与 DashScope 文本排序接口。配置方法、请求示例及计量边界见 [重排规格](docs/rerank-spec.md)。
 
 ## 本地运行
 

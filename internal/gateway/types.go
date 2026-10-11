@@ -58,6 +58,9 @@ type Model struct {
 	RPM              int64    `json:"rpm"`
 	TPM              int64    `json:"tpm"`
 	Dimensions       int      `json:"dimensions"`
+	RerankProtocol   string   `json:"rerank_protocol,omitempty"`
+	MaxDocuments     int      `json:"max_documents,omitempty"`
+	MaxItemTokens    int64    `json:"max_item_tokens,omitempty"`
 	InputMicro       int64    `json:"input_micro"`
 	CachedInputMicro int64    `json:"cached_input_micro"`
 	OutputMicro      int64    `json:"output_micro"`

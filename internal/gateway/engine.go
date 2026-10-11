@@ -146,6 +146,8 @@ func (e *Engine) Handler() http.Handler {
 	})
 	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) { e.handle(w, r, "chat") })
 	mux.HandleFunc("POST /v1/embeddings", func(w http.ResponseWriter, r *http.Request) { e.handle(w, r, "embedding") })
+	mux.HandleFunc("POST /v1/rerank", func(w http.ResponseWriter, r *http.Request) { e.handle(w, r, "rerank") })
+	mux.HandleFunc("POST /v1/reranks", func(w http.ResponseWriter, r *http.Request) { e.handle(w, r, "rerank") })
 	return protectedHandler(mux, &e.admission, e.MaxConcurrent, defaultGatewayConcurrency, "/v1/", "gateway", e.Metrics)
 }
 func (e *Engine) handle(w http.ResponseWriter, r *http.Request, kind string) {
@@ -408,6 +410,9 @@ func supports(m Model, r Request) bool {
 	if !Contains(m.Capabilities, r.Kind) || r.InputEstimate+r.MaxOutput > m.Context || r.MaxOutput > m.MaxOutput {
 		return false
 	}
+	if r.Kind == "rerank" && (!validRerankModel(m) || r.Rerank == nil || len(r.Rerank.Documents) > m.MaxDocuments || r.Rerank.MaxItemEstimate > m.MaxItemTokens) {
+		return false
+	}
 	for _, x := range r.Capabilities {
 		if !Contains(m.Capabilities, x) {
 			return false
@@ -627,6 +632,13 @@ func (e *Engine) attempt(ctx context.Context, cfg Config, a App, m Model, r Requ
 		}
 		if !json.Valid(body) {
 			err = errors.New("invalid upstream JSON")
+			return
+		}
+		if r.Kind == "rerank" {
+			if usage, reported := extractRerankUsage(body); reported {
+				event.Usage, event.Quality = usage, "reported"
+			}
+			body, err = normalizeRerank(body, m, r, requestID, event.Usage, event.Quality)
 			return
 		}
 		var response struct {

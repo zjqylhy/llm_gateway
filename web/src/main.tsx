@@ -71,6 +71,9 @@ type Model = {
   rpm: number;
   tpm: number;
   dimensions: number;
+  rerank_protocol?: string;
+  max_documents?: number;
+  max_item_tokens?: number;
   input_micro: number;
   cached_input_micro: number;
   output_micro: number;
@@ -1226,16 +1229,84 @@ function Console({
                   <Field label="能力（逗号分隔）">
                     <input
                       value={model.capabilities.join(",")}
-                      onChange={(e) =>
+                      onChange={(e) => {
+                        const capabilities = e.target.value
+                          .split(",")
+                          .map((s) => s.trim());
+                        const rerank = capabilities.includes("rerank");
                         setModel({
                           ...model,
-                          capabilities: e.target.value
-                            .split(",")
-                            .map((s) => s.trim()),
-                        })
-                      }
+                          capabilities,
+                          rerank_protocol: rerank
+                            ? model.rerank_protocol || "compatible"
+                            : undefined,
+                          max_documents: rerank
+                            ? model.max_documents || 500
+                            : undefined,
+                          max_item_tokens: rerank
+                            ? model.max_item_tokens || 4000
+                            : undefined,
+                          ...(rerank
+                            ? {
+                                max_output: 0,
+                                output_micro: 0,
+                                cached_input_micro: 0,
+                              }
+                            : {}),
+                        });
+                      }}
                     />
                   </Field>
+                  {model.capabilities.includes("rerank") && (
+                    <>
+                      <Field label="重排厂商接口">
+                        <select
+                          value={model.rerank_protocol ?? ""}
+                          onChange={(e) =>
+                            setModel({
+                              ...model,
+                              rerank_protocol: e.target.value,
+                            })
+                          }
+                        >
+                          <option value="">请选择</option>
+                          <option value="compatible">
+                            兼容接口（qwen3-rerank）
+                          </option>
+                          <option value="dashscope">
+                            DashScope 文本排序接口
+                          </option>
+                        </select>
+                      </Field>
+                      <Field label="最大文档数（1–500）">
+                        <input
+                          type="number"
+                          min={1}
+                          max={500}
+                          value={model.max_documents ?? 0}
+                          onChange={(e) =>
+                            setModel({
+                              ...model,
+                              max_documents: Number(e.target.value),
+                            })
+                          }
+                        />
+                      </Field>
+                      <Field label="单条输入上限（Token）">
+                        <input
+                          type="number"
+                          min={1}
+                          value={model.max_item_tokens ?? 0}
+                          onChange={(e) =>
+                            setModel({
+                              ...model,
+                              max_item_tokens: Number(e.target.value),
+                            })
+                          }
+                        />
+                      </Field>
+                    </>
+                  )}
                   {(
                     [
                       "context",
@@ -1319,11 +1390,26 @@ function Console({
                   <select
                     value={route.kind}
                     onChange={(e) =>
-                      setRoute({ ...route, kind: e.target.value })
+                      setRoute({
+                        ...route,
+                        kind: e.target.value,
+                        candidates: route.candidates.filter((candidate) =>
+                          cfg?.models[
+                            candidate.model_id
+                          ]?.capabilities.includes(e.target.value),
+                        ),
+                        gray: {
+                          ...route.gray,
+                          state: "stopped",
+                          percent: 0,
+                          candidate: "",
+                        },
+                      })
                     }
                   >
                     <option value="chat">Chat</option>
                     <option value="embedding">Embedding</option>
+                    <option value="rerank">Rerank 重排</option>
                   </select>
                 </Field>
                 <Field label="选择策略">
@@ -1354,9 +1440,11 @@ function Console({
                       })
                     }
                   >
-                    {modelList.map((m) => (
-                      <option key={m.id}>{m.id}</option>
-                    ))}
+                    {modelList
+                      .filter((m) => m.capabilities.includes(route.kind))
+                      .map((m) => (
+                        <option key={m.id}>{m.id}</option>
+                      ))}
                   </select>
                   <input
                     aria-label="权重"
@@ -1394,7 +1482,13 @@ function Console({
                     ...route,
                     candidates: [
                       ...route.candidates,
-                      { model_id: modelList[0]?.id ?? "", weight: 0 },
+                      {
+                        model_id:
+                          modelList.find((m) =>
+                            m.capabilities.includes(route.kind),
+                          )?.id ?? "",
+                        weight: 0,
+                      },
                     ],
                   })
                 }
@@ -1462,7 +1556,7 @@ function Console({
               <div className="actions">
                 {[10, 50, 100].map((percent) => (
                   <button
-                    disabled={busy || route.kind === "embedding"}
+                    disabled={busy || route.kind !== "chat"}
                     className="secondary"
                     key={percent}
                     onClick={() =>
