@@ -61,7 +61,12 @@ export function trafficSegments(series: TrafficSeries, stepSeconds: number) {
 export function qpsText(value: number | null) {
   return value === null
     ? "暂无数据"
-    : value.toLocaleString("zh-CN", { maximumFractionDigits: 3 });
+    : value.toLocaleString(
+        "zh-CN",
+        value > 0 && value < 0.001
+          ? { maximumSignificantDigits: 3 }
+          : { maximumFractionDigits: 3 },
+      );
 }
 
 export async function fetchTraffic(

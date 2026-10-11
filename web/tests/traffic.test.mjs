@@ -70,3 +70,8 @@ test("traffic requests propagate cancellation and encode the selected app", asyn
     /forbidden/,
   );
 });
+
+test("one call per day remains visible as a nonzero QPS", () => {
+  assert.notEqual(qpsText(1 / 86400), "0");
+  assert.equal(qpsText(1 / 86400), "0.0000116");
+});
