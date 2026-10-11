@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { createRefreshQueue, waitForAll } from "./refresh";
 import "./style.css";
 
 type App = {
@@ -339,6 +340,7 @@ function Console({
     password: "",
   });
   const controller = React.useRef<AbortController | null>(null);
+  const refreshQueue = React.useRef(createRefreshQueue());
   async function api<T>(
     path: string,
     method = "GET",
@@ -370,6 +372,9 @@ function Console({
     return q.toString();
   }
   async function load() {
+    return refreshQueue.current(loadData);
+  }
+  async function loadData() {
     setError("");
     try {
       const appList = await api<App[]>("apps");
@@ -379,7 +384,7 @@ function Console({
         return;
       }
       const q = query();
-      const results = await Promise.all([
+      const results = await waitForAll([
         api<RecordItem[]>("call-records?" + q),
         api<Cost[]>("cost-report?" + q),
         api<typeof metrics>("metrics?" + q),
@@ -390,7 +395,7 @@ function Console({
       setMetrics(results[2]);
       setAlerts(results[3]);
       if (session.role === "admin") {
-        const [c, nodes, meter] = await Promise.all([
+        const [c, nodes, meter] = await waitForAll([
           api<Config>("config"),
           api<typeof instances>("instances"),
           api<typeof metering>("metering"),

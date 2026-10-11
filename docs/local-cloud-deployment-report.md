@@ -66,6 +66,18 @@ ssh -i data/local-lite/cloud-ssh.pem -p 22 -o IdentitiesOnly=yes -o ExitOnForwar
 
 ## 查看、重启与停止
 
+### 控制台并发修复（2026-10-11）
+
+云端控制台正常加载时并行读取四个管理接口，原 `GW_MAX_ADMIN_REQUESTS=2` 导致 `503 gateway_overloaded`。现调整管理并发为 8，业务调用及在途计量仍为 2；前端合并重叠刷新并等待失败组的其余请求结束。
+
+云端仅更新 admin 容器，镜像为 `llm-gateway:console-concurrency-20261011`，基于原已验证运行镜像加入新前端；gateway、worker 和中间件未重建。原配置和环境文件备份位于服务器 `/opt/llm_gateway/releases/console-concurrency-20261011/`，环境备份权限为 0600。
+
+验证：4 项前端刷新回归通过；前端构建与格式检查、`go test -count=1 ./...`、`go vet ./...`、`go build ./...`、部署 YAML 和有效 Compose 配置检查通过。云端 HTTPS 证书验证、管理员登录、新前端资源通过；20 轮接口分组并发读取共 140 次均为 HTTP 200，管理过载计数增量为 0。本机浏览器经 `https://localhost:9443/` 正常展示登录页。未重复执行付费模型调用或长期容量验收。
+
+代码及测试结果通过 PR 供用户人工确认。
+
+### 运维命令
+
 本机执行（停止不会删除数据）：
 
 ```powershell
