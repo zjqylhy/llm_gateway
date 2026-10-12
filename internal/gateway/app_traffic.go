@@ -203,7 +203,10 @@ func mergeTraffic(result *trafficResponse, series []prometheusSeries, summary bo
 		if kind == "failure" {
 			code, status := row.Metric["error_code"], row.Metric["http_status"]
 			expectedStatus, known := callErrorStatuses[code]
-			if !known || (status != strconv.Itoa(expectedStatus) && !(code == "metering_unavailable" && status == "200")) {
+			// 兜底错误保留实际 HTTP 状态；旧版把响应后的客户端取消记为 http_error/200。
+			numericStatus, statusErr := strconv.Atoi(status)
+			fallbackStatus := code == "http_error" && statusErr == nil && status == strconv.Itoa(numericStatus) && (numericStatus == http.StatusOK || numericStatus >= 400 && numericStatus <= 599)
+			if !known || (status != strconv.Itoa(expectedStatus) && !(code == "metering_unavailable" && status == "200") && !fallbackStatus) {
 				return errors.New("unexpected error labels")
 			}
 			key += ":" + status + ":" + code

@@ -96,6 +96,22 @@ func TestApplicationQPSErrorAndAppliedLimit(t *testing.T) {
 	}
 }
 
+func TestApplicationCanceledCallMetrics(t *testing.T) {
+	e := testEngine(t, MockProvider)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := httptest.NewRequest("POST", "/v1/chat/completions", nil).WithContext(ctx)
+	r.Header.Set("Authorization", "Bearer test-key")
+	w := httptest.NewRecorder()
+	e.observeCalls(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		cancel()
+	})).ServeHTTP(w, r)
+	if callCount(t, e, "app", "error", "200", "client_canceled") != 1 || callCount(t, e, "app", "error", "200", "http_error") != 0 || callCount(t, e, "app", "success", "200", "") != 0 {
+		t.Fatal("canceled call was not classified once as a client failure")
+	}
+}
+
 func TestApplicationStreamMeteringErrorUsesClientCode(t *testing.T) {
 	e := testEngine(t, MockProvider)
 	e.Bus = failedBus{e.Bus, true}
@@ -333,7 +349,16 @@ func TestApplicationTrafficFailureSeriesLabels(t *testing.T) {
 		}{
 			{"stream and pre-header metering", []prometheusSeries{row("200", "metering_unavailable"), row("503", "metering_unavailable")}, true},
 			{"distinct business errors", []prometheusSeries{row("400", "invalid_request_error"), row("400", "unsupported_capability")}, true},
+			{"historical fallback errors", []prometheusSeries{row("200", "http_error"), row("502", "http_error")}, true},
+			{"fallback HTTP boundaries", []prometheusSeries{row("400", "http_error"), row("599", "http_error")}, true},
+			{"client cancellation", []prometheusSeries{row("200", "client_canceled")}, true},
 			{"missing labels", []prometheusSeries{row("", "")}, false},
+			{"fallback redirect", []prometheusSeries{row("302", "http_error")}, false},
+			{"fallback informational", []prometheusSeries{row("100", "http_error")}, false},
+			{"fallback out of range", []prometheusSeries{row("600", "http_error")}, false},
+			{"fallback noncanonical status", []prometheusSeries{row("0500", "http_error")}, false},
+			{"fallback nonnumeric status", []prometheusSeries{row("bad", "http_error")}, false},
+			{"wrong cancellation status", []prometheusSeries{row("503", "client_canceled")}, false},
 			{"unknown code", []prometheusSeries{row("400", "unbounded_upstream_code")}, false},
 			{"wrong status", []prometheusSeries{row("200", "app_qps_exceeded")}, false},
 			{"duplicate pair", []prometheusSeries{row("400", "invalid_request_error"), row("400", "invalid_request_error")}, false},
@@ -344,10 +369,50 @@ func TestApplicationTrafficFailureSeriesLabels(t *testing.T) {
 				if (err == nil) != test.valid {
 					t.Fatal(err, result)
 				}
-				if test.valid && !summary && len(result.Apps[0].Series) != 2 {
+				if test.valid && !summary && len(result.Apps[0].Series) != len(test.rows) {
 					t.Fatal("distinct failure lines collapsed", result)
 				}
 			})
 		}
+	}
+}
+
+func TestApplicationTrafficHistoricalFallbackKeepsAllMetrics(t *testing.T) {
+	to := time.Now().UTC().Truncate(time.Second)
+	prom := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		kind := "vector"
+		if r.URL.Path == "/api/v1/query_range" {
+			kind = "matrix"
+		}
+		rows := []any{}
+		for _, metric := range []map[string]string{
+			{"app": "app", "kind": "success"},
+			{"app": "app", "kind": "failure", "http_status": "200", "error_code": "http_error"},
+			{"app": "app", "kind": "limit"},
+		} {
+			point := []any{to.Unix(), "0.1"}
+			row := map[string]any{"metric": metric, "value": point}
+			if kind == "matrix" {
+				row = map[string]any{"metric": metric, "values": []any{point}}
+			}
+			rows = append(rows, row)
+		}
+		JSON(w, map[string]any{"status": "success", "data": map[string]any{"resultType": kind, "result": rows}})
+	}))
+	defer prom.Close()
+	a := NewAdmin(testEngine(t, MockProvider), false, "")
+	a.Prometheus = &TrafficPrometheus{URL: prom.URL, Client: prom.Client()}
+	cookie, csrf := adminLogin(t, a, "dev")
+	w := adminCall(a, cookie, csrf, "GET", trafficTestPath(to.Add(-time.Hour), to, "app"), "")
+	var result trafficResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != 200 || !result.Available || result.Reason != "" || len(result.Apps) != 1 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	app := result.Apps[0]
+	if app.SuccessQPS == nil || *app.SuccessQPS != 0.1 || app.FailureQPS == nil || *app.FailureQPS != 0.1 || app.LimitAtEnd == nil || len(app.Series) != 3 || len(app.Failures) != 1 {
+		t.Fatal("historical failure discarded other metrics", w.Body.String())
 	}
 }

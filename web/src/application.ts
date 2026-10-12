@@ -27,6 +27,31 @@ export function tracePath(requestID: string, appID: string) {
   return `trace/${encodeURIComponent(requestID)}?app_id=${encodeURIComponent(appID)}`;
 }
 
+const callTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
+  timeZone: "Asia/Shanghai",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23",
+});
+
+// 审计和近期调用统一用北京时间，避免浏览器所在时区改变调用日期。
+export function callTime(at?: string) {
+  if (!at) return "未提供";
+  const date = new Date(at);
+  if (!Number.isFinite(date.getTime()) || date.getUTCFullYear() <= 1)
+    return "未提供";
+  const parts = Object.fromEntries(
+    callTimeFormatter
+      .formatToParts(date)
+      .map(({ type, value }) => [type, value]),
+  );
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+}
+
 export type ConsoleAPI = <T>(
   path: string,
   method?: string,

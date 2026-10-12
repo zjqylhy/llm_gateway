@@ -15,6 +15,7 @@ var callErrorStatuses = map[string]int{
 	"insufficient_quota": 429, "app_qps_exceeded": 429, "gateway_overloaded": 503,
 	"cache_invalid": 503, "stream_interrupted": 200,
 	"client_write_failed": 200, "http_error": 500,
+	"client_canceled": 200,
 }
 
 type appMetricState struct {
@@ -123,6 +124,9 @@ func (e *Engine) observeCalls(next http.Handler) http.Handler {
 				outcome = "error"
 				if code == "" {
 					code = "http_error"
+					if observed.status == http.StatusOK && r.Context().Err() != nil {
+						code = "client_canceled"
+					}
 				}
 				if _, known := callErrorStatuses[code]; !known {
 					code = "http_error"

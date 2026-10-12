@@ -16,7 +16,7 @@ import {
   type InstanceView,
   type MeteringOperations,
 } from "./OperationsPanel";
-import { routeSource, tracePath } from "./application";
+import { callTime, routeSource, tracePath } from "./application";
 import { ModelResources, type Model } from "./ModelResources";
 import { ProviderResources } from "./ProviderResources";
 import "./style.css";
@@ -1757,6 +1757,7 @@ function RecordTable({
           <tr>
             <th>应用</th>
             <th>请求 / 尝试</th>
+            <th>调用时间（北京时间）</th>
             <th>模型与用途</th>
             <th>状态</th>
             <th>用量来源</th>
@@ -1786,6 +1787,9 @@ function RecordTable({
                   {x.request_id.slice(0, 16)}…
                 </button>
                 <small className="mono">{x.attempt_id.slice(0, 16)}…</small>
+              </td>
+              <td className="call-time" title={x.at}>
+                {callTime(x.at)}
               </td>
               <td>
                 {x.model?.id || x.alias}
