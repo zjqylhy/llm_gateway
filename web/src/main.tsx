@@ -17,6 +17,7 @@ import {
   type MeteringOperations,
 } from "./OperationsPanel";
 import { routeSource, tracePath } from "./application";
+import { ModelResources, type Model } from "./ModelResources";
 import "./style.css";
 
 type App = {
@@ -91,30 +92,10 @@ type Config = {
   >;
   providers: Record<string, { id: string; kind: string; url: string }>;
   models: Record<string, Model>;
+  model_references?: Record<string, string[]>;
   routes: Record<string, Route>;
   users: Record<string, { name: string; role: string }>;
   rules: Rule[];
-};
-type Model = {
-  id: string;
-  provider_id: string;
-  upstream: string;
-  version: string;
-  capabilities: string[];
-  context: number;
-  max_output: number;
-  rpm: number;
-  tpm: number;
-  dimensions: number;
-  rerank_protocol?: string;
-  max_documents?: number;
-  max_item_tokens?: number;
-  input_micro: number;
-  cached_input_micro: number;
-  output_micro: number;
-  price_version: string;
-  currency: string;
-  fx_ppm: number;
 };
 type Route = {
   alias: string;
@@ -334,24 +315,6 @@ function Console({
     url: "https://api.openai.com/v1",
     api_key: "",
   });
-  const [model, setModel] = useState<Model>({
-    id: "",
-    provider_id: "",
-    upstream: "",
-    version: "",
-    capabilities: ["chat", "stream"],
-    context: 16000,
-    max_output: 2048,
-    rpm: 100,
-    tpm: 100000,
-    dimensions: 0,
-    input_micro: 0,
-    cached_input_micro: 0,
-    output_micro: 0,
-    price_version: "",
-    currency: "CNY",
-    fx_ppm: 1000000,
-  });
   const [route, setRoute] = useState<Route>({
     alias: "chat",
     kind: "chat",
@@ -465,7 +428,12 @@ function Console({
     const id = setInterval(() => void load(), 10000);
     return () => clearInterval(id);
   }, [refresh, appID, range, status, tab]);
-  async function action(path: string, method: string, body?: unknown) {
+  async function action(
+    path: string,
+    method: string,
+    body?: unknown,
+    onError?: (message: string) => void,
+  ) {
     setBusy(true);
     setError("");
     setNotice("");
@@ -484,7 +452,9 @@ function Console({
       await load();
       return true;
     } catch (e) {
-      setError(String(e));
+      const message = e instanceof Error ? e.message : String(e);
+      setError(message);
+      onError?.(message);
       return false;
     } finally {
       setBusy(false);
@@ -1192,18 +1162,21 @@ function Console({
                 保存后在网关运维查看实例配置版本；应用路由可单独覆盖默认策略。
               </p>
             </section>
-            <div className="grid">
-              <section>
-                <h2>厂商凭据</h2>
-                {Object.values(cfg?.providers ?? {}).map((p) => (
-                  <button
-                    className="chip"
-                    key={p.id}
-                    onClick={() => setProvider({ ...p, api_key: "" })}
-                  >
-                    {p.id}
-                  </button>
-                ))}
+            <section>
+              <h2>厂商凭据</h2>
+              <p className="muted">
+                配置厂商连接和密钥，再新增该厂商的模型资源。下方编号是已配置厂商，点击可编辑。
+              </p>
+              {Object.values(cfg?.providers ?? {}).map((p) => (
+                <button
+                  className="chip"
+                  key={p.id}
+                  onClick={() => setProvider({ ...p, api_key: "" })}
+                >
+                  {p.id}
+                </button>
+              ))}
+              <div className="form-grid">
                 <Field label="厂商编号">
                   <input
                     value={provider.id}
@@ -1243,205 +1216,32 @@ function Console({
                     placeholder="编辑时留空可保留原密钥"
                   />
                 </Field>
-                <button
-                  disabled={busy}
-                  onClick={async () => {
-                    if (await action("providers", "POST", provider))
-                      setProvider({ ...provider, api_key: "" });
-                  }}
-                >
-                  保存凭据
-                </button>
-              </section>
-              <section>
-                <h2>模型注册</h2>
-                {modelList.map((m) => (
-                  <button
-                    className="chip"
-                    key={m.id}
-                    onClick={() => setModel(m)}
-                  >
-                    {m.id}
-                  </button>
-                ))}
-                <div className="form-grid">
-                  {(
-                    ["id", "upstream", "version", "price_version"] as const
-                  ).map((k) => (
-                    <Field
-                      key={k}
-                      label={
-                        {
-                          id: "模型编号",
-                          upstream: "厂商模型名",
-                          version: "模型版本",
-                          price_version: "价格版本",
-                        }[k]
-                      }
-                    >
-                      <input
-                        value={model[k]}
-                        onChange={(e) =>
-                          setModel({ ...model, [k]: e.target.value })
-                        }
-                      />
-                    </Field>
-                  ))}
-                  <Field label="所属厂商">
-                    <select
-                      value={model.provider_id}
-                      onChange={(e) =>
-                        setModel({ ...model, provider_id: e.target.value })
-                      }
-                    >
-                      <option value="">请选择</option>
-                      {Object.keys(cfg?.providers ?? {}).map((id) => (
-                        <option key={id}>{id}</option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Field label="能力（逗号分隔）">
-                    <input
-                      value={model.capabilities.join(",")}
-                      onChange={(e) => {
-                        const capabilities = e.target.value
-                          .split(",")
-                          .map((s) => s.trim());
-                        const rerank = capabilities.includes("rerank");
-                        setModel({
-                          ...model,
-                          capabilities,
-                          rerank_protocol: rerank
-                            ? model.rerank_protocol || "compatible"
-                            : undefined,
-                          max_documents: rerank
-                            ? model.max_documents || 500
-                            : undefined,
-                          max_item_tokens: rerank
-                            ? model.max_item_tokens || 4000
-                            : undefined,
-                          ...(rerank
-                            ? {
-                                max_output: 0,
-                                output_micro: 0,
-                                cached_input_micro: 0,
-                              }
-                            : {}),
-                        });
-                      }}
-                    />
-                  </Field>
-                  {model.capabilities.includes("rerank") && (
-                    <>
-                      <Field label="重排厂商接口">
-                        <select
-                          value={model.rerank_protocol ?? ""}
-                          onChange={(e) =>
-                            setModel({
-                              ...model,
-                              rerank_protocol: e.target.value,
-                            })
-                          }
-                        >
-                          <option value="">请选择</option>
-                          <option value="compatible">
-                            兼容接口（qwen3-rerank）
-                          </option>
-                          <option value="dashscope">
-                            DashScope 文本排序接口
-                          </option>
-                        </select>
-                      </Field>
-                      <Field label="最大文档数（1–500）">
-                        <input
-                          type="number"
-                          min={1}
-                          max={500}
-                          value={model.max_documents ?? 0}
-                          onChange={(e) =>
-                            setModel({
-                              ...model,
-                              max_documents: Number(e.target.value),
-                            })
-                          }
-                        />
-                      </Field>
-                      <Field label="单条输入上限（Token）">
-                        <input
-                          type="number"
-                          min={1}
-                          value={model.max_item_tokens ?? 0}
-                          onChange={(e) =>
-                            setModel({
-                              ...model,
-                              max_item_tokens: Number(e.target.value),
-                            })
-                          }
-                        />
-                      </Field>
-                    </>
-                  )}
-                  {(
-                    [
-                      "context",
-                      "max_output",
-                      "rpm",
-                      "tpm",
-                      "dimensions",
-                      "input_micro",
-                      "cached_input_micro",
-                      "output_micro",
-                      "fx_ppm",
-                    ] as const
-                  ).map((k) => (
-                    <Field
-                      key={k}
-                      label={
-                        {
-                          context: "上下文上限",
-                          max_output: "输出上限",
-                          rpm: "RPM",
-                          tpm: "TPM",
-                          dimensions: "向量维度",
-                          input_micro: "输入单价微单位 / 百万 Token",
-                          cached_input_micro: "缓存输入单价微单位 / 百万 Token",
-                          output_micro: "输出单价微单位 / 百万 Token",
-                          fx_ppm: "汇率百万分比（CNY 为 1000000）",
-                        }[k]
-                      }
-                    >
-                      <input
-                        type="number"
-                        min="0"
-                        value={model[k]}
-                        onChange={(e) =>
-                          setModel({ ...model, [k]: Number(e.target.value) })
-                        }
-                      />
-                    </Field>
-                  ))}
-                  <Field label="单价币种">
-                    <select
-                      value={model.currency}
-                      onChange={(e) =>
-                        setModel({ ...model, currency: e.target.value })
-                      }
-                    >
-                      <option>CNY</option>
-                      <option>USD</option>
-                    </select>
-                  </Field>
-                </div>
-                <button
-                  disabled={busy}
-                  onClick={() => void action("models", "POST", model)}
-                >
-                  保存模型
-                </button>
-              </section>
-            </div>
+              </div>
+              <button
+                disabled={busy}
+                onClick={async () => {
+                  if (await action("providers", "POST", provider))
+                    setProvider({ ...provider, api_key: "" });
+                }}
+              >
+                保存凭据
+              </button>
+            </section>
+            <ModelResources
+              models={modelList}
+              providers={cfg?.providers ?? {}}
+              references={cfg?.model_references}
+              busy={busy}
+              loaded={!!cfg}
+              onMutation={action}
+            />
             <section>
-              <h2>路由与灰度</h2>
+              <h2>默认路由与灰度</h2>
+              <p className="muted">
+                应用通过模型别名（如
+                chat）调用；默认路由从已保存模型中选择实际模型。应用路由可覆盖此处的默认策略。
+              </p>
+              <p className="muted small">已保存默认路由（点击别名编辑）</p>
               {routeList.map((r) => (
                 <button
                   className="chip"

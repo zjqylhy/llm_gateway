@@ -419,6 +419,46 @@ tbody tr:last-child td {
   gap: 12px;
   margin-top: 20px;
 }
+.model-dialog {
+  border: 0;
+  color: inherit;
+}
+.model-dialog::backdrop {
+  background: #0d203977;
+}
+.model-dialog .error,
+.model-reference-list {
+  overflow-wrap: anywhere;
+}
+.model-table {
+  min-width: 740px;
+}
+.model-capability {
+  display: inline-block;
+  padding: 4px 7px;
+  margin: 3px;
+  border-radius: 5px;
+  background: #eef2fb;
+  color: #294eaa;
+  white-space: nowrap;
+}
+.model-row-actions {
+  display: flex;
+  gap: 8px;
+}
+.model-references summary {
+  cursor: pointer;
+  white-space: nowrap;
+  color: #315cce;
+}
+.model-references ul,
+.model-reference-list {
+  padding-left: 20px;
+  line-height: 1.8;
+}
+.model-delete-button {
+  background: #bd3246;
+}
 .chip {
   background: #edf2fd;
   color: #3759a0;
