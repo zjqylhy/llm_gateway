@@ -92,6 +92,10 @@ func (a *Admin) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/providers", a.saveProvider)
 	mux.HandleFunc("POST /admin/models", a.saveModel)
 	mux.HandleFunc("PUT /admin/routes", a.saveRoute)
+	mux.HandleFunc("GET /admin/apps/{id}/routes", a.applicationRoutes)
+	mux.HandleFunc("PUT /admin/apps/{id}/routes/{alias}", a.saveApplicationRoute)
+	mux.HandleFunc("DELETE /admin/apps/{id}/routes/{alias}", a.saveApplicationRoute)
+	mux.HandleFunc("GET /admin/app-metering", a.applicationMetering)
 	mux.HandleFunc("POST /admin/gray-release", a.gray)
 	mux.HandleFunc("PUT /admin/rules", a.rules)
 	mux.HandleFunc("POST /admin/users", a.user)
@@ -349,7 +353,7 @@ func (a *Admin) saveApp(w http.ResponseWriter, r *http.Request) {
 			return errors.New("application does not exist")
 		}
 		c.Apps[app.ID] = app
-		return nil
+		return validateAppRoutes(*c)
 	})
 	if e != nil && !errors.Is(e, errPublishPending) {
 		mutationResult(w, cfg, e)
@@ -424,7 +428,7 @@ func (a *Admin) clearCache(w http.ResponseWriter, r *http.Request) {
 		}
 		app.CacheEpoch++
 		c.Apps[app.ID] = app
-		return nil
+		return validateAppRoutes(*c)
 	})
 	mutationResult(w, cfg, e)
 }
@@ -495,7 +499,7 @@ func (a *Admin) saveModel(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 		}
-		return nil
+		return validateAppRoutes(*c)
 	})
 	mutationResult(w, cfg, e)
 }
@@ -544,21 +548,34 @@ func (a *Admin) saveRoute(w http.ResponseWriter, r *http.Request) {
 		if e := ValidateRoute(*c, route); e != nil {
 			return e
 		}
+		if route.Gray.State == "running" {
+			route.Gray.RunID = ID("gray_")
+		}
 		c.Routes[route.Alias] = route
-		return nil
+		return validateAppRoutes(*c)
 	})
 	mutationResult(w, cfg, e)
 }
 func (a *Admin) gray(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Alias  string `json:"alias"`
+		AppID  string `json:"app_id,omitempty"`
 		Policy Gray   `json:"policy"`
 	}
 	if !readJSON(w, r, &in) {
 		return
 	}
 	cfg, e := a.mutate(r, "gray.release", func(c *Config) error {
+		scope := "global"
 		route, ok := c.Routes[in.Alias]
+		if in.AppID != "" {
+			app, exists := c.Apps[in.AppID]
+			if !exists || !Contains(app.Models, in.Alias) {
+				return errors.New("application alias not allowed")
+			}
+			route, scope, ok = effectiveRoute(*c, in.AppID, in.Alias)
+			scope = "application:" + in.AppID
+		}
 		if !ok {
 			return errors.New("route missing")
 		}
@@ -570,8 +587,8 @@ func (a *Admin) gray(w http.ResponseWriter, r *http.Request) {
 		if e := ValidateRoute(*c, route); e != nil {
 			return e
 		}
-		c.Routes[in.Alias] = route
-		return nil
+		putScopedRoute(c, scope, route)
+		return validateAppRoutes(*c)
 	})
 	mutationResult(w, cfg, e)
 }
@@ -787,7 +804,29 @@ func (a *Admin) instances(w http.ResponseWriter, r *http.Request) {
 		APIError(w, 503, "storage_unavailable", "instances unavailable")
 		return
 	}
-	JSON(w, rows)
+	type view struct {
+		Instance
+		Service    string `json:"service"`
+		Status     string `json:"status"`
+		AgeSeconds int64  `json:"age_seconds"`
+	}
+	_, cfg, _, _ := a.identity(r)
+	out := map[string]view{}
+	now := time.Now()
+	for id, node := range rows {
+		service := strings.SplitN(id, ":", 2)[0]
+		if !Contains([]string{"gateway", "admin", "worker", "dev"}, service) {
+			service = "unknown"
+		}
+		status := "ready"
+		if now.Sub(node.Seen) >= 10*time.Second {
+			status = "stale"
+		} else if node.Version != cfg.Version {
+			status = "config_pending"
+		}
+		out[id] = view{node, service, status, int64(now.Sub(node.Seen).Seconds())}
+	}
+	JSON(w, out)
 }
 func (a *Admin) playground(w http.ResponseWriter, r *http.Request) {
 	u, cfg, _, _ := a.identity(r)

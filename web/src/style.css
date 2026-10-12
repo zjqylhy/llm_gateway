@@ -129,6 +129,28 @@ nav button.selected {
   color: white;
   border-left: 3px solid #7c97ff;
 }
+.nav-group {
+  padding: 16px 15px 4px;
+  color: #8d9dc0;
+  font-size: 12px;
+}
+.application-metering-row {
+  padding: 16px 0;
+  border-bottom: 1px solid #e8edf5;
+}
+.application-metering-row > .badge {
+  margin-top: 10px;
+}
+.application-metering-row p {
+  margin: 10px 0;
+}
+.instance-history {
+  margin-top: 20px;
+}
+.instance-history summary {
+  cursor: pointer;
+  color: #718096;
+}
 .user {
   margin-top: auto;
   padding: 20px 12px;

@@ -139,8 +139,8 @@ func (e *Engine) Handler() http.Handler {
 			return
 		}
 		models := []map[string]any{}
-		for alias := range c.Routes {
-			if Contains(a.Models, alias) {
+		for _, alias := range a.Models {
+			if _, _, ok := effectiveRoute(c, a.ID, alias); ok {
 				models = append(models, map[string]any{"id": alias, "object": "model", "owned_by": "gateway"})
 			}
 		}
@@ -175,7 +175,7 @@ func (e *Engine) handle(w http.ResponseWriter, r *http.Request, kind string) {
 		APIError(w, 403, "model_not_allowed", "model is not allowed for this application")
 		return
 	}
-	route, ok := cfg.Routes[req.Alias]
+	route, _, ok := effectiveRoute(cfg, a.ID, req.Alias)
 	if !ok || route.Kind != kind {
 		APIError(w, 404, "model_not_found", "model alias unavailable")
 		return
@@ -202,6 +202,7 @@ func (e *Engine) handle(w http.ResponseWriter, r *http.Request, kind string) {
 			return
 		}
 		event := Event{ID: id + ":result", RequestID: id, AttemptID: id, Revision: 2, Kind: "completed", Purpose: "request", AppID: a.ID, Department: a.Department, Alias: req.Alias, At: start.UTC(), Month: month(start), Status: finalStatus, Cached: cached, DurationMS: time.Since(start).Milliseconds()}
+		routeSnapshot(&event, cfg, a)
 		pc, done := context.WithTimeout(context.WithoutCancel(ctx), 9*time.Second)
 		defer done()
 		if err := e.Bus.Publish(pc, event); err != nil {
@@ -492,8 +493,13 @@ func (e *Engine) attempt(ctx context.Context, cfg Config, a App, m Model, r Requ
 	started := time.Now()
 	id := ID("att_")
 	event := Event{ID: id + ":1", RequestID: requestID, AttemptID: id, Revision: 1, Kind: "started", Purpose: purpose, AppID: a.ID, Department: a.Department, Alias: r.Alias, Model: m, At: started.UTC(), Month: month(started), Status: "started", Quality: "pending", Gray: gray, ReserveTokens: r.InputEstimate + r.MaxOutput, ReserveMicro: Cost(m, Usage{Input: r.InputEstimate, Output: r.MaxOutput})}
+	routeSnapshot(&event, cfg, a)
+	if purpose == "cache_embedding" {
+		event.RouteScope, event.RouteStrategy = "internal", ""
+	}
 	if gray {
-		event.GrayRun = cfg.Routes[r.Alias].Gray.RunID
+		route, _, _ := effectiveRoute(cfg, a.ID, r.Alias)
+		event.GrayRun = route.Gray.RunID
 	}
 	if _, ok := e.Store.(*SQLStore); ok {
 		if e.Metering == nil {
