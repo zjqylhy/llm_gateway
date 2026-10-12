@@ -113,3 +113,7 @@ dc start
 ## 重排与应用监控更新（2026-10-12）
 
 用户授权后已更新 ECS 的 gateway/admin/worker，启用私有 Prometheus，并验证最近一天的实际监控查询。控制台低 QPS 显示修复也已上线；管理接口并发保持 8。实际版本、验证边界、备份和运维入口见 [本次部署记录](cloud-app-traffic-deployment.md)。
+
+## 模型资源管理更新（2026-10-12）
+
+用户授权后已仅更新云端 admin，提供已保存模型列表、明确的新增/编辑/删除入口及引用保护。gateway、worker 保持此前运行版本；业务配置版本 v12 及配置指纹保持一致。新私钥路径已实际登录验证，正式 HTTPS 隧道已恢复。版本、备份及验证结果见 [模型资源管理部署记录](cloud-model-resource-management-deployment.md)。

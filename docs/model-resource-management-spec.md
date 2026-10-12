@@ -35,3 +35,7 @@
 - 本地页面截图：`data/model-resource-ui/model-list.jpg`（忽略目录，不提交）。临时测试模型已删除，既有服务与云端未升级。
 - 初次全量 Go 验证因沙箱拒绝本地模拟服务 socket 而失败，使用正常本机权限重跑通过；Vite 同样在沙箱下遇到 realpath EPERM，正常权限构建通过。
 - 本次验证不包含云端升级和真实厂商调用。代码与验证结果待用户确认。
+
+## 后续确认与发布
+
+用户随后确认提交 `f6f90aa` 的实现与验证结果，并明确授权云端升级和远端推送。2026-10-12 已仅更新云端 admin，验证正式 HTTPS、新前端、模型引用信息、业务配置保留及 gateway/worker 运行状态；代码已推送到 `codex/model-resource-management` 分支。完整发布范围、备份与验证边界见 [云端部署记录](cloud-model-resource-management-deployment.md)。上节“未部署”和“待确认”描述的是本地交付时的状态。
