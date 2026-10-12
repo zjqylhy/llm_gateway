@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useState } from "react";
+import { ResourceDialog, type ResourceMutation } from "./ResourceDialog";
 
 export type Model = {
   id: string;
@@ -21,13 +22,6 @@ export type Model = {
   currency: string;
   fx_ppm: number;
 };
-
-type Mutation = (
-  path: string,
-  method: string,
-  body?: unknown,
-  onError?: (message: string) => void,
-) => Promise<boolean>;
 
 function newModel(): Model {
   return {
@@ -77,51 +71,6 @@ function Field({
   );
 }
 
-// 原生对话框约束键盘焦点；取消和关闭后焦点返回触发按钮。
-function Dialog({
-  title,
-  busy,
-  onClose,
-  children,
-}: {
-  title: string;
-  busy: boolean;
-  onClose: () => void;
-  children: React.ReactNode;
-}) {
-  const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    const dialog = ref.current!;
-    dialog.showModal();
-    return () => dialog.close();
-  }, []);
-  return (
-    <dialog
-      ref={ref}
-      className="modal model-dialog"
-      aria-labelledby="model-dialog-title"
-      onCancel={(event) => {
-        event.preventDefault();
-        if (!busy) onClose();
-      }}
-    >
-      <div className="section-head">
-        <h2 id="model-dialog-title">{title}</h2>
-        <button
-          type="button"
-          className="quiet"
-          disabled={busy}
-          onClick={onClose}
-          aria-label="关闭"
-        >
-          关闭
-        </button>
-      </div>
-      {children}
-    </dialog>
-  );
-}
-
 export function ModelResources({
   models,
   providers,
@@ -135,7 +84,7 @@ export function ModelResources({
   references?: Record<string, string[]>;
   busy: boolean;
   loaded: boolean;
-  onMutation: Mutation;
+  onMutation: ResourceMutation;
 }) {
   const [model, setModel] = useState<Model | null>(null);
   const [editingID, setEditingID] = useState<string | null>(null);
@@ -314,7 +263,7 @@ export function ModelResources({
         </p>
       )}
       {model && (
-        <Dialog
+        <ResourceDialog
           title={editingID ? `编辑模型：${editingID}` : "新增模型"}
           busy={busy}
           onClose={() => setModel(null)}
@@ -531,10 +480,10 @@ export function ModelResources({
               </button>
             </div>
           </form>
-        </Dialog>
+        </ResourceDialog>
       )}
       {deleting && (
-        <Dialog
+        <ResourceDialog
           title={`删除模型：${deleting.id}`}
           busy={busy}
           onClose={() => setDeleting(null)}
@@ -572,7 +521,7 @@ export function ModelResources({
               取消
             </button>
           </div>
-        </Dialog>
+        </ResourceDialog>
       )}
     </section>
   );

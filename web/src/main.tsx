@@ -18,6 +18,7 @@ import {
 } from "./OperationsPanel";
 import { routeSource, tracePath } from "./application";
 import { ModelResources, type Model } from "./ModelResources";
+import { ProviderResources } from "./ProviderResources";
 import "./style.css";
 
 type App = {
@@ -309,12 +310,6 @@ function Console({
   const [range, setRange] = useState("24");
   const [status, setStatus] = useState("");
   const [requestSearch, setRequestSearch] = useState("");
-  const [provider, setProvider] = useState({
-    id: "",
-    kind: "openai",
-    url: "https://api.openai.com/v1",
-    api_key: "",
-  });
   const [route, setRoute] = useState<Route>({
     alias: "chat",
     kind: "chat",
@@ -1162,71 +1157,12 @@ function Console({
                 保存后在网关运维查看实例配置版本；应用路由可单独覆盖默认策略。
               </p>
             </section>
-            <section>
-              <h2>厂商凭据</h2>
-              <p className="muted">
-                配置厂商连接和密钥，再新增该厂商的模型资源。下方编号是已配置厂商，点击可编辑。
-              </p>
-              {Object.values(cfg?.providers ?? {}).map((p) => (
-                <button
-                  className="chip"
-                  key={p.id}
-                  onClick={() => setProvider({ ...p, api_key: "" })}
-                >
-                  {p.id}
-                </button>
-              ))}
-              <div className="form-grid">
-                <Field label="厂商编号">
-                  <input
-                    value={provider.id}
-                    onChange={(e) =>
-                      setProvider({ ...provider, id: e.target.value })
-                    }
-                  />
-                </Field>
-                <Field label="厂商类型">
-                  <select
-                    value={provider.kind}
-                    onChange={(e) =>
-                      setProvider({ ...provider, kind: e.target.value })
-                    }
-                  >
-                    {["deepseek", "qwen", "openai"].map((x) => (
-                      <option key={x}>{x}</option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="API Base URL">
-                  <input
-                    value={provider.url}
-                    onChange={(e) =>
-                      setProvider({ ...provider, url: e.target.value })
-                    }
-                  />
-                </Field>
-                <Field label="厂商 API Key">
-                  <input
-                    type="password"
-                    autoComplete="off"
-                    value={provider.api_key}
-                    onChange={(e) =>
-                      setProvider({ ...provider, api_key: e.target.value })
-                    }
-                    placeholder="编辑时留空可保留原密钥"
-                  />
-                </Field>
-              </div>
-              <button
-                disabled={busy}
-                onClick={async () => {
-                  if (await action("providers", "POST", provider))
-                    setProvider({ ...provider, api_key: "" });
-                }}
-              >
-                保存凭据
-              </button>
-            </section>
+            <ProviderResources
+              providers={cfg?.providers ?? {}}
+              loaded={!!cfg}
+              busy={busy}
+              onMutation={action}
+            />
             <ModelResources
               models={modelList}
               providers={cfg?.providers ?? {}}

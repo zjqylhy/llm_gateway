@@ -90,6 +90,7 @@ func (a *Admin) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/keys/{id}/revoke", a.revokeKey)
 	mux.HandleFunc("POST /admin/apps/{id}/cache/clear", a.clearCache)
 	mux.HandleFunc("POST /admin/providers", a.saveProvider)
+	mux.HandleFunc("PUT /admin/providers/{id}", a.saveProvider)
 	mux.HandleFunc("POST /admin/models", a.saveModel)
 	mux.HandleFunc("PUT /admin/models/{id}", a.saveModel)
 	mux.HandleFunc("DELETE /admin/models/{id}", a.deleteModel)
@@ -448,8 +449,12 @@ func (a *Admin) saveProvider(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &p) {
 		return
 	}
+	if r.Method == http.MethodPut && r.PathValue("id") != p.ID {
+		APIError(w, 400, "provider_id_mismatch", "编辑时不能修改厂商编号")
+		return
+	}
 	if !identifier.MatchString(p.ID) || !Contains([]string{"deepseek", "qwen", "openai", "mock"}, p.Kind) || (!a.Engine.Dev && p.Kind == "mock") {
-		APIError(w, 400, "invalid_provider", "provider kind or id invalid")
+		APIError(w, 400, "invalid_provider", "请检查厂商类型和编号，编号仅支持 1–64 个字母、数字、点、下划线或连字符")
 		return
 	}
 	if e := ValidateURL(p.URL, a.Engine.Dev); e != nil {
@@ -457,17 +462,34 @@ func (a *Admin) saveProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg, e := a.mutate(r, "provider.save", func(c *Config) error {
+		_, exists := c.Providers[p.ID]
+		if r.Method == http.MethodPost && exists {
+			return errProviderExists
+		}
+		if r.Method == http.MethodPut && !exists {
+			return errProviderMissing
+		}
 		secret := c.Providers[p.ID].Secret
 		if p.APIKey != "" {
+			if strings.TrimSpace(p.APIKey) == "" {
+				return errors.New("API Key 不能仅包含空格")
+			}
 			secret = a.Engine.Vault.Encrypt(p.ID, p.APIKey)
 		}
 		if secret == "" {
-			return errors.New("API key required")
+			return errors.New("新增厂商必须填写 API Key")
 		}
 		c.Providers[p.ID] = Provider{p.ID, p.Kind, p.URL, secret}
 		return nil
 	})
-	mutationResult(w, cfg, e)
+	switch {
+	case errors.Is(e, errProviderExists):
+		APIError(w, http.StatusConflict, "provider_exists", e.Error())
+	case errors.Is(e, errProviderMissing):
+		APIError(w, http.StatusNotFound, "provider_not_found", e.Error())
+	default:
+		mutationResult(w, cfg, e)
+	}
 }
 func (a *Admin) saveModel(w http.ResponseWriter, r *http.Request) {
 	var m Model

@@ -433,6 +433,12 @@ tbody tr:last-child td {
 .model-table {
   min-width: 740px;
 }
+.provider-table {
+  min-width: 640px;
+}
+.provider-url {
+  overflow-wrap: anywhere;
+}
 .model-capability {
   display: inline-block;
   padding: 4px 7px;
