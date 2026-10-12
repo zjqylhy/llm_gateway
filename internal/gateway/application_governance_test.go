@@ -105,7 +105,7 @@ func TestApplicationRoutePermissionsValidationAndNoGlobalEscape(t *testing.T) {
 		t.Fatal(w.Body.String())
 	}
 	b, _ := json.Marshal(m)
-	if w := adminCall(a, admin, csrf, "POST", "/admin/models", string(b)); w.Code != 400 {
+	if w := adminCall(a, admin, csrf, "PUT", "/admin/models/backup", string(b)); w.Code != 400 {
 		t.Fatal("invalidated override accepted", w.Code)
 	}
 }

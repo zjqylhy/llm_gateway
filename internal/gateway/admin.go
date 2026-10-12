@@ -90,7 +90,10 @@ func (a *Admin) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/keys/{id}/revoke", a.revokeKey)
 	mux.HandleFunc("POST /admin/apps/{id}/cache/clear", a.clearCache)
 	mux.HandleFunc("POST /admin/providers", a.saveProvider)
+	mux.HandleFunc("PUT /admin/providers/{id}", a.saveProvider)
 	mux.HandleFunc("POST /admin/models", a.saveModel)
+	mux.HandleFunc("PUT /admin/models/{id}", a.saveModel)
+	mux.HandleFunc("DELETE /admin/models/{id}", a.deleteModel)
 	mux.HandleFunc("PUT /admin/routes", a.saveRoute)
 	mux.HandleFunc("GET /admin/apps/{id}/routes", a.applicationRoutes)
 	mux.HandleFunc("PUT /admin/apps/{id}/routes/{alias}", a.saveApplicationRoute)
@@ -278,8 +281,9 @@ func (a *Admin) config(w http.ResponseWriter, r *http.Request) {
 	}
 	JSON(w, struct {
 		Config
-		RuntimeCapabilities map[string]bool `json:"runtime_capabilities"`
-	}{c, map[string]bool{"cache_enabled": !a.Engine.CacheDisabled}})
+		RuntimeCapabilities map[string]bool     `json:"runtime_capabilities"`
+		ModelReferences     map[string][]string `json:"model_references"`
+	}{c, map[string]bool{"cache_enabled": !a.Engine.CacheDisabled}, modelReferences(c)})
 }
 func (a *Admin) apps(w http.ResponseWriter, r *http.Request) {
 	u, c, _, _ := a.identity(r)
@@ -445,8 +449,12 @@ func (a *Admin) saveProvider(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &p) {
 		return
 	}
+	if r.Method == http.MethodPut && r.PathValue("id") != p.ID {
+		APIError(w, 400, "provider_id_mismatch", "编辑时不能修改厂商编号")
+		return
+	}
 	if !identifier.MatchString(p.ID) || !Contains([]string{"deepseek", "qwen", "openai", "mock"}, p.Kind) || (!a.Engine.Dev && p.Kind == "mock") {
-		APIError(w, 400, "invalid_provider", "provider kind or id invalid")
+		APIError(w, 400, "invalid_provider", "请检查厂商类型和编号，编号仅支持 1–64 个字母、数字、点、下划线或连字符")
 		return
 	}
 	if e := ValidateURL(p.URL, a.Engine.Dev); e != nil {
@@ -454,46 +462,79 @@ func (a *Admin) saveProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg, e := a.mutate(r, "provider.save", func(c *Config) error {
+		_, exists := c.Providers[p.ID]
+		if r.Method == http.MethodPost && exists {
+			return errProviderExists
+		}
+		if r.Method == http.MethodPut && !exists {
+			return errProviderMissing
+		}
 		secret := c.Providers[p.ID].Secret
 		if p.APIKey != "" {
+			if strings.TrimSpace(p.APIKey) == "" {
+				return errors.New("API Key 不能仅包含空格")
+			}
 			secret = a.Engine.Vault.Encrypt(p.ID, p.APIKey)
 		}
 		if secret == "" {
-			return errors.New("API key required")
+			return errors.New("新增厂商必须填写 API Key")
 		}
 		c.Providers[p.ID] = Provider{p.ID, p.Kind, p.URL, secret}
 		return nil
 	})
-	mutationResult(w, cfg, e)
+	switch {
+	case errors.Is(e, errProviderExists):
+		APIError(w, http.StatusConflict, "provider_exists", e.Error())
+	case errors.Is(e, errProviderMissing):
+		APIError(w, http.StatusNotFound, "provider_not_found", e.Error())
+	default:
+		mutationResult(w, cfg, e)
+	}
 }
 func (a *Admin) saveModel(w http.ResponseWriter, r *http.Request) {
 	var m Model
 	if !readJSON(w, r, &m) {
 		return
 	}
+	if r.Method == http.MethodPut && r.PathValue("id") != m.ID {
+		APIError(w, 400, "model_id_mismatch", "编辑时不能修改模型编号")
+		return
+	}
 	if !identifier.MatchString(m.ID) || m.Upstream == "" || m.Version == "" || m.Context <= 0 || m.Context > 1000000 || m.MaxOutput < 0 || m.MaxOutput > m.Context || m.RPM < 0 || m.TPM < 0 || m.InputMicro < 0 || m.OutputMicro < 0 || m.CachedInputMicro < 0 || m.InputMicro > 1000000000000 || m.OutputMicro > 1000000000000 || m.CachedInputMicro > 1000000000000 || m.Dimensions < 0 || m.Dimensions > 65536 || m.PriceVersion == "" || !Contains([]string{"CNY", "USD"}, m.Currency) || m.FXPPM <= 0 || m.FXPPM > 100000000 {
-		APIError(w, 400, "invalid_model", "invalid capabilities, limits or pricing")
+		APIError(w, 400, "invalid_model", "请检查模型名称、版本、上下文及输出上限、限流和价格配置")
 		return
 	}
 	for _, cap := range m.Capabilities {
 		if !Contains([]string{"chat", "embedding", "rerank", "rerank_instruct", "stream", "tools", "json_object", "json_schema", "seed"}, cap) {
-			APIError(w, 400, "invalid_capability", "unknown capability")
+			APIError(w, 400, "invalid_capability", "不支持的模型能力："+cap)
 			return
 		}
 	}
 	if Contains(m.Capabilities, "embedding") && m.Dimensions <= 0 {
-		APIError(w, 400, "invalid_dimensions", "embedding requires dimensions")
+		APIError(w, 400, "invalid_dimensions", "embedding 模型的向量维度必须大于 0")
 		return
 	}
 	if !validRerankModel(m) {
-		APIError(w, 400, "invalid_rerank_model", "invalid rerank protocol, limits, capabilities or pricing")
+		APIError(w, 400, "invalid_rerank_model", "请检查重排接口、文档数、输入上限、能力及价格配置")
 		return
 	}
 	cfg, e := a.mutate(r, "model.save", func(c *Config) error {
+		_, exists := c.Models[m.ID]
+		if r.Method == http.MethodPost && exists {
+			return errModelExists
+		}
+		if r.Method == http.MethodPut && !exists {
+			return errModelMissing
+		}
 		if _, ok := c.Providers[m.ProviderID]; !ok {
-			return errors.New("provider missing")
+			return errors.New("所属厂商不存在，请先配置厂商凭据")
 		}
 		c.Models[m.ID] = m
+		for _, app := range c.Apps {
+			if app.EmbeddingModel == m.ID && !Contains(m.Capabilities, "embedding") {
+				return errors.New("应用 " + app.ID + " 的缓存向量模型必须支持 embedding")
+			}
+		}
 		for _, route := range c.Routes {
 			if err := ValidateRoute(*c, route); err != nil {
 				return err
@@ -501,7 +542,7 @@ func (a *Admin) saveModel(w http.ResponseWriter, r *http.Request) {
 		}
 		return validateAppRoutes(*c)
 	})
-	mutationResult(w, cfg, e)
+	modelMutationResult(w, cfg, e)
 }
 func ValidateRoute(c Config, r Route) error {
 	if !identifier.MatchString(r.Alias) || !Contains([]string{"chat", "embedding", "rerank"}, r.Kind) || !Contains([]string{"priority", "weight", "cost", "latency"}, r.Strategy) || len(r.Candidates) == 0 || len(r.Candidates) > 20 {

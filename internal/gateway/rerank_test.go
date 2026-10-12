@@ -384,7 +384,7 @@ func TestAdminRerankModelAndRoutes(t *testing.T) {
 	}
 	model.RerankProtocol = "dashscope"
 	body, _ = json.Marshal(model)
-	if w := adminCall(a, cookie, csrf, "POST", "/admin/models", string(body)); w.Code != 200 {
+	if w := adminCall(a, cookie, csrf, "PUT", "/admin/models/rank", string(body)); w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	if w := adminCall(a, cookie, csrf, "PUT", "/admin/routes", strings.ReplaceAll(route, `"rank"`, `"primary"`)); w.Code != 400 {

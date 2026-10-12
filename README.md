@@ -6,6 +6,10 @@ Go 数据面、管理面、计量 worker 与 React 控制台。按已确认的 [
 
 文本重排接口为 `POST /v1/rerank`（亦支持 `/v1/reranks`），统一输入查询和候选文档，兼容百炼兼容接口与 DashScope 文本排序接口。配置方法、请求示例及计量边界见 [重排规格](docs/rerank-spec.md)。
 
+控制台“模型资源与默认路由”提供已保存模型列表、新增、编辑和删除操作，引用中的模型需先调整路由或缓存配置。管理 API 的 `POST /admin/models` 仅新增，修改改用 `PUT /admin/models/{id}`；详见 [模型资源管理规格及验证结果](docs/model-resource-management-spec.md)。
+
+厂商凭据使用“已保存厂商”列表，新增必填 API Key，编辑留空保留原密钥。`POST /admin/providers` 仅新增，修改使用 `PUT /admin/providers/{id}`；详见 [厂商凭据管理规格](docs/provider-resource-management-spec.md)。
+
 ## 本地运行
 
 需要 Go 1.27、Node.js 24。Windows PowerShell：
