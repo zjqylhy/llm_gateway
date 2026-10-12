@@ -332,5 +332,15 @@ func (a *Admin) meteringStatus(w http.ResponseWriter, r *http.Request) {
 		APIError(w, 503, "not_ready", "metering reports unavailable")
 		return
 	}
-	JSON(w, map[string]any{"state": state, "generation": gen, "reason": reason, "reports": reports, "applications": apps, "next": next})
+	var undelivered int64
+	if err := s.DB.QueryRowContext(c, `SELECT COUNT(*) FROM gw_metering_outbox WHERE delivered=0`).Scan(&undelivered); err != nil {
+		APIError(w, 503, "not_ready", "metering backlog unavailable")
+		return
+	}
+	permitValid := false
+	if a.Engine.Metering != nil {
+		_, _, err := a.Engine.Metering.readPermit(c)
+		permitValid = err == nil
+	}
+	JSON(w, map[string]any{"state": state, "generation": gen, "reason": reason, "reports": reports, "applications": apps, "next": next, "undelivered_events": undelivered, "permit_valid": permitValid})
 }

@@ -9,6 +9,14 @@ import {
   type FeeParts,
   type Usage,
 } from "./metering";
+import { ApplicationMetering } from "./ApplicationMetering";
+import { ApplicationRoutes } from "./ApplicationRoutes";
+import {
+  OperationsPanel,
+  type InstanceView,
+  type MeteringOperations,
+} from "./OperationsPanel";
+import { routeSource, tracePath } from "./application";
 import "./style.css";
 
 type App = {
@@ -31,6 +39,10 @@ type App = {
 };
 type Session = { username: string; role: string; csrf: string };
 type RecordItem = {
+  app_name?: string;
+  route_scope?: string;
+  route_strategy?: string;
+  config_version?: number;
   request_id: string;
   attempt_id: string;
   purpose: string;
@@ -120,10 +132,12 @@ type Route = {
 };
 type Rule = { id: string; pattern: string; action: string };
 const tabs = [
-  ["dashboard", "运行概览"],
+  ["dashboard", "应用概览"],
   ["playground", "Playground"],
   ["apps", "应用与密钥"],
-  ["routes", "模型与路由"],
+  ["app-routes", "应用路由"],
+  ["routes", "模型资源与默认路由"],
+  ["operations", "网关运维"],
   ["cost", "成本治理"],
   ["logs", "调用审计"],
   ["security", "权限与安全"],
@@ -291,23 +305,12 @@ function Console({
   const [alerts, setAlerts] = useState<
     { id: string; kind: string; active: boolean; message: string }[]
   >([]);
-  const [instances, setInstances] = useState<
-    Record<string, { version: number; seen: string }>
-  >({});
+  const [instances, setInstances] = useState<Record<string, InstanceView>>({});
+  const [metering, setMetering] = useState<MeteringOperations>({
+    state: "unknown",
+  });
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [metering, setMetering] = useState<{
-    state: string;
-    reason?: string;
-    applications?: { app_id: string; state: string; reason: string }[];
-    reports?: {
-      id?: string;
-      app_id?: string;
-      passed?: boolean;
-      error?: string;
-      seconds?: number;
-    }[];
-  }>({ state: "unknown" });
   const [busy, setBusy] = useState(false);
   const [refresh, setRefresh] = useState(true);
   const [formApp, setFormApp] = useState<App | null>(null);
@@ -318,7 +321,10 @@ function Console({
   const [stream, setStream] = useState(true);
   const [answer, setAnswer] = useState("");
   const [decision, setDecision] = useState("");
-  const [trace, setTrace] = useState("");
+  const [trace, setTrace] = useState<{
+    requestID: string;
+    appID: string;
+  } | null>(null);
   const [range, setRange] = useState("24");
   const [status, setStatus] = useState("");
   const [requestSearch, setRequestSearch] = useState("");
@@ -368,6 +374,11 @@ function Console({
   });
   const controller = React.useRef<AbortController | null>(null);
   const refreshQueue = React.useRef(createRefreshQueue());
+  const latestLoad = React.useRef(loadData);
+  latestLoad.current = loadData;
+  const viewKey = JSON.stringify([appID, range, status, tab, requestSearch]);
+  const activeView = React.useRef(viewKey);
+  activeView.current = viewKey;
   async function api<T>(
     path: string,
     method = "GET",
@@ -400,13 +411,26 @@ function Console({
   }
   async function load() {
     setTrafficRevision((value) => value + 1);
-    return refreshQueue.current(loadData);
+    return refreshQueue.current(latestLoad.current);
   }
   async function loadData() {
     setError("");
     try {
       const appList = await api<App[]>("apps");
+      if (activeView.current !== viewKey) return;
       setApps(appList);
+      if (tab === "operations" && session.role === "admin") {
+        const [c, nodes, meter] = await waitForAll([
+          api<Config>("config"),
+          api<typeof instances>("instances"),
+          api<typeof metering>("metering"),
+        ]);
+        if (activeView.current !== viewKey) return;
+        setCfg(c);
+        setInstances(nodes);
+        setMetering(meter);
+        return;
+      }
       if (session.role === "developer" && !appID) {
         setAppID(appList[0]?.id ?? "");
         return;
@@ -418,33 +442,29 @@ function Console({
         api<typeof metrics>("metrics?" + q),
         api<typeof alerts>("alerts?" + q),
       ]);
+      if (activeView.current !== viewKey) return;
       setRecords(results[0]);
       setCosts(results[1]);
       setMetrics(results[2]);
       setAlerts(results[3]);
       if (session.role === "admin") {
-        const [c, nodes, meter] = await waitForAll([
-          api<Config>("config"),
-          api<typeof instances>("instances"),
-          api<typeof metering>("metering"),
-        ]);
+        const c = await api<Config>("config");
+        if (activeView.current !== viewKey) return;
         setCfg(c);
-        setInstances(nodes);
-        setMetering(meter);
         setRuleText(JSON.stringify(c.rules, null, 2));
       }
     } catch (e) {
-      setError(String(e));
+      if (activeView.current === viewKey) setError(String(e));
     }
   }
   useEffect(() => {
     void load();
-  }, [appID, range, status]);
+  }, [appID, range, status, tab]);
   useEffect(() => {
     if (!refresh) return;
     const id = setInterval(() => void load(), 10000);
     return () => clearInterval(id);
-  }, [refresh, appID, range, status]);
+  }, [refresh, appID, range, status, tab]);
   async function action(path: string, method: string, body?: unknown) {
     setBusy(true);
     setError("");
@@ -541,7 +561,7 @@ function Console({
   }
   const admin = session.role === "admin";
   const visibleTabs = tabs.filter(
-    ([id]) => admin || !["routes", "security"].includes(id),
+    ([id]) => admin || !["routes", "operations", "security"].includes(id),
   );
   const activeAlerts = alerts.filter((a) => a.active);
   const modelList = Object.values(cfg?.models ?? {});
@@ -556,15 +576,32 @@ function Console({
           </div>
         </div>
         <nav>
-          {visibleTabs.map(([id, label]) => (
-            <button
-              className={tab === id ? "selected" : ""}
-              key={id}
-              onClick={() => setTab(id)}
-            >
-              {label}
-            </button>
-          ))}
+          {[
+            { label: "应用业务", operational: false },
+            { label: "网关管理", operational: true },
+          ].map((group) => {
+            const items = visibleTabs.filter(
+              ([id]) =>
+                ["routes", "operations", "security"].includes(id) ===
+                group.operational,
+            );
+            return (
+              items.length > 0 && (
+                <React.Fragment key={group.label}>
+                  <div className="nav-group">{group.label}</div>
+                  {items.map(([id, label]) => (
+                    <button
+                      key={id}
+                      className={tab === id ? "selected" : ""}
+                      onClick={() => setTab(id)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </React.Fragment>
+              )
+            );
+          })}
         </nav>
         <div className="user">
           <span>{session.username}</span>
@@ -584,12 +621,15 @@ function Console({
       <main>
         <header>
           <div>
-            <span className="eyebrow">WORKSPACE / 模型治理</span>
+            <span className="eyebrow">WORKSPACE / 应用与网关治理</span>
             <h1>{tabs.find(([id]) => id === tab)?.[1]}</h1>
           </div>
           <div className="toolbar">
-            <span className="live-dot" />
-            运行中
+            <span className="muted">
+              {["routes", "operations", "security"].includes(tab)
+                ? "网关管理"
+                : "应用业务"}
+            </span>
             <button className="secondary" onClick={() => void load()}>
               刷新
             </button>
@@ -620,10 +660,20 @@ function Console({
             </button>
           </div>
         )}
-        {["dashboard", "cost", "logs"].includes(tab) && (
+        {["dashboard", "cost", "logs", "app-routes"].includes(tab) && (
           <div className="filter-bar">
             <Field label="应用">
-              <select value={appID} onChange={(e) => setAppID(e.target.value)}>
+              <select
+                value={appID}
+                onChange={(e) => {
+                  setAppID(e.target.value);
+                  setTrace(null);
+                  setRecords([]);
+                  setCosts([]);
+                  setAlerts([]);
+                  setMetrics({ requests: 0, failed: 0, cache_hits: 0 });
+                }}
+              >
                 {session.role !== "developer" && (
                   <option value="">全部应用</option>
                 )}
@@ -634,21 +684,28 @@ function Console({
                 ))}
               </select>
             </Field>
-            <Field label="时间范围">
-              <select value={range} onChange={(e) => setRange(e.target.value)}>
-                <option value="1">最近 1 小时</option>
-                <option value="24">最近 24 小时</option>
-                <option value="720">最近 30 天</option>
-              </select>
-            </Field>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={refresh}
-                onChange={(e) => setRefresh(e.target.checked)}
-              />
-              每 10 秒刷新
-            </label>
+            {tab !== "app-routes" && (
+              <>
+                <Field label="时间范围">
+                  <select
+                    value={range}
+                    onChange={(e) => setRange(e.target.value)}
+                  >
+                    <option value="1">最近 1 小时</option>
+                    <option value="24">最近 24 小时</option>
+                    <option value="720">最近 30 天</option>
+                  </select>
+                </Field>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={refresh}
+                    onChange={(e) => setRefresh(e.target.checked)}
+                  />
+                  每 10 秒刷新
+                </label>
+              </>
+            )}
           </div>
         )}
         {tab === "dashboard" && (
@@ -683,55 +740,24 @@ function Console({
                   rows={records
                     .filter((x) => x.purpose === "request")
                     .slice(0, 8)}
-                  onTrace={(id) => {
-                    setTrace(id);
+                  apps={apps}
+                  onTrace={(record) => {
+                    setTrace({
+                      requestID: record.request_id,
+                      appID: record.app_id,
+                    });
                     setTab("logs");
                   }}
                 />
               </section>
               <section>
-                <h2>平台状态</h2>
-                {admin && (
-                  <>
-                    <p>
-                      期望配置版本 <strong>v{cfg?.version ?? "—"}</strong>
-                    </p>
-                    <p>
-                      计量状态 <Badge value={metering.state} />
-                      {metering.reason && <small> {metering.reason}</small>}
-                    </p>
-                    {metering.reports?.slice(0, 5).map((report, i) => (
-                      <div className="state-row" key={report.id ?? i}>
-                        <span title={report.error}>
-                          {report.app_id ?? "全局离线核验"}
-                        </span>
-                        <Badge value={report.passed ? "ready" : "failed"} />
-                        <small>{report.seconds?.toFixed(2) ?? "—"} 秒</small>
-                      </div>
-                    ))}
-                    {metering.applications
-                      ?.filter((app) => app.state !== "healthy")
-                      .map((app) => (
-                        <div className="warning" key={app.app_id}>
-                          {app.app_id}：{app.state}（{app.reason}）
-                        </div>
-                      ))}
-                    {Object.entries(instances).map(([id, node]) => (
-                      <div className="state-row" key={id}>
-                        <span title={id}>{id.slice(0, 18)}</span>
-                        <Badge
-                          value={
-                            Date.now() - new Date(node.seen).getTime() <
-                              10000 && node.version === cfg?.version
-                              ? "ready"
-                              : "pending"
-                          }
-                        />
-                        <small>v{node.version}</small>
-                      </div>
-                    ))}
-                  </>
-                )}
+                <ApplicationMetering
+                  key={appID}
+                  appID={appID}
+                  revision={trafficRevision}
+                  api={api}
+                />
+                <h3>预算与异常告警</h3>
                 {activeAlerts.length ? (
                   activeAlerts.map((a) => (
                     <div className="warning" key={a.id}>
@@ -748,6 +774,24 @@ function Console({
               </section>
             </div>
           </>
+        )}
+        {tab === "operations" && admin && (
+          <OperationsPanel
+            instances={instances}
+            metering={metering}
+            version={cfg?.version}
+            apps={apps}
+          />
+        )}
+        {tab === "app-routes" && (
+          <ApplicationRoutes
+            key={appID}
+            appID={appID}
+            admin={admin}
+            models={modelList}
+            api={api}
+            onSaved={load}
+          />
         )}
         {tab === "playground" && (
           <div className="grid playground">
@@ -1145,7 +1189,7 @@ function Console({
                 </button>
               </div>
               <p className="muted">
-                保存后查看运行概览中的实例版本，确认所有实例已生效。
+                保存后在网关运维查看实例配置版本；应用路由可单独覆盖默认策略。
               </p>
             </section>
             <div className="grid">
@@ -1785,13 +1829,21 @@ function Console({
                 检索
               </button>
             </div>
-            <RecordTable rows={records} onTrace={(id) => setTrace(id)} />
+            <RecordTable
+              rows={records}
+              apps={apps}
+              onTrace={(record) =>
+                setTrace({ requestID: record.request_id, appID: record.app_id })
+              }
+            />
             {trace && (
               <Trace
-                id={trace}
-                appID={appID}
+                key={trace.appID + ":" + trace.requestID}
+                id={trace.requestID}
+                appID={trace.appID}
+                apps={apps}
                 api={api}
-                close={() => setTrace("")}
+                close={() => setTrace(null)}
               />
             )}
           </section>
@@ -1956,15 +2008,18 @@ function RecordMetering({ item: x }: { item: RecordItem }) {
 function RecordTable({
   rows,
   onTrace,
+  apps,
 }: {
   rows: RecordItem[];
-  onTrace: (id: string) => void;
+  apps: { id: string; name: string }[];
+  onTrace: (record: RecordItem) => void;
 }) {
   return rows.length ? (
     <div className="table-wrap">
       <table>
         <thead>
           <tr>
+            <th>应用</th>
             <th>请求 / 尝试</th>
             <th>模型与用途</th>
             <th>状态</th>
@@ -1977,10 +2032,20 @@ function RecordTable({
           {rows.map((x) => (
             <tr key={x.attempt_id}>
               <td>
+                {x.app_name ||
+                  apps.find((app) => app.id === x.app_id)?.name ||
+                  x.app_id}
+                <small className="mono">{x.app_id}</small>
+                {!x.app_name &&
+                  apps.some((app) => app.id === x.app_id && app.name) && (
+                    <small>名称取当前应用配置</small>
+                  )}
+              </td>
+              <td>
                 <button
                   className="quiet mono"
                   title={x.request_id}
-                  onClick={() => onTrace(x.request_id)}
+                  onClick={() => onTrace(x)}
                 >
                   {x.request_id.slice(0, 16)}…
                 </button>
@@ -1989,6 +2054,11 @@ function RecordTable({
               <td>
                 {x.model?.id || x.alias}
                 <small>{x.purpose}</small>
+                <small>
+                  {routeSource(x.route_scope)}
+                  {x.route_strategy && ` · ${x.route_strategy}`}
+                  {x.config_version != null && ` · v${x.config_version}`}
+                </small>
               </td>
               <td>
                 <Badge value={x.status} />
@@ -2012,33 +2082,43 @@ function RecordTable({
 function Trace({
   id,
   appID,
+  apps,
   api,
   close,
 }: {
   id: string;
   appID: string;
+  apps: { id: string; name: string }[];
   api: <T>(path: string) => Promise<T>;
   close: () => void;
 }) {
   const [rows, setRows] = useState<RecordItem[]>([]);
   const [error, setError] = useState("");
   useEffect(() => {
-    void api<RecordItem[]>(
-      "trace/" + id + "?app_id=" + encodeURIComponent(appID),
-    )
-      .then(setRows)
-      .catch((e) => setError(String(e)));
+    let active = true;
+    void api<RecordItem[]>(tracePath(id, appID))
+      .then((rows) => {
+        if (active) setRows(rows);
+      })
+      .catch((e) => {
+        if (active) setError(String(e));
+      });
+    return () => {
+      active = false;
+    };
   }, [id, appID]);
   return (
     <div className="trace">
       <div className="section-head">
-        <h3>请求路径 {id}</h3>
+        <h3>
+          {apps.find((app) => app.id === appID)?.name || appID} · 请求路径 {id}
+        </h3>
         <button className="quiet" onClick={close}>
           关闭
         </button>
       </div>
       {error && <p className="error">{error}</p>}
-      <RecordTable rows={rows} onTrace={() => {}} />
+      <RecordTable rows={rows} apps={apps} onTrace={() => {}} />
     </div>
   );
 }

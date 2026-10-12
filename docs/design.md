@@ -6,6 +6,8 @@ worker 显式使用 Kafka ConsumerGroup generation 获取分区分配，再创�
 
 ## 模块
 
+应用路由通过 `Config.app_routes` 完整覆盖获授权的全局别名，统一解析用于 Chat、Embedding、Rerank 和灰度。调用记录保存应用名与路由作用域/策略/版本快照，灰度按实际作用域采样和回滚。控制台分应用业务与网关管理，业务计量摘要按应用权限返回，运维详情保持管理员权限。规格与验收见 [application-governance-spec.md](application-governance-spec.md) 和 [application-governance-validation.md](application-governance-validation.md)。
+
 domain 定义应用、凭据、模型、路由、调用事件和账本。store 使用版本化配置快照，MySQL 事务防止并发管理操作丢失。config 发布至 etcd 并记录实例版本。security 管理摘要、加密、会话和权限。governance 实施全局额度、预占和熔断。provider 负责协议转换及增量读取。cache 隔离向量和响应。eventbus 持久化事件；worker 使用唯一键和事务实现账本幂等。
 
 ## 计量与一致性

@@ -99,15 +99,16 @@ type Rule struct {
 	Action  string `json:"action"`
 }
 type Config struct {
-	CorrectionRevisions map[string]int64    `json:"correction_revisions,omitempty"`
-	Version             int64               `json:"version"`
-	Apps                map[string]App      `json:"apps"`
-	Keys                map[string]Key      `json:"keys"`
-	Providers           map[string]Provider `json:"providers"`
-	Models              map[string]Model    `json:"models"`
-	Routes              map[string]Route    `json:"routes"`
-	Users               map[string]User     `json:"users"`
-	Rules               []Rule              `json:"rules"`
+	CorrectionRevisions map[string]int64            `json:"correction_revisions,omitempty"`
+	Version             int64                       `json:"version"`
+	Apps                map[string]App              `json:"apps"`
+	Keys                map[string]Key              `json:"keys"`
+	Providers           map[string]Provider         `json:"providers"`
+	Models              map[string]Model            `json:"models"`
+	Routes              map[string]Route            `json:"routes"`
+	AppRoutes           map[string]map[string]Route `json:"app_routes,omitempty"`
+	Users               map[string]User             `json:"users"`
+	Rules               []Rule                      `json:"rules"`
 }
 
 func EmptyConfig() Config {
@@ -128,6 +129,10 @@ type Usage struct {
 	CachedReported bool  `json:"cached_tokens_reported,omitempty"`
 }
 type Event struct {
+	AppName       string    `json:"app_name,omitempty"`
+	RouteScope    string    `json:"route_scope,omitempty"`
+	RouteStrategy string    `json:"route_strategy,omitempty"`
+	ConfigVersion int64     `json:"config_version,omitempty"`
 	PayloadCipher string    `json:"payload_ciphertext,omitempty"`
 	GrayRun       string    `json:"gray_run,omitempty"`
 	ID            string    `json:"id"`

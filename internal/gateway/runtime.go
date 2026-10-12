@@ -386,6 +386,8 @@ func Main(mode string) {
 			os.Exit(1)
 		}
 	}
+	// 角色随心跳保存，运维页可识别同一服务器上的不同服务。
+	runtime.Engine.InstanceID = mode + ":" + runtime.Engine.InstanceID
 	if e = runtime.Engine.Refresh(startup); e != nil {
 		slog.Error("configuration unavailable", "error", e)
 		os.Exit(1)

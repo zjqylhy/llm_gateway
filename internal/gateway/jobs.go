@@ -79,6 +79,7 @@ func (s *MemoryStore) Alerts(_ context.Context, app string) ([]Alert, error) {
 }
 
 type GraySample struct {
+	Scope   string
 	RunID   string
 	Alias   string
 	ModelID string
@@ -91,7 +92,7 @@ type GraySampler interface {
 }
 
 func (s *SQLStore) GraySamples(c context.Context, since time.Time) ([]GraySample, error) {
-	rows, e := s.DB.QueryContext(c, `SELECT JSON_UNQUOTE(JSON_EXTRACT(payload,'$.alias')),model_id,COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.gray_run')),''),COUNT(*),SUM(status NOT IN ('success','reconciled')),MAX(CAST(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.duration_ms')) AS UNSIGNED)) FROM gw_attempts WHERE at>=? AND purpose='inference' AND status<>'started' AND JSON_EXTRACT(payload,'$.gray')=true GROUP BY JSON_UNQUOTE(JSON_EXTRACT(payload,'$.alias')),model_id,COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.gray_run')),'')`, since)
+	rows, e := s.DB.QueryContext(c, `SELECT COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.route_scope')),'global'),JSON_UNQUOTE(JSON_EXTRACT(payload,'$.alias')),model_id,COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.gray_run')),''),COUNT(*),SUM(status NOT IN ('success','reconciled')),MAX(CAST(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.duration_ms')) AS UNSIGNED)) FROM gw_attempts WHERE at>=? AND purpose='inference' AND status<>'started' AND JSON_EXTRACT(payload,'$.gray')=true GROUP BY COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.route_scope')),'global'),JSON_UNQUOTE(JSON_EXTRACT(payload,'$.alias')),model_id,COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.gray_run')),'')`, since)
 	if e != nil {
 		return nil, e
 	}
@@ -99,7 +100,7 @@ func (s *SQLStore) GraySamples(c context.Context, since time.Time) ([]GraySample
 	out := []GraySample{}
 	for rows.Next() {
 		var x GraySample
-		if e = rows.Scan(&x.Alias, &x.ModelID, &x.RunID, &x.Count, &x.Errors, &x.MaxMS); e != nil {
+		if e = rows.Scan(&x.Scope, &x.Alias, &x.ModelID, &x.RunID, &x.Count, &x.Errors, &x.MaxMS); e != nil {
 			return nil, e
 		}
 		out = append(out, x)
@@ -116,8 +117,13 @@ func (s *MemoryStore) GraySamples(c context.Context, since time.Time) ([]GraySam
 		if !x.Gray || x.Purpose != "inference" || x.Kind != "completed" {
 			continue
 		}
-		key := x.Alias + ":" + x.Model.ID + ":" + x.GrayRun
+		scope := x.RouteScope
+		if scope == "" {
+			scope = "global"
+		}
+		key := scope + ":" + x.Alias + ":" + x.Model.ID + ":" + x.GrayRun
 		v := out[key]
+		v.Scope = scope
 		v.Alias = x.Alias
 		v.ModelID = x.Model.ID
 		v.RunID = x.GrayRun
@@ -197,7 +203,7 @@ func RollbackGray(c context.Context, e *Engine, cfg Config) error {
 		return err
 	}
 	for _, x := range samples {
-		route, ok := cfg.Routes[x.Alias]
+		route, ok := scopedRoute(cfg, x.Scope, x.Alias)
 		if !ok || route.Gray.State != "running" || route.Gray.Candidate != x.ModelID || route.Gray.RunID != x.RunID || x.Count < route.Gray.MinSamples {
 			continue
 		}
@@ -205,13 +211,13 @@ func RollbackGray(c context.Context, e *Engine, cfg Config) error {
 			continue
 		}
 		changed, er := e.Store.Update(c, "system", "gray.auto_rollback", func(current *Config) error {
-			r := current.Routes[x.Alias]
-			if r.Gray.State != "running" || r.Gray.Candidate != x.ModelID || r.Gray.RunID != x.RunID {
+			r, ok := scopedRoute(*current, x.Scope, x.Alias)
+			if !ok || r.Gray.State != "running" || r.Gray.Candidate != x.ModelID || r.Gray.RunID != x.RunID {
 				return errors.New("gray configuration changed")
 			}
 			r.Gray.State = "rolled_back"
 			r.Gray.Percent = 0
-			current.Routes[x.Alias] = r
+			putScopedRoute(current, x.Scope, r)
 			return nil
 		})
 		if er != nil {
