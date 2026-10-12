@@ -1755,9 +1755,9 @@ function RecordTable({
       <table>
         <thead>
           <tr>
+            <th>调用时间（北京时间）</th>
             <th>应用</th>
             <th>请求 / 尝试</th>
-            <th>调用时间（北京时间）</th>
             <th>模型与用途</th>
             <th>状态</th>
             <th>用量来源</th>
@@ -1768,6 +1768,9 @@ function RecordTable({
         <tbody>
           {rows.map((x) => (
             <tr key={x.attempt_id}>
+              <td className="call-time" title={x.at}>
+                {callTime(x.at)}
+              </td>
               <td>
                 {x.app_name ||
                   apps.find((app) => app.id === x.app_id)?.name ||
@@ -1787,9 +1790,6 @@ function RecordTable({
                   {x.request_id.slice(0, 16)}…
                 </button>
                 <small className="mono">{x.attempt_id.slice(0, 16)}…</small>
-              </td>
-              <td className="call-time" title={x.at}>
-                {callTime(x.at)}
               </td>
               <td>
                 {x.model?.id || x.alias}
