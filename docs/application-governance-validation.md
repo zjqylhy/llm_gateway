@@ -31,3 +31,7 @@
 - 本机 Docker Desktop 引擎不可连接，未运行新增版本的完整 MySQL/Redis/Kafka/etcd 容器链路、压力或故障恢复验收；依赖环境开关的集成测试在普通 Go 测试中仍按原规则跳过。
 - SQL 只读核对和内存协议回归不等于新版本已完成云端端到端部署验证。后续发布应同步升级 gateway/admin/worker，并核对新事件快照在生产计量链路中保留。
 - 旧审计记录不会补造名称或路由快照；旧实例仍以未知角色显示，心跳过期后归入历史列表。
+
+## 用户授权后的云端验证
+
+上文“未部署”及容器验证范围为 PR 交付时的状态。2026-10-12 用户随后授权部署，已统一升级三个服务及维护命令，验证正式 HTTPS、真实应用路由/计量摘要、实例分组、Prometheus、成本明细与请求审计。一个确定不调用上游的拒绝请求通过真实计量链路保存了新快照，付费 attempt 数保持 10，最终计量无积压。部署版本、备份及验证边界见 [cloud-application-governance-deployment.md](cloud-application-governance-deployment.md)。
