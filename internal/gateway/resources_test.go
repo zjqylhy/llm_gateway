@@ -162,7 +162,7 @@ func TestCacheMemoryIsBoundedAndOversizedItemsBypass(t *testing.T) {
 func TestOfflineLedgerAndDedupeFailClosedAtCapacity(t *testing.T) {
 	g := NewMemoryGuard()
 	for i := 0; i < maxMemoryAttempts; i++ {
-		g.settled[fmt.Sprint(i)] = settlement{2, 1, 1}
+		g.settled[fmt.Sprint(i)] = settlement{Revision: 2, Tokens: 1, Micro: 1, Hash: Hash("")}
 	}
 	if err := g.Reserve(context.Background(), App{ID: "app"}, Reservation{ID: "overflow", AppID: "app", Month: "2026-10", Tokens: 1, Micro: 1}); !errors.Is(err, ErrUnavailable) {
 		t.Fatal("dedupe exceeded capacity", err)

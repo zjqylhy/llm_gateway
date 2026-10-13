@@ -85,7 +85,8 @@ func TestFallbackHasSeparateAttempts(t *testing.T) {
 		t.Fatalf("expected 2 attempts: %+v", events)
 	}
 	c, _ := e.Guard.Counters(context.Background(), "app", month(time.Now()))
-	if c.ReservedTokens != 0 || c.Tokens <= 0 {
+	// 主模型失败的费用未知，回退成功不应释放上一 attempt 的暴露额度。
+	if c.ReservedTokens <= 0 || c.ReservedMicro <= 0 || c.Tokens <= 0 {
 		t.Fatal(c)
 	}
 }

@@ -246,7 +246,7 @@ func TestRerankMissingAndInvalidUsageEstimated(t *testing.T) {
 				t.Fatal(w.Code, w.Body.String())
 			}
 			counts, _ := e.Guard.Counters(context.Background(), "app", month(time.Now()))
-			if counts.Tokens <= 0 || counts.Micro <= 0 || counts.ReservedTokens != 0 {
+			if counts.Tokens != 0 || counts.Micro != 0 || counts.ReservedTokens <= 0 || counts.ReservedMicro <= 0 {
 				t.Fatal(counts)
 			}
 		})
