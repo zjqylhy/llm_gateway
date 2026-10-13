@@ -12,6 +12,7 @@
 - 保留当前成功响应契约：普通 JSON 成功和 SSE `[DONE]` 均等待完成事件 Kafka ACK；即使 SQL 已保存但没有 ACK，也不伪装成功结束，Relay 后续补发。
 - 保留应用屏障、短期准入许可、generation、分区 owner/epoch、SQL 检查点、Redis 结算水位和 Kafka 安全消费位置。它们覆盖不同故障边界，不因图中步骤多而删除。
 - 基础设施仍为 MySQL、Redis、Kafka、etcd；不引入第四套财务存储，不把预算权威迁到另一套扣费机制。
+- 本轮只实现和验收单主 Redis。Sentinel 切主保护、Redis Cluster 适配与网络分区安全属于后续优化项，本轮不实现，也不宣称当前可直接接入分布式 Redis。
 
 ## 当前职责与收敛方式
 
@@ -39,6 +40,36 @@
 首次准备只预留完成事件上界，不再为 started 的 Kafka 补发保存一份 Outbox payload。started 账本与 attempt 元数据的物理空间独立测量和预算。
 
 Prepare、Redis 预占、Arm 三个步骤保留，是因为 MySQL 与 Redis 没有共同事务。prepared 证明尚未获准调用；inflight 证明可能已经调用。若只在 Redis 预占后第一次写 SQL，崩溃可能留下没有持久归属的预占；若 Prepare 后直接调用，恢复又无法区分预算拒绝与可能已经发生费用。
+
+## 事务提交边界与性能验证
+
+调用前有两个独立的短 MySQL 事务，不是一笔贯穿模型调用的长事务：
+
+```text
+Begin Prepare → SQL 状态/容量/准备记录 → Commit Prepare
+Redis Lua 检查及预占
+Begin Arm → SQL 开始账本及调用状态 → Commit Arm
+HTTP 调用模型，读取 JSON 或转发 SSE
+Begin Completion → SQL 完成事件及预留余额 → Commit Completion
+Kafka 发布并等待 ACK
+```
+
+etcd 许可读取或刷新在 SQL 事务之外完成；事务内只用持久控制行、generation、有效期及条件更新核验这份证据。Redis Lua、Kafka 网络发送、模型请求、响应读取、SSE 转发都不能放在 SQL 事务中。每次 Commit 明确成功后归还连接及释放事务锁，再进入下一外部操作。Commit 返回结果不确定时按持久状态核验，不以超时等同回滚，更不能直接进入模型调用。
+
+原方案本来就有调用前事务：`beginAdmission` 提交准备登记后才返回到 Redis Reserve；`SaveOutbox(started)` 提交后 `DurableBus.Publish` 才发送 Kafka。原方案也不持有 SQL 事务等待模型。本轮收敛不应宣称消除了此前不存在的“模型调用期间长事务”。
+
+| 每次正常主尝试的步骤 | 当前实现 | 拟议实现 |
+|---|---|---|
+| 调用前第一笔 SQL 事务 | admissions 登记及只读容量预检 | Prepare attempt、预留完成额度 |
+| 同步 Redis 预算操作 | 原子预占 | 原子预占并记录开始 hash |
+| 调用前第二笔 SQL 事务 | started Outbox、slots 与容量记账 | Arm 状态及同步开始账本 |
+| 调用前 Kafka 发布和 ACK | started 发布及 ACK | 移除 |
+| Worker 的 started 处理 | SQL 账本/检查点、Redis、Outbox 释放和水位/offset | 新事件移除，兼容旧事件重放 |
+| 尝试结束的单独 SQL 删除 | 删除 admissions，独立提交的单条语句 | 生命周期随完成保存/消费更新，不另删登记 |
+
+两笔前置 SQL 事务数不增加，但单笔工作量改变：Prepare 提前竞争容量行、写更完整的 attempt；Arm 把 started 的事件账本同步写入请求路径。JSON 元数据序列化、索引维护、锁等待和持久提交仍产生网关开销。因此“减少 Kafka 往返及后台重复工作”是确定的步骤变化，“端到端一定更快”不是已经成立的结论。
+
+验证要独立记录 Prepare/Arm/Completion 的持续时间、SQL 语句与提交次数、数据库行锁和连接池等待、started Kafka ACK 的原开销、主尝试及请求 P50/P95/P99、保护性拒绝率和 Worker 追平时间。按相同价格、额度、完成事件上界、可控上游、到达率和数据量做前后对照，并覆盖 Redis 拒绝后的 prepared 取消成本。不能仅用少一次 Commit 或表数减少证明性能改善。
 
 ## 数据与状态归属
 
@@ -111,6 +142,22 @@ attempt 的执行/财务记录是恢复来源，不能随着 Outbox GC 一并删
 去掉 started Kafka 后，新的开始证据仅由 MySQL 持久化。它保留进程崩溃和 Redis 丢失后的恢复能力，但失去“Kafka 也有一份 started”的额外副本。MySQL 数据库物理丢失或回退到旧备份时，必须依赖一致性备份/binlog 恢复开始证据；不能声称只靠 completed Kafka 就能找回所有 started-only 尝试。若要求保留 Kafka 独立的开始证据副本，应采用兼容收敛方案：仍发布 started，仅合并登记/预留、补齐未知费用保留和 GC。
 
 MySQL 必须采用实际可验证的持久提交配置和持久卷。该重构不声称覆盖 MySQL/Kafka 两套持久数据同时丢失，也不提供厂商侧 exactly-once 调用。对外的“可靠恢复”须说明其故障范围。
+
+## 分布式 Redis 后续优化项
+
+本轮不实现这些能力。原子预算预占只说明一个主节点内“读取额度、判断、增加预占”不被其他命令穿插，不证明切主之后已确认写入一定保留。实际厂商费用高于预估、held 暴露额度和财务修正的边界在分布式部署下仍存在。
+
+| 后续方向 | 初步实现思路 | 独立验收要求 |
+|---|---|---|
+| 多网关共享单主 | 所有网关对同应用/月使用相同预算 key，仍由 Lua 原子检查与预占 | 多实例预算争抢、超时重复调用和幂等取消 |
+| Sentinel 高可用 | 增加可替换 Redis 客户端；把主节点身份或拓扑代次变化接入准入冻结，禁止客户端发现新主后直接恢复付费。隔离旧调用方、切换 generation，以 MySQL prepared/inflight/held/settled 重建预算并核验后恢复 | 已确认预占尚未复制时强杀主节点、旧主隔离后继续接受连接、恢复旧 AOF；未核实期间没有新模型调用 |
+| Cluster 分片 | 使用 Cluster 客户端；同应用的月度总账、attempt、应用控制证据统一 hash tag，并把脚本访问的所有 key 显式传入 KEYS。全局许可/冻结不能直接跨槽读取，需要单独设计按应用的证据投影及 SQL Arm 屏障核验，不能把异步投影当作瞬时全局一致 | CROSSSLOT/重分片 TRYAGAIN、缺失 key、节点切换、应用控制投影滞后和同应用预算争抢 |
+| 减小写丢失窗口 | 评估 AOF 策略、最少副本写入约束及 WAIT；WAIT 必须在 EVAL 后使用同一物理连接，并检查超时结果。复制确认失败后不能直接换 ID 重试预算；按 attempt 核实和冻结 | 主节点 ACK 与复制之间的强杀、客户端确认超时但服务端已写入、丢失预占后不重复使用额度 |
+| 更严格的预算权威 | 若要求网络分区和切主期间仍不重复使用预算，另立 spec 评估具备已验证一致性保证的事务/共识存储或持久额度分配协议；Redis 可以保留限流和查询投影角色。单纯把存储名字换成 MySQL 并不自动证明灾难切换安全 | 明确一致性和持久性假设，对双主、旧备份、预算租约和恢复边界给出故障证明 |
+
+Cluster 按应用分片可以分散不同应用负载，但单个应用的一份预算仍必须由同一槽位原子决定。不能把同一总预算复制到多个分片后各自允许花完整额度。现有预算/attempt key 共享 `{app:...}`，但脚本还访问全局 ready/generation/permit/frozen 和没有同标签的应用控制 key，当前客户端也为 `redis.NewClient`，因此不是更换连接地址即可完成适配。
+
+切主事件的发现时延、旧主仍可写的窗口和新主预算回退都属于需要验证的问题；“最终可以从 SQL 重建”不能证明重建前接单不会超卖。WAIT 只能降低风险，不把 Redis 变成强一致存储。这些约束对应 [Redis Cluster 文档](https://redis.io/docs/latest/operate/oss_and_stack/management/scaling/)、[Sentinel 文档](https://redis.io/docs/latest/operate/oss_and_stack/management/sentinel/)及 [WAIT 一致性说明](https://redis.io/docs/latest/commands/wait/)。
 
 ## 实施顺序与验收
 
