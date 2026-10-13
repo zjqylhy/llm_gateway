@@ -132,7 +132,7 @@ func (a *Admin) applicationMetering(w http.ResponseWriter, r *http.Request) {
 		}
 		// SQL 控制正常并不保证短期许可仍有效；业务摘要必须反映 worker 停止的影响。
 		if global == "healthy" && a.Engine.Metering != nil {
-			if _, _, err := a.Engine.Metering.readPermit(c); err != nil {
+			if _, err := a.Engine.Metering.readPermit(c); err != nil {
 				global = "unavailable"
 			}
 		}

@@ -28,16 +28,24 @@ func (b *KafkaBus) Publish(c context.Context, e Event) error {
 	if err != nil {
 		return err
 	}
-	source := b.stream.Load()
-	if source == nil {
-		var id string
-		if err = b.Store.DB.QueryRowContext(c, `SELECT stream_id FROM gw_metering_stream WHERE id=1`).Scan(&id); err != nil || id == "" {
-			return ErrCheckpoint
-		}
-		b.stream.CompareAndSwap(nil, &id)
-		source = b.stream.Load()
+	if err = b.PrepareSource(c); err != nil {
+		return err
 	}
+	source := b.stream.Load()
 	return b.Writer.WriteMessages(c, kafka.Message{Key: []byte(e.AppID), Value: raw, Headers: []kafka.Header{{Key: "gw-stream-id", Value: []byte(*source)}}})
+}
+
+// 首次付费调用前缓存不可变来源身份，使 SQL 中断后的完成备用发布仍独立可用。
+func (b *KafkaBus) PrepareSource(c context.Context) error {
+	if b.stream.Load() != nil {
+		return nil
+	}
+	var id string
+	if err := b.Store.DB.QueryRowContext(c, `SELECT stream_id FROM gw_metering_stream WHERE id=1`).Scan(&id); err != nil || id == "" {
+		return ErrCheckpoint
+	}
+	b.stream.CompareAndSwap(nil, &id)
+	return nil
 }
 func (b *KafkaBus) Close() error { return b.Writer.Close() }
 

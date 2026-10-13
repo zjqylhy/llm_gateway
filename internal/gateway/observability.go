@@ -11,34 +11,43 @@ import (
 )
 
 type Metrics struct {
-	MeteringLag           prometheus.Gauge
-	MeteringPermit        prometheus.Gauge
-	MeteringUnchecked     prometheus.Gauge
-	MeteringAuditLast     prometheus.Gauge
-	MeteringAuditSeconds  prometheus.Histogram
-	MeteringAuditFailures prometheus.Counter
-	MeteringRotation      prometheus.Gauge
-	MeteringOutboxBytes   prometheus.Gauge
-	MeteringStages        *prometheus.HistogramVec
-	MeteringRejections    *prometheus.CounterVec
-	MeteringCommitBatch   prometheus.Histogram
-	Registry              *prometheus.Registry
-	Requests              *prometheus.CounterVec
-	Attempts              *prometheus.CounterVec
-	Tokens                *prometheus.CounterVec
-	Cost                  *prometheus.CounterVec
-	Latency               *prometheus.HistogramVec
-	Upstream              *prometheus.HistogramVec
-	First                 *prometheus.HistogramVec
-	CacheOps              *prometheus.CounterVec
-	Events                prometheus.Counter
-	Active                prometheus.Gauge
-	Config                prometheus.Gauge
-	Overhead              *prometheus.HistogramVec
-	Overload              *prometheus.CounterVec
-	Calls                 *prometheus.CounterVec
-	QPSLimits             *prometheus.GaugeVec
-	appState              appMetricState
+	MeteringLag             prometheus.Gauge
+	MeteringPermit          prometheus.Gauge
+	MeteringUnchecked       prometheus.Gauge
+	MeteringAuditLast       prometheus.Gauge
+	MeteringAuditSeconds    prometheus.Histogram
+	MeteringAuditFailures   prometheus.Counter
+	MeteringRotation        prometheus.Gauge
+	MeteringOutboxBytes     prometheus.Gauge
+	MeteringStages          *prometheus.HistogramVec
+	MeteringRejections      *prometheus.CounterVec
+	MeteringCommitBatch     prometheus.Histogram
+	Registry                *prometheus.Registry
+	Requests                *prometheus.CounterVec
+	Attempts                *prometheus.CounterVec
+	Tokens                  *prometheus.CounterVec
+	Cost                    *prometheus.CounterVec
+	Latency                 *prometheus.HistogramVec
+	Upstream                *prometheus.HistogramVec
+	First                   *prometheus.HistogramVec
+	CacheOps                *prometheus.CounterVec
+	Events                  prometheus.Counter
+	Active                  prometheus.Gauge
+	Config                  prometheus.Gauge
+	Overhead                *prometheus.HistogramVec
+	Overload                *prometheus.CounterVec
+	Calls                   *prometheus.CounterVec
+	QPSLimits               *prometheus.GaugeVec
+	APICalls                *prometheus.CounterVec
+	APILatency              *prometheus.HistogramVec
+	MeteringStates          *prometheus.GaugeVec
+	MeteringCompensationAge prometheus.Gauge
+	MeteringHeldMicro       prometheus.Gauge
+	MeteringSnapshot        prometheus.Gauge
+	MeteringOutboxLimit     prometheus.Gauge
+	MeteringGC              prometheus.Counter
+	MeteringGCFailures      prometheus.Counter
+	appState                appMetricState
 }
 
 func NewMetrics() *Metrics {
@@ -47,8 +56,18 @@ func NewMetrics() *Metrics {
 	m.QPSLimits = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "gateway_app_qps_limit", Help: "Applied application token-bucket QPS limit; zero means unlimited"}, []string{"app"})
 	m.Registry.MustRegister(m.Calls, m.QPSLimits)
 	m.initializeCalls("_unknown")
+	m.APICalls = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_api_calls_total", Help: "One client call per API; stream unknown before body validation, protective rejects remain errors", ConstLabels: prometheus.Labels{"source": ID("api_metrics_")}}, []string{"app", "api", "stream", "outcome", "http_status", "error_code"})
+	m.APILatency = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "gateway_api_seconds", Help: "Client request wall time including early refusals and cache hits", Buckets: []float64{.001, .005, .01, .03, .1, .3, 1, 3, 10, 30, 60, 120}}, []string{"app", "api", "stream"})
+	m.MeteringStates = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "gateway_metering_attempt_records", Help: "SQL lifecycle snapshot; use max across worker replicas"}, []string{"state"})
+	m.MeteringCompensationAge = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_metering_compensation_oldest_seconds", Help: "Age of oldest pending cancellation"})
+	m.MeteringHeldMicro = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_metering_held_micro", Help: "SQL expected held exposure in CNY micro, not confirmed charges"})
+	m.MeteringSnapshot = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_metering_snapshot_seconds", Help: "Last successful lifecycle snapshot time; stale snapshots are not healthy evidence"})
+	m.MeteringOutboxLimit = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_metering_outbox_limit_bytes", Help: "Configured global logical outbox limit; excludes metadata/indexes"})
+	m.MeteringGC = prometheus.NewCounter(prometheus.CounterOpts{Name: "gateway_metering_gc_removed_total", Help: "Delivered outbox metadata rows removed with persistent ledger proof"})
+	m.MeteringGCFailures = prometheus.NewCounter(prometheus.CounterOpts{Name: "gateway_metering_gc_errors_total", Help: "Failed bounded outbox cleanup operations"})
+	m.Registry.MustRegister(m.APICalls, m.APILatency, m.MeteringStates, m.MeteringCompensationAge, m.MeteringHeldMicro, m.MeteringSnapshot, m.MeteringOutboxLimit, m.MeteringGC, m.MeteringGCFailures)
 	m.MeteringStages = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "gateway_metering_stage_seconds", Help: "Metering operation duration including failed operations", Buckets: []float64{.001, .005, .01, .03, .05, .1, .25, .5, 1, 2, 5}}, []string{"stage", "kind", "result"})
-	m.MeteringRejections = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_metering_rejections_total", Help: "Metering admission or started persistence rejection reasons"}, []string{"reason"})
+	m.MeteringRejections = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_metering_rejections_total", Help: "Metering lifecycle admission rejection reasons"}, []string{"reason"})
 	m.MeteringCommitBatch = prometheus.NewHistogram(prometheus.HistogramOpts{Name: "gateway_metering_commit_batch_records", Help: "Contiguously settled records included in successful offset commits", Buckets: []float64{1, 2, 4, 8, 16, 32, 64, 128, 256}})
 	m.Registry.MustRegister(m.MeteringStages, m.MeteringRejections, m.MeteringCommitBatch)
 	m.MeteringLag = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_metering_lag_records", Help: "Captured Kafka end minus committed positions"})
@@ -63,12 +82,12 @@ func NewMetrics() *Metrics {
 	m.Registry.MustRegister(m.MeteringLag, m.MeteringPermit, m.MeteringUnchecked, m.MeteringAuditLast, m.MeteringAuditSeconds, m.MeteringAuditFailures)
 	m.Requests = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_requests_total", Help: "Completed gateway requests"}, []string{"app", "alias", "status", "cached"})
 	m.Attempts = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_attempts_total", Help: "Upstream attempts"}, []string{"app", "model", "purpose", "status", "quality"})
-	m.Tokens = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_tokens_total", Help: "Observed upstream token consumption"}, []string{"app", "model", "kind"})
-	m.Cost = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_cost_micro_total", Help: "Observed cost in CNY micro units"}, []string{"app", "model"})
+	m.Tokens = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_tokens_total", Help: "Observed token consumption by usage quality; estimates are not confirmed"}, []string{"app", "model", "kind", "quality"})
+	m.Cost = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_cost_micro_total", Help: "Observed cost estimates by quality, not a budget settlement ledger"}, []string{"app", "model", "quality"})
 	b := []float64{.001, .005, .01, .03, .05, .15, .5, 1, 2, 5, 15, 60, 120}
 	m.Latency = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "gateway_request_seconds", Help: "End to end gateway request latency", Buckets: b}, []string{"app", "alias"})
-	m.Upstream = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "gateway_attempt_seconds", Help: "Upstream attempt duration", Buckets: b}, []string{"model"})
-	m.First = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "gateway_first_token_seconds", Help: "Attempt to first forwarded event", Buckets: b}, []string{"model"})
+	m.Upstream = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "gateway_attempt_seconds", Help: "Attempt duration including admission before provider", Buckets: b}, []string{"app", "model"})
+	m.First = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "gateway_first_token_seconds", Help: "Attempt to first forwarded event", Buckets: b}, []string{"app", "model"})
 	m.CacheOps = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_cache_operations_total", Help: "Cache lookup outcomes"}, []string{"result"})
 	m.Events = prometheus.NewCounter(prometheus.CounterOpts{Name: "gateway_event_publish_errors_total", Help: "Durable event publication failures"})
 	m.Active = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_active_requests", Help: "Active authenticated requests"})
@@ -120,13 +139,13 @@ func (m *Metrics) Request(app, alias, status string, cached bool, t time.Duratio
 }
 func (m *Metrics) Attempt(e Event) {
 	m.Attempts.WithLabelValues(e.AppID, e.Model.ID, e.Purpose, e.Status, e.Quality).Inc()
-	m.Tokens.WithLabelValues(e.AppID, e.Model.ID, "input").Add(float64(e.Usage.Input))
-	m.Tokens.WithLabelValues(e.AppID, e.Model.ID, "output").Add(float64(e.Usage.Output))
-	m.Tokens.WithLabelValues(e.AppID, e.Model.ID, "cached_input").Add(float64(e.Usage.Cached))
-	m.Cost.WithLabelValues(e.AppID, e.Model.ID).Add(float64(e.CostMicro))
-	m.Upstream.WithLabelValues(e.Model.ID).Observe(float64(e.DurationMS) / 1000)
+	m.Tokens.WithLabelValues(e.AppID, e.Model.ID, "input", e.Quality).Add(float64(e.Usage.Input))
+	m.Tokens.WithLabelValues(e.AppID, e.Model.ID, "output", e.Quality).Add(float64(e.Usage.Output))
+	m.Tokens.WithLabelValues(e.AppID, e.Model.ID, "cached_input", e.Quality).Add(float64(e.Usage.Cached))
+	m.Cost.WithLabelValues(e.AppID, e.Model.ID, e.Quality).Add(float64(e.CostMicro))
+	m.Upstream.WithLabelValues(e.AppID, e.Model.ID).Observe(float64(e.DurationMS) / 1000)
 	if e.FirstMS > 0 {
-		m.First.WithLabelValues(e.Model.ID).Observe(float64(e.FirstMS) / 1000)
+		m.First.WithLabelValues(e.AppID, e.Model.ID).Observe(float64(e.FirstMS) / 1000)
 	}
 }
 func (m *Metrics) Cache(err error, hit bool) {

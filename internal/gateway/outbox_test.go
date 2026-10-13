@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -104,14 +105,9 @@ func durableTestEngine(t *testing.T) (*Engine, *testOutbox, *recordingBus, *atom
 	return e, s, transport, calls
 }
 
-func TestOutboxStartedFailureRejectsWithoutProvider(t *testing.T) {
-	e, s, transport, calls := durableTestEngine(t)
-	s.saveError = func(e Event) error {
-		if e.Kind == "started" {
-			return errors.New("SQL unavailable")
-		}
-		return nil
-	}
+func TestArmFailureRejectsWithoutProviderOrStartedKafka(t *testing.T) {
+	e, _, transport, calls := durableTestEngine(t)
+	e.Store = failedArmStore{e.Store.(*MemoryStore)}
 	w := call(t, e, "hello", false)
 	if w.Code != 503 || calls.Load() != 0 {
 		t.Fatal("unpersisted started invoked provider", w.Code, calls.Load())
@@ -170,8 +166,8 @@ func TestOutboxKafkaFailureSurvivesRelayWithoutProviderRetry(t *testing.T) {
 		t.Fatal("completion not saved")
 	}
 	rows, _ := e.Store.Records(context.Background(), Filter{})
-	if len(rows) != 0 {
-		t.Fatal("gateway updated ledger before consumption")
+	if len(rows) != 1 || rows[0].Kind != "started" || rows[0].Revision != 1 {
+		t.Fatal("Arm must persist start before provider; completion must wait for consumption", rows)
 	}
 	transport.fail = nil
 	restarted := &DurableBus{Store: s, Transport: transport}
@@ -276,7 +272,7 @@ func TestCancelledCallerDoesNotFreezeHealthyMetering(t *testing.T) {
 	s.saveError = func(Event) error { return context.Canceled }
 	c, cancel := context.WithCancel(context.Background())
 	cancel()
-	event := Event{ID: "cancelled:1", AttemptID: "cancelled", RequestID: "request", AppID: "app", Kind: "started", Revision: 1}
+	event := Event{ID: "cancelled:2", AttemptID: "cancelled", RequestID: "request", AppID: "app", Kind: "completed", Revision: 2}
 	if err := b.Publish(c, event); err == nil {
 		t.Fatal("cancelled caller admitted")
 	}
@@ -302,65 +298,92 @@ func TestApplicationBarrierDoesNotFreezeGlobalMetering(t *testing.T) {
 	}
 }
 
-type heldStartedOutbox struct {
-	*testOutbox
-	entered chan struct{}
-	release chan struct{}
+// 新 started 从 Arm 持久化，不能通过发布接口重新启用旧协议。
+func TestStartedPublicationIsRejectedWithoutBlockingCompletion(t *testing.T) {
+	store, transport := newTestOutbox(), &recordingBus{}
+	bus := &DurableBus{Store: store, Transport: transport, GlobalBytes: 512 << 20, AppBytes: 64 << 20}
+	start := Event{ID: "one:1", AttemptID: "one", RequestID: "request", AppID: "app", Kind: "started", Revision: 1}
+	if err := bus.Publish(context.Background(), start); !errors.Is(err, ErrUnavailable) {
+		t.Fatal(err)
+	}
+	if len(store.events) != 0 || len(transport.events) != 0 {
+		t.Fatal("started reached old outbox or Kafka path")
+	}
+	if err := bus.Publish(context.Background(), cancelEvent(start)); err != nil {
+		t.Fatal(err)
+	}
 }
 
-func (s heldStartedOutbox) SaveOutbox(c context.Context, e Event, global, app int64) error {
-	if e.Kind == "started" {
-		s.entered <- struct{}{}
-		select {
-		case <-s.release:
-		case <-c.Done():
-			return c.Err()
-		}
+// 旧 started 仅由迁移/重放 fixture 输入；正常网关不能调用此发布路径。
+func publishLegacyFixture(ctx context.Context, bus *DurableBus, event Event) error {
+	if event.Kind != "started" {
+		return bus.Publish(ctx, event)
 	}
-	return s.testOutbox.SaveOutbox(c, e, global, app)
+	var saveErr error
+	switch store := bus.Store.(type) {
+	case *SQLStore:
+		saveErr = saveFixtureOutbox(ctx, store, event, bus.GlobalBytes, bus.AppBytes)
+	case failedCompletionOutbox:
+		saveErr = saveFixtureOutbox(ctx, store.SQLStore, event, bus.GlobalBytes, bus.AppBytes)
+	default:
+		saveErr = bus.Store.SaveOutbox(ctx, event, bus.GlobalBytes, bus.AppBytes)
+	}
+	if err := saveErr; err != nil {
+		return err
+	}
+	if err := bus.Transport.Publish(ctx, event); err != nil {
+		return err
+	}
+	return bus.Store.PublishedOutbox(ctx, event, 0, true)
 }
 
-func TestBusyStartedDoesNotConsumeSQLBudgetOrBlockCompletion(t *testing.T) {
-	s := heldStartedOutbox{newTestOutbox(), make(chan struct{}, 8), make(chan struct{})}
-	transport := &recordingBus{}
-	b := &DurableBus{Store: s, Transport: transport, GlobalBytes: 512 << 20, AppBytes: 64 << 20}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	results := make(chan error, 8)
-	for i := 0; i < 8; i++ {
-		e := Event{ID: ID("event_"), AttemptID: ID("attempt_"), RequestID: "request", AppID: "app", Kind: "started", Revision: 1}
-		go func() { results <- b.Publish(ctx, e) }()
+// 只为旧 Kafka 格式的验收 fixture 构造旧 Outbox；生产保存接口仅接受 completed。
+func saveFixtureOutbox(c context.Context, s *SQLStore, e Event, globalLimit, appLimit int64) error {
+	if e.Kind != "started" {
+		return s.SaveOutbox(c, e, globalLimit, appLimit)
 	}
-	for i := 0; i < 8; i++ {
-		select {
-		case <-s.entered:
-		case <-ctx.Done():
-			t.Fatal("SQL saves did not enter", ctx.Err())
+	raw, err := eventBytes(e)
+	if err != nil {
+		return err
+	}
+	tx, err := s.beginMeteringTx(c, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = checkAppBarrier(c, tx, e.AppID, false); err != nil {
+		return err
+	}
+	global, app, err := outboxCapacity(c, tx, e.AppID, s.Metrics)
+	if err != nil {
+		return err
+	}
+	var hash string
+	err = tx.QueryRowContext(c, `SELECT payload_hash FROM gw_metering_outbox WHERE event_id=?`, e.ID).Scan(&hash)
+	if err == nil {
+		if hash != Hash(string(raw)) {
+			return ErrEventConflict
 		}
+		return tx.Commit()
 	}
-	released := false
-	defer func() {
-		if !released {
-			close(s.release)
-		}
-	}()
-	start := time.Now()
-	e := Event{ID: "busy:1", AttemptID: "busy", RequestID: "request", AppID: "app", Kind: "started", Revision: 1}
-	if err := b.Publish(ctx, e); !errors.Is(err, ErrUnavailable) || time.Since(start) > time.Second {
-		t.Fatal("started admission queued", err, time.Since(start))
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
 	}
-	e.Kind, e.Revision, e.ID = "completed", 2, "busy:2"
-	if err := b.Publish(ctx, e); err != nil {
-		t.Fatal("existing completion blocked", err)
+	delta := int64(len(raw)) + maxEventBytes
+	if delta > globalLimit-global || delta > appLimit-app {
+		return ErrOutboxCapacity
 	}
-	close(s.release)
-	released = true
-	for i := 0; i < 8; i++ {
-		if err := <-results; err != nil {
-			t.Fatal("held save failed", err)
-		}
+	if err = applyEventTx(c, tx, e); err != nil {
+		return err
 	}
-	if s.frozen || b.stopped.Load() {
-		t.Fatal("ordinary admission pressure froze metering")
+	if _, err = tx.ExecContext(c, `UPDATE gw_attempts SET reserved_remaining_bytes=?,start_payload=?,start_hash=? WHERE attempt_id=?`, maxEventBytes, string(raw), Hash(string(raw)), e.AttemptID); err != nil {
+		return err
 	}
+	if err = adjustCapacity(c, tx, e.AppID, delta); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(c, `INSERT INTO gw_metering_outbox(event_id,attempt_id,app_id,revision,payload,payload_hash,charged_bytes,next_retry_at) VALUES(?,?,?,?,?,?,?,UTC_TIMESTAMP(6))`, e.ID, e.AttemptID, e.AppID, e.Revision, raw, Hash(string(raw)), len(raw)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

@@ -171,6 +171,7 @@ func (e *Engine) handle(w http.ResponseWriter, r *http.Request, kind string) {
 		APIError(w, 400, "invalid_request_error", err.Error())
 		return
 	}
+	observeCallStream(w, req.Stream)
 	if !Contains(a.Models, req.Alias) {
 		APIError(w, 403, "model_not_allowed", "model is not allowed for this application")
 		return
@@ -501,28 +502,6 @@ func (e *Engine) attempt(ctx context.Context, cfg Config, a App, m Model, r Requ
 		route, _, _ := effectiveRoute(cfg, a.ID, r.Alias)
 		event.GrayRun = route.Gray.RunID
 	}
-	if _, ok := e.Store.(*SQLStore); ok {
-		if e.Metering == nil {
-			err = ErrUnavailable
-			return
-		}
-		var finish func()
-		raw, encodeErr := eventBytes(event)
-		if encodeErr != nil {
-			err = ErrUnavailable
-			return
-		}
-		limit := e.Bus.(*DurableBus).AppBytes
-		if a.OutboxBytes > 0 {
-			limit = a.OutboxBytes
-		}
-		ctx, finish, err = e.Metering.beginAdmission(ctx, a.ID, id, int64(len(raw))+maxEventBytes, limit)
-		if err != nil {
-			err = ErrUnavailable
-			return
-		}
-		defer finish()
-	}
 	limitID := Hash(m.ProviderID + ":" + m.Upstream)
 	if err = e.Guard.Rate(ctx, "model:"+limitID, m.RPM, time.Minute); err != nil {
 		if errors.Is(err, ErrLimit) {
@@ -536,27 +515,67 @@ func (e *Engine) attempt(ctx context.Context, cfg Config, a App, m Model, r Requ
 		}
 		return
 	}
-	res := Reservation{id, a.ID, event.Month, event.ReserveTokens, event.ReserveMicro}
-	if err = e.Guard.Reserve(ctx, a, res); err != nil {
+	lifecycle, ok := e.Store.(attemptLifecycle)
+	if !ok {
+		err = ErrUnavailable
 		return
 	}
-	if err = e.Bus.Publish(ctx, event); err != nil {
-		release := event
-		release.ID = id + ":2"
-		release.Revision = 2
-		release.Kind = "completed"
-		release.Status = "cancelled"
-		release.Quality = "reported"
-		release.Usage = Usage{}
-		release.CostMicro = 0
-		// 此路径确定没有调用厂商；持久化取消可防止迟到 started 重建预占。
-		cleanup, done := context.WithTimeout(context.WithoutCancel(ctx), 9*time.Second)
-		_ = e.Bus.Publish(cleanup, release)
-		done()
-		settle, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
-		_ = e.Guard.Settle(settle, release)
-		cancel()
+	if bus, ok := e.Bus.(*DurableBus); ok && bus.stopped.Load() {
 		err = ErrUnavailable
+		return
+	}
+	if bus, ok := e.Bus.(*DurableBus); ok {
+		if transport, ok := bus.Transport.(interface{ PrepareSource(context.Context) error }); ok {
+			if err = transport.PrepareSource(ctx); err != nil {
+				return
+			}
+		}
+	}
+	if _, sqlMode := e.Store.(*SQLStore); sqlMode {
+		if e.Metering == nil {
+			err = ErrUnavailable
+			return
+		}
+		limit := e.Bus.(*DurableBus).AppBytes
+		if a.OutboxBytes > 0 {
+			limit = a.OutboxBytes
+		}
+		var release func()
+		ctx, release, err = e.Metering.prepareAdmission(ctx, event, limit)
+		if err != nil {
+			err = ErrUnavailable
+			return
+		}
+		defer release()
+	} else if err = lifecycle.PrepareAttempt(ctx, event, 64<<20, 64<<20); err != nil {
+		return
+	}
+	ctx = context.WithValue(ctx, reservationHashKey{}, eventDigest(event))
+	res := Reservation{id, a.ID, event.Month, event.ReserveTokens, event.ReserveMicro}
+	if err = e.Guard.Reserve(ctx, a, res); err != nil {
+		reason := "redis_unavailable"
+		if errors.Is(err, ErrLimit) {
+			reason = "budget"
+		}
+		e.Metrics.meteringRejected(reason)
+		cleanup, done := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		_ = compensateAttempt(cleanup, lifecycle, e.Guard, event)
+		done()
+		return
+	}
+	if err = lifecycle.ArmAttempt(ctx, event); err != nil {
+		e.Metrics.meteringRejected("arm")
+		// 提交结果未知不等于回滚：取消 CAS 可能输给已提交的 Arm。
+		cleanup, done := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		cancelErr := compensateAttempt(cleanup, lifecycle, e.Guard, event)
+		done()
+		err = ErrUnavailable
+		if cancelErr != nil {
+			if financial != nil {
+				financial.Paid = true
+			}
+			err = ErrMeteringCompletion
+		}
 		return
 	}
 	upstreamStart := time.Now()
@@ -626,11 +645,6 @@ func (e *Engine) attempt(ctx context.Context, cfg Config, a App, m Model, r Requ
 	resp, openErr := OpenUpstream(ctx, e.Client, p, m, r, token)
 	if openErr != nil {
 		err = openErr
-		var ue *UpstreamError
-		if errors.As(err, &ue) && ue.Status < 500 {
-			event.Usage = Usage{}
-			event.Quality = "reported"
-		}
 		return
 	}
 	defer resp.Body.Close()
@@ -759,6 +773,7 @@ func (e *Engine) attempt(ctx context.Context, cfg Config, a App, m Model, r Requ
 		event.Usage.Total = event.Usage.Input + event.Usage.Output
 	}
 	if err != nil {
+		event.Quality = "estimated"
 		if committed {
 			observeCallError(w, "stream_interrupted")
 			_, _ = fmt.Fprintf(w, "data: {\"error\":{\"code\":\"stream_interrupted\",\"message\":\"upstream stream interrupted\"}}\n\n")

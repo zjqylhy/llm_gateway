@@ -186,7 +186,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 	}
 	publish := func(event Event) {
 		checkT.Helper()
-		if err := e.Bus.Publish(ctx, event); err != nil {
+		if err := publishLegacyFixture(ctx, e.Bus.(*DurableBus), event); err != nil {
 			checkT.Fatal(err)
 		}
 	}
@@ -219,13 +219,14 @@ func TestInfrastructureIntegration(t *testing.T) {
 	}
 	reconcile := func(app string) Counters {
 		checkT.Helper()
-		var tokens, micro int64
-		if err := s.DB.QueryRowContext(ctx, "SELECT COALESCE(SUM(tokens),0),COALESCE(SUM(cost_micro),0) FROM gw_attempts WHERE app_id=? AND purpose<>'request'", app).Scan(&tokens, &micro); err != nil {
-			checkT.Fatal(err)
+		groups, _, projectionErr := expectedQuotaFor(ctx, s, app)
+		if projectionErr != nil {
+			checkT.Fatal(projectionErr)
 		}
+		expected := groups[quotaKeys(app, month(time.Now()), "")[0]]
 		counts, err := e.Guard.Counters(ctx, app, month(time.Now()))
-		if err != nil || counts.Tokens != tokens || counts.Micro != micro || counts.ReservedTokens != 0 || counts.ReservedMicro != 0 {
-			checkT.Fatalf("SQL/Redis mismatch for %s: SQL=%d/%d Redis=%+v error=%v", app, tokens, micro, counts, err)
+		if err != nil || counts != expected {
+			checkT.Fatalf("SQL/Redis financial projection mismatch for %s: SQL=%+v Redis=%+v error=%v", app, expected, counts, err)
 		}
 		return counts
 	}
@@ -255,6 +256,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 		}
 	})
 	event := Event{ID: ID("event_"), RequestID: ID("request_"), AttemptID: ID("attempt_"), Revision: 1, Kind: "started", Purpose: "inference", AppID: "integration", At: time.Now().UTC(), Month: month(time.Now()), Status: "started", ReserveTokens: 100, ReserveMicro: 100, Model: Model{ID: "integration"}}
+	runCase("new_attempt_lifecycle_compensation_race_and_gc", func(t *testing.T) { testAttemptLifecycleInfrastructure(t, r, ctx) })
 	runCase("duplicate_out_of_order_and_correction", func(t *testing.T) {
 		if err := fixtureGuard.Reserve(ctx, App{ID: event.AppID}, Reservation{ID: event.AttemptID, AppID: event.AppID, Month: event.Month, Tokens: 100, Micro: 100}); err != nil {
 			t.Fatal(err)
@@ -725,17 +727,17 @@ func TestInfrastructureIntegration(t *testing.T) {
 		stopWorker()
 		defer startWorker()
 		base := Event{ID: "outbox-a:1", AttemptID: "outbox-a", RequestID: "outbox-request", AppID: "outbox-capacity", Kind: "started", Revision: 1, Purpose: "inference", At: time.Now().UTC(), Month: month(time.Now()), ReserveTokens: 100, ReserveMicro: 100}
-		if err := s.SaveOutbox(ctx, base, 8<<20, 2<<20); err != nil {
+		if err := saveFixtureOutbox(ctx, s, base, 8<<20, 2<<20); err != nil {
 			t.Fatal(err)
 		}
 		var n int
-		if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_attempts WHERE attempt_id=?`, base.AttemptID).Scan(&n); err != nil || n != 0 {
-			t.Fatal("producer wrote ledger", n, err)
+		if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_attempts WHERE attempt_id=?`, base.AttemptID).Scan(&n); err != nil || n != 1 {
+			t.Fatal("legacy start evidence missing", n, err)
 		}
 		another := base
 		another.ID = "outbox-a2:1"
 		another.AttemptID = "outbox-a2"
-		if err := s.SaveOutbox(ctx, another, 8<<20, 2<<20); !errors.Is(err, ErrOutboxCapacity) {
+		if err := saveFixtureOutbox(ctx, s, another, 8<<20, 2<<20); !errors.Is(err, ErrOutboxCapacity) {
 			t.Fatal("application capacity not enforced", err)
 		}
 		other := base
@@ -745,7 +747,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 		if err := fixtureGuard.Reserve(ctx, App{ID: other.AppID}, Reservation{other.AttemptID, other.AppID, other.Month, 100, 100}); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.SaveOutbox(ctx, other, 8<<20, 2<<20); err != nil {
+		if err := saveFixtureOutbox(ctx, s, other, 8<<20, 2<<20); err != nil {
 			t.Fatal("one application blocked another", err)
 		}
 		completed := base
@@ -772,18 +774,18 @@ func TestInfrastructureIntegration(t *testing.T) {
 		if err := lock.Rollback(); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.SaveOutbox(ctx, completed, 8<<20, 2<<20); err != nil {
+		if err := saveFixtureOutbox(ctx, s, completed, 8<<20, 2<<20); err != nil {
 			t.Fatal("duplicate completion consumed capacity", err)
 		}
 		wrongApp := completed
 		wrongApp.ID = "wrong-application:2"
 		wrongApp.AppID = other.AppID
-		if err := s.SaveOutbox(ctx, wrongApp, 8<<20, 2<<20); !errors.Is(err, ErrEventConflict) {
+		if err := saveFixtureOutbox(ctx, s, wrongApp, 8<<20, 2<<20); !errors.Is(err, ErrEventConflict) {
 			t.Fatal("completion used another application's reservation", err)
 		}
 		conflict := completed
 		conflict.CostMicro++
-		if err := s.SaveOutbox(ctx, conflict, 8<<20, 2<<20); !errors.Is(err, ErrEventConflict) {
+		if err := saveFixtureOutbox(ctx, s, conflict, 8<<20, 2<<20); !errors.Is(err, ErrEventConflict) {
 			t.Fatal("outbox conflict ignored", err)
 		}
 		if err := fixtureGuard.Reserve(ctx, App{ID: base.AppID}, Reservation{base.AttemptID, base.AppID, base.Month, 100, 100}); err != nil {
@@ -830,7 +832,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 		if err := fixtureGuard.Reserve(ctx, App{ID: started.AppID}, Reservation{started.AttemptID, started.AppID, started.Month, 100, 100}); err != nil {
 			t.Fatal(err)
 		}
-		if err := bus.Publish(ctx, started); err != nil {
+		if err := publishLegacyFixture(ctx, bus, started); err != nil {
 			t.Fatal(err)
 		}
 		completed := started
@@ -909,7 +911,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 		if err := fixtureGuard.Reserve(ctx, App{ID: started.AppID}, Reservation{started.AttemptID, started.AppID, started.Month, 100, 100}); err != nil {
 			t.Fatal(err)
 		}
-		if err := bus.Publish(ctx, started); err != nil {
+		if err := publishLegacyFixture(ctx, bus, started); err != nil {
 			t.Fatal(err)
 		}
 		completed := started
@@ -952,7 +954,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 					failures <- err
 					return
 				}
-				failures <- s.SaveOutbox(ctx, event, 512<<20, 128<<20)
+				failures <- saveFixtureOutbox(ctx, s, event, 512<<20, 128<<20)
 			}(events[i])
 		}
 		tasks.Wait()
@@ -968,7 +970,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 		duplicate.Kind, duplicate.Revision, duplicate.Status, duplicate.Quality = "completed", 2, "cancelled", "reported"
 		duplicateErrors := make(chan error, 16)
 		for i := 0; i < 16; i++ {
-			go func() { duplicateErrors <- s.SaveOutbox(ctx, duplicate, 512<<20, 128<<20) }()
+			go func() { duplicateErrors <- saveFixtureOutbox(ctx, s, duplicate, 512<<20, 128<<20) }()
 		}
 		for i := 0; i < 16; i++ {
 			if err := <-duplicateErrors; err != nil {
@@ -982,7 +984,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 			event.Revision = 2
 			event.Status = "cancelled"
 			event.Quality = "reported"
-			if err := e.Bus.Publish(ctx, event); err != nil {
+			if err := publishLegacyFixture(ctx, e.Bus.(*DurableBus), event); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -1002,6 +1004,16 @@ func TestInfrastructureIntegration(t *testing.T) {
 	})
 	runCase("offline_audit_requires_evidence_before_resume", func(t *testing.T) {
 		drain()
+		// 本套用例手动启停消费者，未启动维护 goroutine；先完成先前故障留下的
+		// prepared 取消补偿，才能对照唯一刻意保留的 inflight 未知费用。
+		wait("unarmed fault compensation completes", func() bool {
+			if err := r.CompensateOnce(ctx); err != nil {
+				return false
+			}
+			var pending int
+			err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_attempts WHERE execution_phase='prepared' OR compensation_state='pending'`).Scan(&pending)
+			return err == nil && pending == 0
+		})
 		stopWorker()
 		if _, err := AuditMetering(ctx, r); err == nil {
 			t.Fatal("audit did not require writer acknowledgement")
@@ -1089,7 +1101,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 		completed.Usage = Usage{Input: 10, Output: 20, Total: 30}
 		completed.CostMicro = 40
 		for _, event := range []Event{started, completed} {
-			if err := s.SaveOutbox(ctx, event, 512<<20, 64<<20); err != nil {
+			if err := saveFixtureOutbox(ctx, s, event, 512<<20, 64<<20); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -1394,6 +1406,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 		}
 	})
 	runCase("recreated_topic_refuses_old_source_replay", func(t *testing.T) {
+		testLifecycleMigration(t, r, ctx)
 		t.Setenv("GW_METERING_RECOVERY_ACK", "writers-stopped")
 		plan, err := PlanMeteringRecovery(ctx, r)
 		if err != nil {

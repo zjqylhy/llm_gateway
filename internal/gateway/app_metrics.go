@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 )
 
 // 错误标签由网关定义，避免任意上游错误文本造成高基数。
@@ -60,6 +61,7 @@ type callWriter struct {
 	status  int
 	written bool
 	code    string
+	stream  string
 }
 
 func (w *callWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
@@ -105,6 +107,20 @@ func observeCallError(w http.ResponseWriter, code string) {
 	}
 }
 
+func observeCallStream(w http.ResponseWriter, stream bool) {
+	for range 16 {
+		if observed, ok := w.(*callWriter); ok {
+			observed.stream = strconv.FormatBool(stream)
+			return
+		}
+		unwrapper, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return
+		}
+		w = unwrapper.Unwrap()
+	}
+}
+
 func (e *Engine) observeCalls(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" || !Contains([]string{"/v1/chat/completions", "/v1/embeddings", "/v1/rerank", "/v1/reranks"}, r.URL.Path) {
@@ -116,7 +132,8 @@ func (e *Engine) observeCalls(next http.Handler) http.Handler {
 		if app, _, valid := e.authenticate(r); valid {
 			appID = app.ID
 		}
-		observed := &callWriter{ResponseWriter: w, status: 200}
+		observed := &callWriter{ResponseWriter: w, status: 200, stream: "unknown"}
+		started := time.Now()
 		defer func() {
 			outcome := "success"
 			code := observed.code
@@ -133,6 +150,8 @@ func (e *Engine) observeCalls(next http.Handler) http.Handler {
 				}
 			}
 			e.Metrics.Calls.WithLabelValues(appID, outcome, strconv.Itoa(observed.status), code).Inc()
+			e.Metrics.APICalls.WithLabelValues(appID, r.URL.Path, observed.stream, outcome, strconv.Itoa(observed.status), code).Inc()
+			e.Metrics.APILatency.WithLabelValues(appID, r.URL.Path, observed.stream).Observe(time.Since(started).Seconds())
 		}()
 		next.ServeHTTP(observed, r)
 	})

@@ -83,7 +83,7 @@ func (r *Runtime) AuditApplication(parent context.Context, app, actor, reason st
 	}
 	if err = waitMetering(c, func() (bool, error) {
 		var active int
-		err := s.DB.QueryRowContext(c, `SELECT COUNT(*) FROM gw_metering_admissions WHERE app_id=?`, app).Scan(&active)
+		err := s.DB.QueryRowContext(c, `SELECT COUNT(*) FROM gw_attempts WHERE app_id=? AND (execution_phase IN ('prepared','inflight') OR compensation_state='pending')`, app).Scan(&active)
 		return active == 0, err
 	}); err != nil {
 		return report, err
@@ -190,20 +190,19 @@ func (r *Runtime) compareApplication(c context.Context, report ApplicationAudit)
 				return report, errors.New("attempt hash mismatch")
 			}
 			v := expected[e.Month]
+			_, applied := billingExposure(e)
 			if e.Kind == "started" {
 				report.Pending++
-				if fields["reserved"] != "1" || value("revision") != 0 || value("rt") != e.ReserveTokens || value("rm") != e.ReserveMicro {
+				if fields["reserved"] != "1" || value("revision") != 0 || value("rt") != applied.ReservedTokens || value("rm") != applied.ReservedMicro {
 					return report, errors.New("pending reservation mismatch")
 				}
-				v.ReservedTokens += e.ReserveTokens
-				v.ReservedMicro += e.ReserveMicro
-			} else {
-				if value("revision") != e.Revision || value("tokens") != e.Usage.Total || value("micro") != e.CostMicro {
-					return report, errors.New("settled usage mismatch")
-				}
-				v.Tokens += e.Usage.Total
-				v.Micro += e.CostMicro
+			} else if value("revision") != e.Revision || value("tokens") != applied.Tokens || value("micro") != applied.Micro || value("rt") != applied.ReservedTokens || value("rm") != applied.ReservedMicro {
+				return report, errors.New("settlement or held exposure mismatch")
 			}
+			v.Tokens += applied.Tokens
+			v.Micro += applied.Micro
+			v.ReservedTokens += applied.ReservedTokens
+			v.ReservedMicro += applied.ReservedMicro
 			expected[e.Month] = v
 			keys[q[1]] = true
 		}
@@ -339,7 +338,7 @@ func (a *Admin) meteringStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	permitValid := false
 	if a.Engine.Metering != nil {
-		_, _, err := a.Engine.Metering.readPermit(c)
+		_, err := a.Engine.Metering.readPermit(c)
 		permitValid = err == nil
 	}
 	JSON(w, map[string]any{"state": state, "generation": gen, "reason": reason, "reports": reports, "applications": apps, "next": next, "undelivered_events": undelivered, "permit_valid": permitValid})

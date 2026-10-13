@@ -70,7 +70,6 @@ func NewSQLStore(c context.Context, dsn string) (*SQLStore, error) {
 func (s *SQLStore) Migrate(c context.Context) error {
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS gw_metering_apps (app_id VARCHAR(64) PRIMARY KEY, state VARCHAR(16) NOT NULL, generation VARCHAR(64) NOT NULL, reason VARCHAR(64) NOT NULL, report_id VARCHAR(64) NOT NULL, checked_at DATETIME(6) NULL)`,
-		`CREATE TABLE IF NOT EXISTS gw_metering_admissions (attempt_id VARCHAR(64) PRIMARY KEY, app_id VARCHAR(64) NOT NULL, at DATETIME(6) NOT NULL, INDEX(app_id,at))`,
 		`CREATE TABLE IF NOT EXISTS gw_metering_reports (id VARCHAR(64) PRIMARY KEY, app_id VARCHAR(64) NOT NULL, actor VARCHAR(128) NOT NULL, reason VARCHAR(128) NOT NULL, passed BOOLEAN NOT NULL, at DATETIME(6) NOT NULL, payload MEDIUMBLOB NOT NULL, INDEX(app_id,at))`,
 		`CREATE TABLE IF NOT EXISTS gw_config (id INT PRIMARY KEY, version BIGINT NOT NULL, payload JSON NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS gw_audit (id VARCHAR(64) PRIMARY KEY, actor VARCHAR(128) NOT NULL, action VARCHAR(128) NOT NULL, version BIGINT NOT NULL, at DATETIME(6) NOT NULL)`,
@@ -83,7 +82,6 @@ func (s *SQLStore) Migrate(c context.Context) error {
 		`CREATE TABLE IF NOT EXISTS gw_metering_checkpoint (partition_id INT PRIMARY KEY, base_offset BIGINT NOT NULL, next_offset BIGINT NOT NULL, anchor_offset BIGINT NOT NULL, anchor_hash CHAR(64) NOT NULL, owner_epoch BIGINT NOT NULL, kafka_generation INT NOT NULL, owner_id VARCHAR(256) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS gw_metering_recovery (id CHAR(64) PRIMARY KEY, manifest MEDIUMBLOB NOT NULL, phase VARCHAR(32) NOT NULL, updated_at DATETIME(6) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS gw_metering_capacity (id VARCHAR(80) PRIMARY KEY, used_bytes BIGINT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS gw_outbox_slots (attempt_id VARCHAR(64) PRIMARY KEY, app_id VARCHAR(64) NOT NULL, remaining_bytes BIGINT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS gw_usage_corrections (operation_id CHAR(64) PRIMARY KEY, input_hash CHAR(64) NOT NULL, payload MEDIUMBLOB NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS gw_metering_outbox (event_id VARCHAR(128) PRIMARY KEY, attempt_id VARCHAR(64) NOT NULL, app_id VARCHAR(64) NOT NULL, revision BIGINT NOT NULL, payload MEDIUMBLOB NULL, payload_hash CHAR(64) NOT NULL, charged_bytes BIGINT NOT NULL, published BOOLEAN NOT NULL DEFAULT 0, delivered BOOLEAN NOT NULL DEFAULT 0, claim_epoch BIGINT NOT NULL DEFAULT 0, retry_count INT NOT NULL DEFAULT 0, lease_until DATETIME(6) NULL, next_retry_at DATETIME(6) NOT NULL, INDEX(published,delivered,next_retry_at), INDEX(attempt_id))`,
 	}
@@ -93,6 +91,9 @@ func (s *SQLStore) Migrate(c context.Context) error {
 		}
 	}
 	if _, err := s.DB.ExecContext(c, `INSERT IGNORE INTO gw_metering_control(id,state,reason,generation,updated_at) VALUES(1,'healthy','',?,UTC_TIMESTAMP(6))`, ID("gen_")); err != nil {
+		return err
+	}
+	if err := s.migrateAttemptLifecycle(c); err != nil {
 		return err
 	}
 	b, _ := json.Marshal(EmptyConfig())
@@ -183,7 +184,12 @@ func applyEventTx(c context.Context, tx *sql.Tx, e Event) error {
 	if Hash(string(oldRaw)) != Hash(string(newRaw)) {
 		return ErrEventConflict
 	}
-	_, err = tx.ExecContext(c, `INSERT INTO gw_attempts(attempt_id,request_id,app_id,department,model_id,status,purpose,revision,tokens,cost_micro,at,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE attempt_id=attempt_id`, e.AttemptID, e.RequestID, e.AppID, e.Department, e.Model.ID, e.Status, e.Purpose, e.Revision, e.Usage.Total, e.CostMicro, e.At, string(b))
+	billing, _ := billingExposure(e)
+	phase := "inflight"
+	if e.Kind == "completed" {
+		phase = "completed"
+	}
+	_, err = tx.ExecContext(c, `INSERT INTO gw_attempts(attempt_id,request_id,app_id,department,model_id,status,purpose,revision,tokens,cost_micro,at,payload,execution_phase,billing_state) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE attempt_id=attempt_id`, e.AttemptID, e.RequestID, e.AppID, e.Department, e.Model.ID, e.Status, e.Purpose, e.Revision, e.Usage.Total, e.CostMicro, e.At, string(b), phase, billing)
 	if err != nil {
 		return err
 	}
@@ -208,14 +214,15 @@ func applyEventTx(c context.Context, tx *sql.Tx, e Event) error {
 			return ErrEventConflict
 		}
 	}
-	_, err = tx.ExecContext(c, `UPDATE gw_attempts SET status=?,revision=?,tokens=?,cost_micro=?,payload=? WHERE attempt_id=? AND revision<?`, e.Status, e.Revision, e.Usage.Total, e.CostMicro, string(b), e.AttemptID, e.Revision)
+	_, err = tx.ExecContext(c, `UPDATE gw_attempts SET status=?,revision=?,tokens=?,cost_micro=?,payload=?,billing_state=?,execution_phase=CASE WHEN execution_phase='cancelled' THEN 'cancelled' WHEN execution_phase='prepared' AND ?='started' THEN 'prepared' ELSE ? END WHERE attempt_id=? AND revision<?`, e.Status, e.Revision, e.Usage.Total, e.CostMicro, string(b), billing, e.Kind, phase, e.AttemptID, e.Revision)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 func where(f Filter) (string, []any) {
-	parts := []string{"1=1"}
+	// Prepare 只是持久准入意图，不能把尚未 Arm 的快照当成已调用记录。
+	parts := []string{"execution_phase<>'prepared'", "compensation_state<>'pending'"}
 	args := []any{}
 	add := func(q string, x any) { parts = append(parts, q); args = append(args, x) }
 	if f.AppID != "" {

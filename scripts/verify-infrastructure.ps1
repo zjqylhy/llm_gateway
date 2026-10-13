@@ -1,6 +1,7 @@
-param([string]$ProjectName = 'llm-gateway-integration', [switch]$Reliability, [switch]$SkipPressure)
+param([string]$ProjectName = 'llm-gateway-integration', [switch]$Reliability, [switch]$SkipPressure, [ValidateRange(0,600)][int]$SustainedSeconds = 0)
 $ErrorActionPreference = 'Stop'
 if ($SkipPressure -and -not $Reliability) { throw 'SkipPressure requires Reliability' }
+if ($SustainedSeconds -and (-not $Reliability -or $SkipPressure)) { throw 'SustainedSeconds requires full Reliability acceptance' }
 $root = Split-Path $PSScriptRoot -Parent
 Set-Location -LiteralPath $root
 $values = @{}
@@ -23,6 +24,7 @@ if ($run -notmatch '^gw_acceptance_[a-f0-9]{12}$') { throw 'Invalid acceptance r
 $saved = @{}
 $testEnv = @{
     GW_RUN_INFRA_TESTS = '1'
+    GW_RELIABILITY_SUSTAINED_SECONDS = "$SustainedSeconds"
     GW_INFRA_RUN_ID = $run
     GW_MYSQL_DSN = "gateway:$($values['GW_LOCAL_DB_PASSWORD'])@tcp(127.0.0.1:13306)/${run}?parseTime=true&charset=utf8mb4"
     GW_MASTER_KEY = $values['GW_MASTER_KEY']
@@ -125,12 +127,13 @@ try {
     Write-Host "独立验收资源：$run；输出：$logPath"
     $testName = '^TestInfrastructureIntegration$'
     if ($Reliability) { $testName = '^TestReliabilityIntegration$' }
-    & go test ./internal/gateway -run $testName -count=1 -v -timeout 12m 2>&1 | Tee-Object -FilePath $logPath
+    $testMinutes = 12 + [int][Math]::Ceiling($SustainedSeconds / 60)
+    & go test ./internal/gateway -run $testName -count=1 -v -timeout "${testMinutes}m" 2>&1 | Tee-Object -FilePath $logPath
     if ($LASTEXITCODE) { throw "Infrastructure acceptance failed; see $logPath" }
 } finally {
     foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process') }
     if ($Reliability) {
-        foreach ($role in @('gateway-1', 'gateway-2', 'worker', 'upstream')) {
+        foreach ($role in @('gateway-1', 'gateway-2', 'gateway-probe', 'worker', 'upstream')) {
             $containerName = "$run-$role"
             # 只清理本次随机名称的角色；强制停止中断的测试并同步删除其匿名卷。
             $ownedContainer = & docker ps -aq --filter "name=^/${containerName}$" --filter "label=llm-gateway.acceptance=$run"

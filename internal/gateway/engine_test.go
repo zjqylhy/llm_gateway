@@ -131,10 +131,16 @@ func (b failedBus) Publish(c context.Context, e Event) error {
 	return b.Delegate.Publish(c, e)
 }
 func (b failedBus) Close() error { return nil }
+
+type failedArmStore struct{ *MemoryStore }
+
+func (s failedArmStore) ArmAttempt(context.Context, Event) error {
+	return errors.New("injected Arm commit failure")
+}
 func TestMeteringFailureDoesNotCallProvider(t *testing.T) {
 	var calls atomic.Int32
 	e := testEngine(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); MockProvider(w, r) })
-	e.Bus = failedBus{e.Bus, false}
+	e.Store = failedArmStore{e.Store.(*MemoryStore)}
 	w := call(t, e, "hello", false)
 	if w.Code != 503 || calls.Load() != 0 {
 		t.Fatalf("unmetered call: %d %d", w.Code, calls.Load())
