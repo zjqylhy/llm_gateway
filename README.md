@@ -63,3 +63,5 @@ GitHub Actions 配置包含 Linux race 测试、构建与 Docker 镜像构建。
 ![本地验收：降级后的成本与待核实记录](docs/images/console.jpg)
 
 当前计量生命周期与恢复约束见 [重构 spec](docs/metering-flow-refactor-spec.md) 和 [运行手册](docs/operations.md)。Prepare/Redis 预占/Arm 构成调用前边界，开始账本同步写 SQL，完成事件保留 SQL/Kafka 双通道；旧 admissions/slots 停写迁移成功后删除。分布式 Redis 与云长期容量仍为后续验证项。
+
+重构实现、故障回归、五分钟负载与同环境前后对照见 [计量生命周期验收报告](docs/metering-lifecycle-refactor-report.md)。报告明确当前仍有容量锁成本和较高突发拒绝，未宣称云长期容量或最大吞吐达标。

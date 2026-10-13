@@ -1,0 +1,565 @@
+{
+  "current": {
+    "run": "gw_acceptance_4eb1311b08d7",
+    "pressure": [
+      {
+        "concurrency": 10,
+        "requests": 500,
+        "stream": false,
+        "failed": 0,
+        "protected_rejections": 423,
+        "accepted": 77,
+        "accepted_rps": 18.482044261951724,
+        "accepted_p95_ms": 570.159,
+        "accepted_p99_ms": 593.231,
+        "seconds": 4.1662058,
+        "rps": 120.01327442825796,
+        "p50_ms": 4.271,
+        "p95_ms": 499.971,
+        "p99_ms": 570.106,
+        "ledger_drain_seconds": 5.0468798
+      },
+      {
+        "concurrency": 50,
+        "requests": 1000,
+        "stream": false,
+        "failed": 0,
+        "protected_rejections": 919,
+        "accepted": 81,
+        "accepted_rps": 19.121808968454186,
+        "accepted_p95_ms": 2132.249,
+        "accepted_p99_ms": 2263.225,
+        "seconds": 4.2360009,
+        "rps": 236.07171565992823,
+        "p50_ms": 70.828,
+        "p95_ms": 1346.819,
+        "p99_ms": 2091.83,
+        "ledger_drain_seconds": 5.3551617
+      },
+      {
+        "concurrency": 100,
+        "requests": 2000,
+        "stream": false,
+        "failed": 0,
+        "protected_rejections": 1911,
+        "accepted": 89,
+        "accepted_rps": 17.343869077719106,
+        "accepted_p95_ms": 2095.15,
+        "accepted_p99_ms": 2286.53,
+        "seconds": 5.1314963,
+        "rps": 389.749866915036,
+        "p50_ms": 109.993,
+        "p95_ms": 1005.496,
+        "p99_ms": 1912.29,
+        "ledger_drain_seconds": 5.3604424999999996
+      },
+      {
+        "concurrency": 50,
+        "requests": 200,
+        "stream": true,
+        "failed": 0,
+        "protected_rejections": 128,
+        "accepted": 72,
+        "accepted_rps": 21.045846447282813,
+        "accepted_p95_ms": 2152.032,
+        "accepted_p99_ms": 2265.64,
+        "seconds": 3.4211026,
+        "rps": 58.46068457578559,
+        "p50_ms": 618.068,
+        "p95_ms": 2098.669,
+        "p99_ms": 2222.483,
+        "accepted_first_event_p95_ms": 1506.011,
+        "ledger_drain_seconds": 4.9421986
+      }
+    ],
+    "fixed_arrival": [
+      {
+        "offered_rps": 2,
+        "offered_seconds": 20,
+        "stream": false,
+        "slow_upstream": false,
+        "applications": 2,
+        "requests": 40,
+        "accepted": 40,
+        "protected_rejections": 0,
+        "scheduler_dropped": 0,
+        "protocol_failures": 0,
+        "accepted_p95_ms": 113.923,
+        "accepted_p99_ms": 117.565,
+        "wall_seconds": 19.6034423,
+        "ledger_drain_seconds": 0.2089383,
+        "max_dispatch_lag_ms": 0.544
+      },
+      {
+        "offered_rps": 5,
+        "offered_seconds": 20,
+        "stream": false,
+        "slow_upstream": false,
+        "applications": 2,
+        "requests": 100,
+        "accepted": 100,
+        "protected_rejections": 0,
+        "scheduler_dropped": 0,
+        "protocol_failures": 0,
+        "accepted_p95_ms": 102.546,
+        "accepted_p99_ms": 106.513,
+        "wall_seconds": 19.8912955,
+        "ledger_drain_seconds": 0.2086856,
+        "max_dispatch_lag_ms": 0.579
+      },
+      {
+        "offered_rps": 10,
+        "offered_seconds": 20,
+        "stream": false,
+        "slow_upstream": false,
+        "applications": 2,
+        "requests": 200,
+        "accepted": 200,
+        "protected_rejections": 0,
+        "scheduler_dropped": 0,
+        "protocol_failures": 0,
+        "accepted_p95_ms": 198.575,
+        "accepted_p99_ms": 252.967,
+        "wall_seconds": 20.0664246,
+        "ledger_drain_seconds": 0.0032369,
+        "max_dispatch_lag_ms": 1.007
+      },
+      {
+        "offered_rps": 2,
+        "offered_seconds": 20,
+        "stream": true,
+        "slow_upstream": false,
+        "applications": 2,
+        "requests": 40,
+        "accepted": 40,
+        "protected_rejections": 0,
+        "scheduler_dropped": 0,
+        "protocol_failures": 0,
+        "accepted_p95_ms": 116.757,
+        "accepted_p99_ms": 119.315,
+        "accepted_first_event_p95_ms": 41.908,
+        "wall_seconds": 19.584342200000002,
+        "ledger_drain_seconds": 0.2089432,
+        "max_dispatch_lag_ms": 0.611
+      },
+      {
+        "offered_rps": 2,
+        "offered_seconds": 20,
+        "stream": false,
+        "slow_upstream": true,
+        "applications": 2,
+        "requests": 40,
+        "accepted": 40,
+        "protected_rejections": 0,
+        "scheduler_dropped": 0,
+        "protocol_failures": 0,
+        "accepted_p95_ms": 370.938,
+        "accepted_p99_ms": 396.721,
+        "wall_seconds": 19.8386427,
+        "ledger_drain_seconds": 0.2075655,
+        "max_dispatch_lag_ms": 0.712
+      }
+    ],
+    "burst_overhead": {
+      "count": 329,
+      "mean_ms": 725.3688243373856
+    },
+    "burst_gateway_stages": [
+      {
+        "stage": "kafka_ack",
+        "kind": "completed",
+        "count": 329,
+        "mean_ms": 1.6717118358662608
+      },
+      {
+        "stage": "kafka_ack",
+        "kind": "request",
+        "count": 387,
+        "mean_ms": 1.74064923255814
+      },
+      {
+        "stage": "outbox_mark",
+        "kind": "completed",
+        "count": 329,
+        "mean_ms": 20.220273954407297
+      },
+      {
+        "stage": "outbox_mark",
+        "kind": "request",
+        "count": 387,
+        "mean_ms": 17.925973865633075
+      },
+      {
+        "stage": "outbox_save",
+        "kind": "completed",
+        "count": 329,
+        "mean_ms": 23.486352389057753
+      },
+      {
+        "stage": "outbox_save",
+        "kind": "request",
+        "count": 387,
+        "mean_ms": 347.7150015633075
+      },
+      {
+        "stage": "outbox_capacity_lock",
+        "kind": "other",
+        "count": 4072,
+        "mean_ms": 83.37485284602162
+      },
+      {
+        "stage": "prepare",
+        "kind": "started",
+        "count": 387,
+        "mean_ms": 337.1377438139535
+      },
+      {
+        "stage": "arm",
+        "kind": "started",
+        "count": 329,
+        "mean_ms": 22.96081724012158
+      }
+    ],
+    "burst_worker_ledger": {
+      "started": 0,
+      "completed": 330,
+      "request": 389
+    },
+    "scope": "Burst snapshots include earlier quota contests; histogram means are per instrumented operation, not HTTP percentiles."
+  },
+  "baseline": {
+    "run": "gw_acceptance_23c7610cb291",
+    "pressure": [
+      {
+        "concurrency": 10,
+        "requests": 500,
+        "stream": false,
+        "failed": 0,
+        "protected_rejections": 431,
+        "accepted": 69,
+        "accepted_rps": 23.004350122608187,
+        "accepted_p95_ms": 481.949,
+        "accepted_p99_ms": 492.014,
+        "seconds": 2.9994327,
+        "rps": 166.69818929426222,
+        "p50_ms": 2.133,
+        "p95_ms": 418.727,
+        "p99_ms": 477.918,
+        "ledger_drain_seconds": 7.3059101
+      },
+      {
+        "concurrency": 50,
+        "requests": 1000,
+        "stream": false,
+        "failed": 0,
+        "protected_rejections": 935,
+        "accepted": 65,
+        "accepted_rps": 21.004885348549575,
+        "accepted_p95_ms": 2074.299,
+        "accepted_p99_ms": 2178.193,
+        "seconds": 3.0945182,
+        "rps": 323.15208228537807,
+        "p50_ms": 8.524,
+        "p95_ms": 1453.464,
+        "p99_ms": 2003.499,
+        "ledger_drain_seconds": 7.4148800999999995
+      },
+      {
+        "concurrency": 100,
+        "requests": 2000,
+        "stream": false,
+        "failed": 0,
+        "protected_rejections": 1935,
+        "accepted": 65,
+        "accepted_rps": 19.039488837176986,
+        "accepted_p95_ms": 2101.527,
+        "accepted_p99_ms": 2317.155,
+        "seconds": 3.4139572,
+        "rps": 585.8304257592919,
+        "p50_ms": 21.438,
+        "p95_ms": 1003.461,
+        "p99_ms": 1866.893,
+        "ledger_drain_seconds": 9.9036122
+      },
+      {
+        "concurrency": 50,
+        "requests": 200,
+        "stream": true,
+        "failed": 0,
+        "protected_rejections": 135,
+        "accepted": 65,
+        "accepted_rps": 19.346742649956678,
+        "accepted_p95_ms": 2146.804,
+        "accepted_p99_ms": 2266.79,
+        "seconds": 3.3597387,
+        "rps": 59.52843892294362,
+        "p50_ms": 489.118,
+        "p95_ms": 2052.633,
+        "p99_ms": 2210.627,
+        "accepted_first_event_p95_ms": 1569.589,
+        "ledger_drain_seconds": 7.925113
+      }
+    ],
+    "fixed_arrival": [
+      {
+        "offered_rps": 2,
+        "offered_seconds": 20,
+        "stream": false,
+        "slow_upstream": false,
+        "applications": 2,
+        "requests": 40,
+        "accepted": 39,
+        "protected_rejections": 1,
+        "scheduler_dropped": 0,
+        "protocol_failures": 0,
+        "accepted_p95_ms": 139.894,
+        "accepted_p99_ms": 141.637,
+        "wall_seconds": 19.6343507,
+        "ledger_drain_seconds": 0.1060218,
+        "max_dispatch_lag_ms": 0.728
+      },
+      {
+        "offered_rps": 5,
+        "offered_seconds": 20,
+        "stream": false,
+        "slow_upstream": false,
+        "applications": 2,
+        "requests": 100,
+        "accepted": 100,
+        "protected_rejections": 0,
+        "scheduler_dropped": 0,
+        "protocol_failures": 0,
+        "accepted_p95_ms": 149.953,
+        "accepted_p99_ms": 180.188,
+        "wall_seconds": 19.9350232,
+        "ledger_drain_seconds": 0.1059545,
+        "max_dispatch_lag_ms": 0.658
+      },
+      {
+        "offered_rps": 10,
+        "offered_seconds": 20,
+        "stream": false,
+        "slow_upstream": false,
+        "applications": 2,
+        "requests": 200,
+        "accepted": 200,
+        "protected_rejections": 0,
+        "scheduler_dropped": 0,
+        "protocol_failures": 0,
+        "accepted_p95_ms": 263.266,
+        "accepted_p99_ms": 302.39,
+        "wall_seconds": 20.0793712,
+        "ledger_drain_seconds": 2.5738168,
+        "max_dispatch_lag_ms": 1.08
+      },
+      {
+        "offered_rps": 2,
+        "offered_seconds": 20,
+        "stream": true,
+        "slow_upstream": false,
+        "applications": 2,
+        "requests": 40,
+        "accepted": 39,
+        "protected_rejections": 1,
+        "scheduler_dropped": 0,
+        "protocol_failures": 0,
+        "accepted_p95_ms": 135.442,
+        "accepted_p99_ms": 135.626,
+        "accepted_first_event_p95_ms": 54.715,
+        "wall_seconds": 19.6306436,
+        "ledger_drain_seconds": 0.105305,
+        "max_dispatch_lag_ms": 0.579
+      },
+      {
+        "offered_rps": 2,
+        "offered_seconds": 20,
+        "stream": false,
+        "slow_upstream": true,
+        "applications": 2,
+        "requests": 40,
+        "accepted": 40,
+        "protected_rejections": 0,
+        "scheduler_dropped": 0,
+        "protocol_failures": 0,
+        "accepted_p95_ms": 375.988,
+        "accepted_p99_ms": 378.913,
+        "wall_seconds": 19.8527861,
+        "ledger_drain_seconds": 0.2080096,
+        "max_dispatch_lag_ms": 0.57
+      }
+    ],
+    "burst_overhead": {
+      "count": 274,
+      "mean_ms": 752.1052301642334
+    },
+    "burst_gateway_stages": [
+      {
+        "stage": "kafka_ack",
+        "kind": "started",
+        "count": 274,
+        "mean_ms": 1.7266804452554747
+      },
+      {
+        "stage": "kafka_ack",
+        "kind": "completed",
+        "count": 330,
+        "mean_ms": 1.664599457575758
+      },
+      {
+        "stage": "kafka_ack",
+        "kind": "request",
+        "count": 464,
+        "mean_ms": 1.7528704418103447
+      },
+      {
+        "stage": "outbox_mark",
+        "kind": "started",
+        "count": 274,
+        "mean_ms": 19.38378518613138
+      },
+      {
+        "stage": "outbox_mark",
+        "kind": "completed",
+        "count": 330,
+        "mean_ms": 18.781003157575768
+      },
+      {
+        "stage": "outbox_mark",
+        "kind": "request",
+        "count": 464,
+        "mean_ms": 18.46796013362069
+      },
+      {
+        "stage": "outbox_save",
+        "kind": "started",
+        "count": 274,
+        "mean_ms": 359.0296267518248
+      },
+      {
+        "stage": "outbox_save",
+        "kind": "completed",
+        "count": 330,
+        "mean_ms": 60.965516775757585
+      },
+      {
+        "stage": "outbox_save",
+        "kind": "request",
+        "count": 464,
+        "mean_ms": 543.9691528685346
+      },
+      {
+        "stage": "outbox_capacity_lock",
+        "kind": "other",
+        "count": 850,
+        "mean_ms": 320.1462117894118
+      },
+      {
+        "stage": "admission",
+        "kind": "started",
+        "count": 520,
+        "mean_ms": 303.9496920057691
+      },
+      {
+        "stage": "permit_read",
+        "kind": "started",
+        "count": 3769,
+        "mean_ms": 0.47545144176174076
+      }
+    ],
+    "burst_worker_ledger": {
+      "started": 274,
+      "completed": 330,
+      "request": 464
+    },
+    "scope": "Burst snapshots include earlier quota contests; histogram means are per instrumented operation, not HTTP percentiles."
+  },
+  "five_minute_run": {
+    "run": "gw_acceptance_79177332bcfc",
+    "fixed_arrival": {
+      "offered_rps": 2,
+      "offered_seconds": 300,
+      "stream": false,
+      "slow_upstream": false,
+      "applications": 2,
+      "requests": 600,
+      "accepted": 600,
+      "protected_rejections": 0,
+      "scheduler_dropped": 0,
+      "protocol_failures": 0,
+      "accepted_p95_ms": 101.567,
+      "accepted_p99_ms": 126.199,
+      "wall_seconds": 299.602308,
+      "ledger_drain_seconds": 0.1092299,
+      "max_dispatch_lag_ms": 1.163
+    },
+    "metrics": {
+      "overhead": {
+        "count": 600,
+        "mean_ms": 57.61989319333309
+      },
+      "resources": {
+        "run-gateway-1": {
+          "samples": 30,
+          "cpu_percent_max": 1.37,
+          "memory_mib_min": 16.09,
+          "memory_mib_max": 19.04
+        },
+        "run-gateway-2": {
+          "samples": 30,
+          "cpu_percent_max": 1.37,
+          "memory_mib_min": 15.57,
+          "memory_mib_max": 19.22
+        },
+        "run-worker": {
+          "samples": 30,
+          "cpu_percent_max": 3.39,
+          "memory_mib_min": 14.27,
+          "memory_mib_max": 17.14
+        },
+        "run": {
+          "samples": 30,
+          "cpu_percent_max": 0.54,
+          "memory_mib_min": 4.941,
+          "memory_mib_max": 6.398
+        }
+      },
+      "sql_pool_waits": [
+        0,
+        0,
+        0
+      ],
+      "scope": "2 RPS; Docker samples every 10 seconds. CPU percent is relative to one core; resource limits cover roles, not the shared host or middleware."
+    },
+    "suite_status": "load passed; subsequent Redis recovery case failed, then compensation was repaired and separate fault/full acceptance passed"
+  },
+  "baseline_commit": "0cee73e",
+  "binaries_sha256": {
+    "final": "a3ad92af5b93783bfab0549f154176a58c0afed0778cf47c9bd0bfb0af7baa85",
+    "five_minute": "38a3a839bf0cea5b686b8262a52d628411c04ed5ecca3696b4cae0ba250dc50a",
+    "baseline": "49e7cec2dbd15e56ce4f021da2a9fdbadfcdae3ca4fbdbb137ffffb9c988fff0"
+  },
+  "scope": {
+    "gateway_replicas": 2,
+    "gateway_cpu_each": 2,
+    "gateway_memory_mib_each": 256,
+    "worker_cpu": 1,
+    "worker_memory_mib": 256,
+    "paid_inflight_each": 8,
+    "http_concurrency_each": 128,
+    "outbox_global_mib": 512,
+    "outbox_app_mib": 64,
+    "completion_reserve_mib": 1,
+    "redis_memory_limit_mib": 8,
+    "redis_aof": "always",
+    "cache_redis_limit_mib": 4,
+    "kafka_partitions": 3,
+    "kafka_replicas": 1,
+    "upstream": "controlled mock",
+    "measurement_caveats": [
+      "Shared middleware and host; sequential single runs, no confidence intervals",
+      "Final seed contains three additional fault applications, resource sampling absent from baseline",
+      "5 minute sample predates cancellation lease and SQL pool metric cleanup; normal financial path unchanged; final fixed-arrival profiles rerun",
+      "Docker resource sampling interval 10 seconds; excludes host/middleware allocation and physical storage growth"
+    ]
+  }
+}
