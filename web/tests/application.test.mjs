@@ -6,7 +6,22 @@ import {
   meteringLabel,
   routeSource,
   tracePath,
+  callTime,
 } from "../src/application.ts";
+
+test("call timestamps use Beijing time including date rollover and midnight", () => {
+  assert.equal(
+    callTime("2026-10-12T21:00:13.700760037Z"),
+    "2026-10-13 05:00:13",
+  );
+  assert.equal(callTime("2026-10-12T16:00:00Z"), "2026-10-13 00:00:00");
+  assert.equal(callTime("2026-10-13T05:00:13+08:00"), "2026-10-13 05:00:13");
+});
+
+test("missing, invalid and Go zero timestamps are not fabricated", () => {
+  for (const at of [undefined, "", "invalid", "0001-01-01T00:00:00Z"])
+    assert.equal(callTime(at), "未提供");
+});
 
 test("saving an effective route excludes view-only fields rejected by the backend", () => {
   const route = {

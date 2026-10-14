@@ -54,6 +54,9 @@ button:disabled {
 small {
   font-size: 12px;
 }
+.call-time {
+  white-space: nowrap;
+}
 small {
   display: block;
   color: #8491a5;
