@@ -1,8 +1,5 @@
 # 显式叠加到 Lite 部署，启用控制台所需的私有监控；不开放宿主机端口。
 services:
-  admin:
-    environment:
-      GW_PROMETHEUS_URL: http://prometheus:9090
   prometheus:
     image: ${GW_PROMETHEUS_IMAGE:-prom/prometheus:v3.5.0}
     command:

@@ -248,12 +248,12 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 		}
 	}
 	out.Admin = NewAdmin(e, !dev, os.Getenv("GW_ADMIN_ORIGIN"))
-	out.Admin.Prometheus, err = newTrafficPrometheus(os.Getenv("GW_PROMETHEUS_URL"))
+	out.Admin.Grafana, err = newGrafanaProxy(os.Getenv("GW_GRAFANA_URL"), os.Getenv("GW_GRAFANA_VIEWER_USER"), os.Getenv("GW_GRAFANA_VIEWER_PASSWORD"))
 	if err != nil {
 		return nil, err
 	}
-	if out.Admin.Prometheus != nil {
-		out.closers = append(out.closers, out.Admin.Prometheus.Client.CloseIdleConnections)
+	if out.Admin.Grafana != nil {
+		out.closers = append(out.closers, out.Admin.Grafana.Client.CloseIdleConnections)
 	}
 	out.Admin.MaxConcurrent = adminConcurrency
 	if out.Redis != nil {

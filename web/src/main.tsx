@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRefreshQueue, waitForAll } from "./refresh";
-import { TrafficPanel } from "./TrafficPanel";
+import { GrafanaPanel } from "./GrafanaPanel";
 import {
   cachedTokens,
   uncachedTokens,
@@ -273,7 +273,7 @@ function Console({
   onLogout: () => void;
 }) {
   const [tab, setTab] = useState("dashboard");
-  const [trafficRevision, setTrafficRevision] = useState(0);
+  const [meteringRevision, setMeteringRevision] = useState(0);
   const [apps, setApps] = useState<App[]>([]);
   const [cfg, setCfg] = useState<Config | null>(null);
   const [appID, setAppID] = useState("");
@@ -368,7 +368,7 @@ function Console({
     return q.toString();
   }
   async function load() {
-    setTrafficRevision((value) => value + 1);
+    setMeteringRevision((value) => value + 1);
     return refreshQueue.current(latestLoad.current);
   }
   async function loadData() {
@@ -675,9 +675,10 @@ function Console({
         )}
         {tab === "dashboard" && (
           <>
-            <TrafficPanel
+            <GrafanaPanel
               appID={appID}
-              revision={trafficRevision}
+              range={range}
+              refresh={refresh}
               requiresApp={session.role === "developer"}
             />
             <div className="kpis">
@@ -719,7 +720,7 @@ function Console({
                 <ApplicationMetering
                   key={appID}
                   appID={appID}
-                  revision={trafficRevision}
+                  revision={meteringRevision}
                   api={api}
                 />
                 <h3>预算与异常告警</h3>

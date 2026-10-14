@@ -3,19 +3,21 @@ $root = Split-Path $PSScriptRoot -Parent
 Set-Location -LiteralPath $root
 & node scripts/validate-deploy.mjs
 if ($LASTEXITCODE) { throw 'Deployment structure validation failed' }
-$dashboard = Get-Content -LiteralPath deploy/observability/dashboard.json -Raw | ConvertFrom-Json
+$dashboards = @(Get-Content -LiteralPath deploy/observability/dashboard.json -Raw -Encoding utf8 | ConvertFrom-Json; Get-Content -LiteralPath deploy/observability/application-dashboard.json -Raw -Encoding utf8 | ConvertFrom-Json)
 $rules = @()
+foreach ($dashboard in $dashboards) {
 foreach ($panel in $dashboard.panels) {
     foreach ($target in $panel.targets) {
         if (-not $target.expr) { continue }
         # 用固定范围替换 Grafana 变量，只做语法校验，真实数据口径由验收验证。
         $expression = $target.expr.Replace('$__rate_interval', '1m')
-        foreach ($variable in @('app', 'instance', 'api', 'model', 'stream')) {
+        foreach ($variable in @('app', 'instance', 'api', 'model', 'stream', 'error_code')) {
             $expression = $expression.Replace('$' + $variable, '.*')
         }
-        if ($expression.Contains('$')) { throw "Unknown dashboard variable: $expression" }
-        $rules += @{ record = "dashboard_panel_$($panel.id)_$($target.refId)"; expr = $expression }
+        if ($expression -match '\$[A-Za-z_]') { throw "Unknown dashboard variable: $expression" }
+        $rules += @{ record = "dashboard_$($dashboard.uid.Replace('-', '_'))_panel_$($panel.id)_$($target.refId)"; expr = $expression }
     }
+}
 }
 $output = Join-Path $root 'data/acceptance/monitoring-validation'
 New-Item -ItemType Directory -Force -Path $output | Out-Null

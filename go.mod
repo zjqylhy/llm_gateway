@@ -6,6 +6,8 @@ require (
 	github.com/alicebob/miniredis/v2 v2.39.0
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/prometheus/client_golang v1.25.0
+	github.com/prometheus/client_model v0.6.3
+	github.com/prometheus/prometheus v0.305.0
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/segmentio/kafka-go v0.4.51
 	go.etcd.io/etcd/client/v3 v3.7.2
@@ -23,15 +25,17 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/coreos/go-semver v0.3.1 // indirect
 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
+	github.com/dennwc/varint v1.0.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/grafana/regexp v0.0.0-20240518133315-a468a5bfb3bc // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
 	github.com/klauspost/compress v1.20.1 // indirect
+	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pierrec/lz4/v4 v4.1.15 // indirect
-	github.com/prometheus/client_model v0.6.3 // indirect
 	github.com/prometheus/common v0.72.0 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect

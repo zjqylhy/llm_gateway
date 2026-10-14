@@ -1,0 +1,69 @@
+{
+  "revision": "86a46f6a1a9a9c2bab06ad66f23e605f956d12db",
+  "image": "llm-gateway:grafana-console-20261014-86a46f6",
+  "image_id": "sha256:26aa62951ef291f8d4dd7a92ca5bd740bd856f696546874548b347ae4a42882e",
+  "financial_config_source_checkpoint_unchanged": true,
+  "metering_healthy": true,
+  "permit_valid": true,
+  "outbox_undelivered": 0,
+  "grafana_viewer_role": "Viewer",
+  "dashboard_panels": {
+    "admin": 36,
+    "applications": 13
+  },
+  "prometheus_targets": 3,
+  "alert_rules": 14,
+  "entry_reopened": true,
+  "duration_seconds": 33.78,
+  "backup": "/opt/llm_gateway/releases/grafana-console-20261014-86a46f6/backup-attempt2",
+  "https_verification": {
+    "checked_at": "2026-10-14T12:14:59.756884+00:00",
+    "https_ca_verified": true,
+    "admin_session_and_logout_verified": true,
+    "embedding_same_origin": true,
+    "frontend_hash": "index-BZtfgY8d.js",
+    "admin_panels": 36,
+    "application_panels": 13,
+    "dangerous_grafana_routes_denied": true,
+    "error_code": "model_not_allowed",
+    "nonpaid_error_visible_via_grafana": true,
+    "metering_healthy": true,
+    "permit_valid": true,
+    "outbox_undelivered": 0,
+    "config_version_unchanged": true,
+    "real_model_called": false
+  },
+  "pr": "https://github.com/zjqylhy/llm_gateway/pull/10",
+  "feishu": "https://my.feishu.cn/wiki/J6v6wHF05i9ecikyXV1cSDZrntc",
+  "developer_scope": {
+    "local_real_grafana_two_owners": "passed",
+    "remote_real_developer_login": "passed_browser_scope_checks",
+    "forged_session_test_executed": false,
+    "remote_browser_evidence": {
+      "checked_at": "2026-10-14T14:03:21.716Z",
+      "authentication": "user_logged_in_existing_developer",
+      "owned_app_count": 1,
+      "application_dashboard_panels": 13,
+      "console_and_grafana_options_owned_only": true,
+      "all_variable_metric_app_count": 1,
+      "foreign_app_variable_visible_panels_have_no_data": true,
+      "test_range_hours": 24,
+      "secondary_grafana_login_required": false,
+      "direct_json_navigation": "browser_blocked_http_status_not_observed",
+      "raw_promql_and_interface_bypass_evidence": "previous_local_real_grafana_tests_passed",
+      "business_config_changed": false,
+      "business_users_changed": false,
+      "forged_session_used": false,
+      "real_model_called": false
+    }
+  },
+  "initial_failed_attempt": {
+    "reason": "Windows archive did not preserve Linux executable file modes",
+    "rolled_back_before_open": true,
+    "financial_config_checkpoint_unchanged": true,
+    "corrected_tar_bin_mode": "0755",
+    "image_executable_modes_verified_before_close": true
+  },
+  "real_model_called": false,
+  "business_ddl": false
+}
