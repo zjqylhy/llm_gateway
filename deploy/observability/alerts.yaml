@@ -26,10 +26,11 @@ groups:
         labels: {severity: warning}
         annotations: {summary: "已交付 Outbox 清理失败；检查数据库，勿删除账本去重证据"}
       - alert: GatewayMeteringPermitExpired
-        expr: max(gateway_metering_permit_expires_seconds{job="worker"}) < time()
+        # 3 秒许可短于 10 秒采样周期；核验采样当时的有效性，门禁仍实时检查。
+        expr: max(gateway_metering_permit_expires_seconds{job="worker"} - timestamp(gateway_metering_permit_expires_seconds{job="worker"})) <= 0 or absent(gateway_metering_permit_expires_seconds{job="worker"})
         for: 10s
         labels: {severity: critical}
-        annotations: {summary: "接单许可过期，检查计量依赖和消费水位"}
+        annotations: {summary: "采样时接单许可无效或指标缺失，检查计量依赖和消费水位"}
       - alert: GatewayMeteringAuditFailure
         expr: sum(increase(gateway_metering_audit_failures_total[5m])) > 0
         labels: {severity: critical}

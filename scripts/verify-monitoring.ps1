@@ -28,3 +28,9 @@ $json = @{ groups = @(@{ name = 'dashboard_validation'; rules = $rules }) } | Co
     --mount "type=bind,src=$output,dst=/validation,readonly" `
     --entrypoint /bin/promtool prom/prometheus:v3.5.0 check rules /rules/alerts.yaml /validation/dashboard-rules.yaml
 if ($LASTEXITCODE) { throw 'Prometheus rule/query validation failed' }
+
+# 覆盖短许可采样误报，以及停止续约、零值和缺失时仍能发现故障。
+& docker run --rm --network none --cpus 0.5 --memory 128m --read-only --tmpfs /tmp:rw,size=64m,mode=1777 --cap-drop ALL `
+    --mount "type=bind,src=$root/deploy/observability,dst=/rules,readonly" `
+    --entrypoint /bin/promtool prom/prometheus:v3.5.0 test rules /rules/alerts.test.yaml
+if ($LASTEXITCODE) { throw 'Prometheus permit regression tests failed' }

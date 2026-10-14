@@ -1187,8 +1187,8 @@
     {
       "id": 27,
       "type": "timeseries",
-      "title": "准入许可剩余时间",
-      "description": "",
+      "title": "准入许可在采样时的剩余时间",
+      "description": "许可寿命 3 秒，采样周期 10 秒。相对本样本时间计算，表示采样时的有效性；不能据此判断此刻是否允许请求。请求仍实时校验 Redis/etcd 许可，指标缺失和组件不可达分别告警。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1202,8 +1202,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "max(gateway_metering_permit_expires_seconds{job=\"worker\"})-time()",
-          "legendFormat": "许可剩余"
+          "expr": "clamp_min(max(gateway_metering_permit_expires_seconds{job=\"worker\"} - timestamp(gateway_metering_permit_expires_seconds{job=\"worker\"})), 0)",
+          "legendFormat": "采样时许可剩余"
         }
       ],
       "fieldConfig": {

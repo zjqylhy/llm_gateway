@@ -1,0 +1,152 @@
+{
+  "rule_files": [
+    "alerts.yaml"
+  ],
+  "evaluation_interval": "10s",
+  "tests": [
+    {
+      "name": "healthy three-second permit between ten-second scrapes",
+      "interval": "10s",
+      "input_series": [
+        {
+          "series": "gateway_metering_permit_expires_seconds{job=\"worker\",instance=\"owner\"}",
+          "values": "3+10x6"
+        },
+        {
+          "series": "gateway_metering_permit_expires_seconds{job=\"worker\",instance=\"standby\"}",
+          "values": "0x6"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "40s",
+          "alertname": "GatewayMeteringPermitExpired",
+          "exp_alerts": []
+        }
+      ],
+      "promql_expr_test": [
+        {
+          "expr": "max(gateway_metering_permit_expires_seconds{job=\"worker\"} - timestamp(gateway_metering_permit_expires_seconds{job=\"worker\"}))",
+          "eval_time": "5s",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "expr": "max(gateway_metering_permit_expires_seconds{job=\"worker\"}) - time()",
+          "eval_time": "5s",
+          "exp_samples": [
+            {
+              "labels": "{}",
+              "value": -2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "monitor stopped renewing but metrics remain reachable",
+      "interval": "10s",
+      "input_series": [
+        {
+          "series": "gateway_metering_permit_expires_seconds{job=\"worker\"}",
+          "values": "3x6"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "30s",
+          "alertname": "GatewayMeteringPermitExpired",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "severity": "critical"
+              },
+              "exp_annotations": {
+                "summary": "采样时接单许可无效或指标缺失，检查计量依赖和消费水位"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "failed renewal publishes zero",
+      "interval": "10s",
+      "input_series": [
+        {
+          "series": "gateway_metering_permit_expires_seconds{job=\"worker\"}",
+          "values": "0x6"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "20s",
+          "alertname": "GatewayMeteringPermitExpired",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "severity": "critical"
+              },
+              "exp_annotations": {
+                "summary": "采样时接单许可无效或指标缺失，检查计量依赖和消费水位"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "permit metric absent",
+      "interval": "10s",
+      "input_series": [],
+      "alert_rule_test": [
+        {
+          "eval_time": "20s",
+          "alertname": "GatewayMeteringPermitExpired",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "severity": "critical",
+                "job": "worker"
+              },
+              "exp_annotations": {
+                "summary": "采样时接单许可无效或指标缺失，检查计量依赖和消费水位"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "worker becomes stale",
+      "interval": "10s",
+      "input_series": [
+        {
+          "series": "gateway_metering_permit_expires_seconds{job=\"worker\"}",
+          "values": "3 13 stale _ _"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "40s",
+          "alertname": "GatewayMeteringPermitExpired",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "severity": "critical",
+                "job": "worker"
+              },
+              "exp_annotations": {
+                "summary": "采样时接单许可无效或指标缺失，检查计量依赖和消费水位"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
