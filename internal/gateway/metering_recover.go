@@ -407,6 +407,44 @@ func rebuildQuotaLedger(c context.Context, r *Runtime) error {
 	}
 	rows.Close()
 	// 入账成功且重建完成后，释放 outbox；仅按该条消息的账本内容确认交付。
+	// 停写恢复可取消未获准调用的准备态；inflight 始终保留未知，不能按年龄退款。
+	for {
+		pending, readErr := s.DB.QueryContext(c, `SELECT start_payload FROM gw_attempts WHERE execution_phase='prepared' OR compensation_state='pending' LIMIT 32`)
+		if readErr != nil {
+			return readErr
+		}
+		var prepared []Event
+		for pending.Next() {
+			var raw []byte
+			if readErr = pending.Scan(&raw); readErr != nil {
+				break
+			}
+			e, decodeErr := decodeAttempt(raw)
+			if decodeErr != nil {
+				readErr = decodeErr
+				break
+			}
+			prepared = append(prepared, e)
+		}
+		if readErr == nil {
+			readErr = pending.Err()
+		}
+		pending.Close()
+		if readErr != nil {
+			return readErr
+		}
+		if len(prepared) == 0 {
+			break
+		}
+		for _, e := range prepared {
+			if err = checkRecoveryConnection(c); err != nil {
+				return err
+			}
+			if err = compensateAttempt(c, s, g, e); err != nil {
+				return err
+			}
+		}
+	}
 	for {
 		items, err := s.DB.QueryContext(c, `SELECT o.event_id,e.payload FROM gw_metering_outbox o JOIN gw_events e ON e.id=o.event_id WHERE o.delivered=0 LIMIT 32`)
 		if err != nil {
@@ -442,7 +480,7 @@ func rebuildQuotaLedger(c context.Context, r *Runtime) error {
 		}
 	}
 	// completed 未进入 outbox 的 Kafka 成功路径，也必须释放 started 的容量预留。
-	rows, err = s.DB.QueryContext(c, `SELECT a.payload FROM gw_outbox_slots o JOIN gw_attempts a ON a.attempt_id=o.attempt_id WHERE o.remaining_bytes>0 AND a.revision>=2 AND a.purpose<>'request'`)
+	rows, err = s.DB.QueryContext(c, `SELECT payload FROM gw_attempts WHERE reserved_remaining_bytes>0 AND revision>=2 AND purpose<>'request' AND execution_phase<>'cancelled'`)
 	if err != nil {
 		return err
 	}
@@ -465,10 +503,6 @@ func rebuildQuotaLedger(c context.Context, r *Runtime) error {
 	}
 	rows.Close()
 	if err = initializeMeteringEvidence(c, s, RedisGuard{Client: r.Redis}); err != nil {
-		return err
-	}
-	// 停写重建可以清理入口登记，但未知 started 仍留在账本/预占中等待核实。
-	if _, err = s.execMetering(c, `DELETE FROM gw_metering_admissions`); err != nil {
 		return err
 	}
 	return r.Redis.Set(c, "gw:quota:state", "ready", 0).Err()

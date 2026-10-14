@@ -19,5 +19,6 @@ jobs:
       - run: npm ci && npm run build && npm test && npx prettier --check src tests
         working-directory: web
       - run: node scripts/validate-deploy.mjs
+      - run: docker run --rm --network none --memory 128m --read-only --tmpfs /tmp:rw,size=64m,mode=1777 --cap-drop ALL -v "$PWD/deploy/observability:/rules:ro" --entrypoint /bin/promtool prom/prometheus:v3.5.0 test rules /rules/alerts.test.yaml
       - run: docker compose config --quiet
       - run: docker build -t llm-gateway:verify .

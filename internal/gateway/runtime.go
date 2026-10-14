@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
 	"github.com/segmentio/kafka-go/sasl/plain"
@@ -169,7 +168,6 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 			return nil, se
 		}
 		e.Store = sqlStore
-		e.Metrics.Registry.MustRegister(prometheus.NewCounterFunc(prometheus.CounterOpts{Name: "gateway_sql_pool_wait_total", Help: "Cumulative waits for a SQL connection"}, func() float64 { return float64(sqlStore.DB.Stats().WaitCount) }), prometheus.NewCounterFunc(prometheus.CounterOpts{Name: "gateway_sql_pool_wait_seconds_total", Help: "Cumulative SQL pool wait duration"}, func() float64 { return sqlStore.DB.Stats().WaitDuration.Seconds() }), prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "gateway_sql_pool_in_use", Help: "SQL connections currently in use"}, func() float64 { return float64(sqlStore.DB.Stats().InUse) }))
 		out.closers = append(out.closers, func() { _ = sqlStore.DB.Close() })
 		opts, re := quotaRedisOptions(os.Getenv("GW_REDIS_URL"))
 		var cacheRedis *redis.Client
@@ -216,6 +214,8 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 			return nil, be
 		}
 		sqlStore.Metrics = e.Metrics
+		e.Metrics.registerSQLPool(sqlStore.DB)
+		e.Metrics.MeteringOutboxLimit.Set(float64(globalBytes))
 		e.Bus = &DurableBus{Store: sqlStore, Transport: &KafkaBus{Writer: writer, Store: sqlStore}, GlobalBytes: globalBytes, AppBytes: appBytes, Metrics: e.Metrics, OnFreeze: func(c context.Context) {
 			_ = rc.Set(c, "gw:metering:frozen", "delivery_failure", 0).Err()
 			out.freezeEtcd(c)
@@ -228,7 +228,7 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 			if n > 0 {
 				return ErrUnavailable
 			}
-			_, _, err = out.readPermit(c)
+			_, err = out.readPermit(c)
 			return err
 		}
 		out.closers = append(out.closers, func() { _ = writer.Close() })
@@ -392,9 +392,18 @@ func Main(mode string) {
 		slog.Error("configuration unavailable", "error", e)
 		os.Exit(1)
 	}
+	if bus, ok := runtime.Engine.Bus.(*DurableBus); ok {
+		if transport, ok := bus.Transport.(*KafkaBus); ok {
+			if e = transport.PrepareSource(startup); e != nil {
+				slog.Error("metering source unavailable", "error", e)
+				os.Exit(1)
+			}
+		}
+	}
 	go runtime.Engine.RunRefresh(ctx)
 	if mode == "worker" {
 		go runtime.RunMeteringMonitor(ctx)
+		go runtime.RunAttemptMaintenance(ctx)
 		health := http.NewServeMux()
 		health.Handle("GET /healthz", runtime.Engine.Handler())
 		health.Handle("GET /readyz", runtime.Engine.Handler())

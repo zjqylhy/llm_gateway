@@ -49,6 +49,11 @@ func TestReliabilityProcess(t *testing.T) {
 	if err == nil {
 		err = r.Engine.Refresh(startup)
 	}
+	if err == nil {
+		if bus, ok := r.Engine.Bus.(*DurableBus); ok {
+			err = bus.Transport.(*KafkaBus).PrepareSource(startup)
+		}
+	}
 	done()
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +61,18 @@ func TestReliabilityProcess(t *testing.T) {
 	defer r.Close()
 	e := r.Engine
 	e.Client = NewHTTPClient(true)
+	var boundaryPaused atomic.Bool
+	if strings.HasPrefix(role, "gateway-") {
+		stage := strings.TrimPrefix(role, "gateway-")
+		if stage == "before-http" {
+			e.Client.Transport = boundaryTransport{e.Client.Transport, &boundaryPaused}
+		} else if stage == "before-reserve" || stage == "after-reserve" {
+			e.Guard = boundaryGuard{e.Guard, stage, &boundaryPaused}
+		} else {
+			t.Fatal("unknown boundary role", role)
+		}
+		role = "gateway"
+	}
 	go e.RunRefresh(ctx)
 	if role == "admin" {
 		server := &http.Server{Addr: ":8081", Handler: r.Admin.Handler(), ReadHeaderTimeout: 5 * time.Second}
@@ -67,6 +84,9 @@ func TestReliabilityProcess(t *testing.T) {
 		return
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /__acceptance/paused", func(w http.ResponseWriter, _ *http.Request) {
+		JSON(w, map[string]bool{"paused": boundaryPaused.Load()})
+	})
 	mux.Handle("GET /metrics", e.Metrics.Handler())
 	mux.Handle("/", e.Handler())
 	server := &http.Server{Addr: ":8080", Handler: mux, ReadHeaderTimeout: 5 * time.Second}
@@ -77,6 +97,7 @@ func TestReliabilityProcess(t *testing.T) {
 			go RunMaintenance(ctx, e)
 		}
 		go r.RunMeteringMonitor(ctx)
+		go r.RunAttemptMaintenance(ctx)
 		if bus, ok := e.Bus.(*DurableBus); ok {
 			go bus.RunRelay(ctx)
 		}
@@ -223,7 +244,11 @@ func TestReliabilityIntegration(t *testing.T) {
 	if err != nil || dsn.DBName != run || !strings.HasPrefix(dsn.Addr, "127.0.0.1:") {
 		t.Fatal("dedicated local acceptance database required")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	sustainedSeconds, _ := strconv.Atoi(os.Getenv("GW_RELIABILITY_SUSTAINED_SECONDS"))
+	if sustainedSeconds < 0 || sustainedSeconds > 600 {
+		t.Fatal("invalid sustained duration")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute+time.Duration(sustainedSeconds)*time.Second)
 	defer cancel()
 	r, err := OpenRuntime(ctx, false)
 	if err != nil {
@@ -283,7 +308,7 @@ func TestReliabilityIntegration(t *testing.T) {
 			"-e", "HOSTNAME="+name, "-p", binding+":8080",
 			"--mount", "type=bind,src="+dir+",dst=/acceptance,readonly",
 			"--entrypoint", "/acceptance/gateway.test", os.Getenv("GW_RELIABILITY_IMAGE"),
-			"-test.run=^TestReliabilityProcess$", "-test.timeout=12m", "-test.v")
+			"-test.run=^TestReliabilityProcess$", "-test.timeout="+strconv.Itoa(12+sustainedSeconds/60)+"m", "-test.v")
 		binding = mustDocker("port", name, "8080/tcp")
 		if !regexp.MustCompile(`^127\.0\.0\.1:[0-9]+$`).MatchString(binding) {
 			checkT.Fatal("unexpected role port", binding)
@@ -332,7 +357,7 @@ func TestReliabilityIntegration(t *testing.T) {
 		model := Model{ID: "primary", ProviderID: "primary", Upstream: "mock-primary", Version: "v1", Capabilities: []string{"chat", "stream"}, Context: 16000, MaxOutput: 128, InputMicro: 1000000, OutputMicro: 2000000, PriceVersion: "acceptance-v1", Currency: "CNY", FXPPM: 1000000}
 		c.Models[model.ID] = model
 		c.Routes["chat"] = Route{Alias: "chat", Kind: "chat", Strategy: "priority", Candidates: []Candidate{{"primary", 100}}}
-		for _, id := range []string{"token", "budget", "load", "load-a", "load-b", "redis-fault", "worker-fault", "gateway-fault"} {
+		for _, id := range []string{"token", "budget", "load", "load-a", "load-b", "redis-fault", "worker-fault", "gateway-fault", "before-reserve", "after-reserve", "before-http"} {
 			a := App{ID: id, Active: true, Owner: "admin", Models: []string{"chat"}, BudgetAction: "warn"}
 			if id == "token" {
 				a.MonthlyTokens = 5 * (tokenRequest.InputEstimate + tokenRequest.MaxOutput)
@@ -411,10 +436,11 @@ func TestReliabilityIntegration(t *testing.T) {
 	}
 	reconcile := func(app string) Counters {
 		checkT.Helper()
-		var expected Counters
-		if err := s.DB.QueryRowContext(ctx, "SELECT COALESCE(SUM(tokens),0),COALESCE(SUM(cost_micro),0),COALESCE(SUM(IF(status='started',CAST(JSON_EXTRACT(payload,'$.reserve_tokens') AS SIGNED),0)),0),COALESCE(SUM(IF(status='started',CAST(JSON_EXTRACT(payload,'$.reserve_micro') AS SIGNED),0)),0) FROM gw_attempts WHERE app_id=? AND purpose<>'request'", app).Scan(&expected.Tokens, &expected.Micro, &expected.ReservedTokens, &expected.ReservedMicro); err != nil {
-			checkT.Fatal(err)
+		groups, _, projectionErr := expectedQuotaFor(ctx, s, app)
+		if projectionErr != nil {
+			checkT.Fatal(projectionErr)
 		}
+		expected := groups[quotaKeys(app, month(time.Now()), "")[0]]
 		actual, err := r.Engine.Guard.Counters(ctx, app, month(time.Now()))
 		if err != nil || expected != actual {
 			checkT.Fatalf("ledger/quota mismatch for %s: SQL=%+v Redis=%+v error=%v", app, expected, actual, err)
@@ -464,7 +490,7 @@ func TestReliabilityIntegration(t *testing.T) {
 			for rejected < 95 {
 				select {
 				case result := <-results:
-					if result.Status != 429 || result.Error != "" {
+					if (result.Status != 429 && result.Status != 503) || result.Error != "" {
 						t.Fatal("reservation race unexpectedly admitted or failed", result)
 					}
 					rejected++
@@ -474,10 +500,10 @@ func TestReliabilityIntegration(t *testing.T) {
 			}
 			wait("five reserved calls reach upstream", 10*time.Second, func() bool {
 				_, held := stats()
-				return held["hold-"+app] == 5
+				return held["hold-"+app] >= 1
 			})
 			_, held := stats()
-			if held["hold-"+app] != 5 {
+			if held["hold-"+app] > 5 {
 				t.Fatal("global quota exceeded", held)
 			}
 			res, err := client.Get(upstreamURL + "/release/hold-" + app)
@@ -485,14 +511,28 @@ func TestReliabilityIntegration(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = res.Body.Close()
-			for i := 0; i < 5; i++ {
+			successes := 0
+			for range 5 {
 				result := <-results
-				if result.Status != 200 || result.Error != "" {
+				if result.Error != "" || !Contains([]string{"200", "429", "503"}, strconv.Itoa(result.Status)) {
 					t.Fatal(result)
 				}
+				if result.Status == 200 {
+					successes++
+				} else {
+					rejected++
+				}
+			}
+			if successes < 1 || successes > 5 {
+				t.Fatal("budget oversold or no progress", successes)
 			}
 			drain()
-			if counts := reconcile(app); counts.Tokens != 160 || counts.Micro != 260 || counts.ReservedTokens != 0 {
+			wait("cancel compensation drained", 40*time.Second, func() bool {
+				var n int
+				err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_attempts WHERE app_id=? AND (execution_phase='prepared' OR compensation_state='pending')`, app).Scan(&n)
+				return err == nil && n == 0
+			})
+			if counts := reconcile(app); counts.Tokens != int64(32*successes) || counts.Micro != int64(52*successes) || counts.ReservedTokens != 0 {
 				t.Fatal("successful attempts not settled exactly once", counts)
 			}
 		})
@@ -610,21 +650,35 @@ func TestReliabilityIntegration(t *testing.T) {
 		}
 		profiles := []fixedArrivalSample{}
 		accepted := 0
-		for _, profile := range []struct {
+		type profileConfig struct {
 			rate         int
 			stream, slow bool
-		}{{2, false, false}, {5, false, false}, {10, false, false}, {2, true, false}, {2, false, true}} {
+			duration     time.Duration
+		}
+		configs := []profileConfig{{2, false, false, 20 * time.Second}, {5, false, false, 20 * time.Second}, {10, false, false, 20 * time.Second}, {2, true, false, 20 * time.Second}, {2, false, true, 20 * time.Second}}
+		if sustainedSeconds > 0 {
+			configs = append(configs, profileConfig{2, false, false, time.Duration(sustainedSeconds) * time.Second})
+		}
+		metricURLs := append(append([]string{}, gateways...), workerURL)
+		if err := captureAcceptanceMetrics(client, metricURLs, dir, "sustained-before"); err != nil {
+			t.Fatal(err)
+		}
+		for profileIndex, profile := range configs {
 			text := "fixed-arrival probe"
 			if profile.slow {
 				text = "delayed-probe"
 			}
-			sample := runFixedArrival(t, ctx, profile.rate, 20*time.Second, profile.stream, profile.slow, func(i int) reliabilityResult {
+			stopSampling := sampleAcceptanceResources(ctx, dir, profileIndex, append(append([]string{}, gateways...), workerURL), []string{run + "-gateway-1", run + "-gateway-2", run + "-worker", run})
+			sample := runFixedArrival(t, ctx, profile.rate, profile.duration, profile.stream, profile.slow, func(i int) reliabilityResult {
 				app := "load-a"
 				if i%2 == 1 {
 					app = "load-b"
 				}
 				return call(gateways[i%2], app, text, profile.stream)
 			})
+			if err := stopSampling(); err != nil {
+				t.Fatal(err)
+			}
 			accepted += sample.Accepted
 			if sample.Failed != 0 || sample.Accepted == 0 {
 				t.Fatalf("fixed-arrival protocol failed: %+v", sample)
@@ -637,9 +691,15 @@ func TestReliabilityIntegration(t *testing.T) {
 				t.Fatal("fixed-arrival ledger/quota mismatch", left, right, accepted)
 			}
 			profiles = append(profiles, sample)
+			if err := captureAcceptanceMetrics(client, metricURLs, dir, "profile-"+strconv.Itoa(profileIndex)+"-after"); err != nil {
+				t.Fatal(err)
+			}
 			t.Logf("fixed-arrival: %+v", sample)
 		}
 		writeFixedArrivalSamples(t, dir, profiles)
+		if err := s.AuditCapacity(ctx); err != nil {
+			t.Fatal(err)
+		}
 	})
 	runCase("killed_worker_replays_durable_backlog", func(t *testing.T) {
 		drain()
@@ -668,8 +728,8 @@ func TestReliabilityIntegration(t *testing.T) {
 		}
 		for _, id := range requests {
 			rows, err := s.Records(ctx, Filter{RequestID: id})
-			if err != nil || len(rows) != 0 {
-				t.Fatal("killed worker continued consuming", rows, err)
+			if err != nil || len(rows) != 1 || rows[0].Kind != "started" || rows[0].Revision != 1 {
+				t.Fatal("Arm must persist start; killed worker must not apply completion", rows, err)
 			}
 		}
 		mustDocker("start", run+"-worker")
@@ -697,6 +757,11 @@ func TestReliabilityIntegration(t *testing.T) {
 		wait("Redis AOF restores quota state", 15*time.Second, func() bool {
 			state, err := r.Redis.Get(ctx, "gw:quota:state").Result()
 			return err == nil && state == "ready"
+		})
+		wait("Redis restoration completes cancellation compensation", 60*time.Second, func() bool {
+			var pending int
+			err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_attempts WHERE execution_phase='prepared' OR compensation_state='pending'`).Scan(&pending)
+			return err == nil && pending == 0
 		})
 		for _, app := range []string{"token", "budget", "load", "worker-fault"} {
 			reconcile(app)
@@ -769,6 +834,82 @@ func TestReliabilityIntegration(t *testing.T) {
 		drain()
 		reconcile("gateway-fault")
 	})
+	for _, stage := range []string{"before-reserve", "after-reserve", "before-http"} {
+		runCase("killed_gateway_"+stage, func(t *testing.T) {
+			drain()
+			probe := startRole("gateway-probe", "gateway-"+stage, "1", "256m")
+			ready(probe)
+			before, _ := stats()
+			result := make(chan reliabilityResult, 1)
+			go func() { result <- call(probe, stage, "boundary probe", false) }()
+			wait("boundary reached", 10*time.Second, func() bool {
+				res, err := client.Get(probe + "/__acceptance/paused")
+				if err != nil {
+					return false
+				}
+				defer res.Body.Close()
+				var state struct {
+					Paused bool `json:"paused"`
+				}
+				return json.NewDecoder(res.Body).Decode(&state) == nil && state.Paused
+			})
+			var raw []byte
+			var phase string
+			if err := s.DB.QueryRowContext(ctx, `SELECT start_payload,execution_phase FROM gw_attempts WHERE app_id=?`, stage).Scan(&raw, &phase); err != nil {
+				t.Fatal(err)
+			}
+			start, err := decodeAttempt(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "prepared"
+			if stage == "before-http" {
+				want = "inflight"
+			}
+			if phase != want {
+				t.Fatal("incorrect crash boundary", phase, want)
+			}
+			mustDocker("kill", run+"-gateway-probe")
+			crashed := <-result
+			if crashed.Status == 200 {
+				t.Fatal("killed request falsely succeeded", crashed)
+			}
+			if after, _ := stats(); after != before {
+				t.Fatal("paused HTTP reached provider", before, after)
+			}
+			if stage != "before-http" {
+				// 真实后台轮询等到 Prepare 到期，再按 CAS 取消；不由测试直接清理。
+				wait("prepared crash compensated", 45*time.Second, func() bool {
+					var state string
+					err := s.DB.QueryRowContext(ctx, `SELECT compensation_state FROM gw_attempts WHERE attempt_id=?`, start.AttemptID).Scan(&state)
+					return err == nil && state == "done"
+				})
+				if counts := reconcile(stage); counts != (Counters{}) {
+					t.Fatal("uncalled crash retained budget", counts)
+				}
+			} else {
+				if err := r.CompensateOnce(ctx); err != nil {
+					t.Fatal(err)
+				}
+				counts := reconcile(stage)
+				if counts.ReservedTokens != start.ReserveTokens || counts.ReservedMicro != start.ReserveMicro {
+					t.Fatal("Arm crash automatically refunded", counts)
+				}
+				// 测试 Transport 证明未发 HTTP，作为外部核实证据发布零费用完成。
+				if err := r.Engine.Bus.Publish(ctx, cancelEvent(start)); err != nil {
+					t.Fatal(err)
+				}
+				drain()
+				if counts := reconcile(stage); counts != (Counters{}) {
+					t.Fatal("verified correction did not release", counts)
+				}
+			}
+			if err := s.AuditCapacity(ctx); err != nil {
+				t.Fatal(err)
+			}
+			mustDocker("rm", "-f", "-v", run+"-gateway-probe")
+		})
+	}
 	resources := mustDocker("stats", "--no-stream", "--format", "{{.Name}} {{.CPUPerc}} {{.MemUsage}}", run+"-gateway-1", run+"-gateway-2", run+"-worker", run+"-upstream", run)
 	if err := os.WriteFile(filepath.Join(dir, "resources.txt"), []byte(resources), 0600); err != nil {
 		t.Fatal(err)

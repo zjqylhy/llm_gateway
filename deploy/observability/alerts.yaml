@@ -1,11 +1,36 @@
 groups:
   - name: gateway
     rules:
+      - alert: GatewayCompensationStalled
+        expr: max(gateway_metering_compensation_oldest_seconds{job="worker"}) > 300
+        for: 1m
+        labels: {severity: critical}
+        annotations: {summary: "取消补偿超过五分钟，核查 Redis 终止凭据与 SQL 空间释放；禁止按年龄强行退款"}
+      - alert: GatewayLifecycleSnapshotStale
+        expr: time() - max(gateway_metering_snapshot_seconds{job="worker"}) > 120
+        for: 1m
+        labels: {severity: warning}
+        annotations: {summary: "生命周期采样已过期，旧的零积压不代表健康"}
+      - alert: GatewayUnknownUsageHeld
+        expr: max(gateway_metering_attempt_records{job="worker",state="held"}) > 0
+        for: 15m
+        labels: {severity: warning}
+        annotations: {summary: "未知用量持续保留预算，需厂商记录或经审计的费用修正"}
+      - alert: GatewayOutboxNearCapacity
+        expr: max(gateway_metering_outbox_bytes{job="worker"}) / max(gateway_metering_outbox_limit_bytes{job="worker"}) > 0.8
+        for: 1m
+        labels: {severity: warning}
+        annotations: {summary: "Outbox 逻辑额度超过 80%，检查交付积压与在途完成预留"}
+      - alert: GatewayOutboxGCFailure
+        expr: sum(increase(gateway_metering_gc_errors_total[5m])) > 0
+        labels: {severity: warning}
+        annotations: {summary: "已交付 Outbox 清理失败；检查数据库，勿删除账本去重证据"}
       - alert: GatewayMeteringPermitExpired
-        expr: max(gateway_metering_permit_expires_seconds{job="worker"}) < time()
+        # 3 秒许可短于 10 秒采样周期；核验采样当时的有效性，门禁仍实时检查。
+        expr: max(gateway_metering_permit_expires_seconds{job="worker"} - timestamp(gateway_metering_permit_expires_seconds{job="worker"})) <= 0 or absent(gateway_metering_permit_expires_seconds{job="worker"})
         for: 10s
         labels: {severity: critical}
-        annotations: {summary: "接单许可过期，检查计量依赖和消费水位"}
+        annotations: {summary: "采样时接单许可无效或指标缺失，检查计量依赖和消费水位"}
       - alert: GatewayMeteringAuditFailure
         expr: sum(increase(gateway_metering_audit_failures_total[5m])) > 0
         labels: {severity: critical}

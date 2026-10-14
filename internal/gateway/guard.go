@@ -15,17 +15,22 @@ type bucket struct {
 	at      time.Time
 	expires time.Time
 }
-type settlement struct{ Revision, Tokens, Micro int64 }
+type settlement struct {
+	Revision, Tokens, Micro, ReservedTokens, ReservedMicro int64
+	Hash                                                   string
+	Cancelled                                              bool
+}
 type MemoryGuard struct {
 	mu           sync.Mutex
 	buckets      map[string]bucket
 	counts       map[string]Counters
 	reservations map[string]Reservation
 	settled      map[string]settlement
+	startHashes  map[string]string
 }
 
 func NewMemoryGuard() *MemoryGuard {
-	return &MemoryGuard{buckets: map[string]bucket{}, counts: map[string]Counters{}, reservations: map[string]Reservation{}, settled: map[string]settlement{}}
+	return &MemoryGuard{buckets: map[string]bucket{}, counts: map[string]Counters{}, reservations: map[string]Reservation{}, settled: map[string]settlement{}, startHashes: map[string]string{}}
 }
 func (g *MemoryGuard) Rate(c context.Context, key string, n int64, period time.Duration) error {
 	return g.Take(c, key, n, 1, period)
@@ -65,13 +70,23 @@ func (g *MemoryGuard) Take(_ context.Context, key string, n, units int64, period
 	g.buckets[key] = b
 	return nil
 }
-func (g *MemoryGuard) Reserve(_ context.Context, a App, r Reservation) error {
+func (g *MemoryGuard) Reserve(ctx context.Context, a App, r Reservation) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if _, ok := g.reservations[r.ID]; ok {
+	hash, _ := ctx.Value(reservationHashKey{}).(string)
+	if old := g.startHashes[r.ID]; old != "" && hash != "" && old != hash {
+		return ErrEventConflict
+	}
+	if previous, ok := g.reservations[r.ID]; ok {
+		if previous != r {
+			return ErrEventConflict
+		}
 		return nil
 	}
-	if _, ok := g.settled[r.ID]; ok {
+	if previous, ok := g.settled[r.ID]; ok {
+		if previous.Cancelled {
+			return ErrFenced
+		}
 		return nil
 	}
 	if len(g.reservations)+len(g.settled) >= maxMemoryAttempts || len(g.counts) >= maxMemoryAttempts {
@@ -89,12 +104,16 @@ func (g *MemoryGuard) Reserve(_ context.Context, a App, r Reservation) error {
 	c.ReservedMicro += r.Micro
 	g.counts[k] = c
 	g.reservations[r.ID] = r
+	g.startHashes[r.ID] = hash
 	return nil
 }
 func (g *MemoryGuard) Settle(_ context.Context, e Event) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	old, ok := g.settled[e.AttemptID]
+	if ok && old.Revision == e.Revision && old.Hash != eventDigest(e) {
+		return ErrEventConflict
+	}
 	if ok && old.Revision >= e.Revision {
 		return nil
 	}
@@ -103,20 +122,25 @@ func (g *MemoryGuard) Settle(_ context.Context, e Event) error {
 	}
 	k := e.AppID + ":" + e.Month
 	c := g.counts[k]
+	previousRT, previousRM := old.ReservedTokens, old.ReservedMicro
 	if !ok {
 		if r, exists := g.reservations[e.AttemptID]; exists {
-			c.ReservedTokens -= r.Tokens
-			c.ReservedMicro -= r.Micro
+			previousRT, previousRM = r.Tokens, r.Micro
 		}
 	}
-	c.Tokens += e.Usage.Total - old.Tokens
-	c.Micro += e.CostMicro - old.Micro
+	_, applied := billingExposure(e)
+	c.Tokens += applied.Tokens - old.Tokens
+	c.Micro += applied.Micro - old.Micro
+	c.ReservedTokens += applied.ReservedTokens - previousRT
+	c.ReservedMicro += applied.ReservedMicro - previousRM
 	g.counts[k] = c
 	delete(g.reservations, e.AttemptID)
 	// 去重只需版本及已入账金额，避免重复持有完整模型配置和采样正文。
-	g.settled[e.AttemptID] = settlement{e.Revision, e.Usage.Total, e.CostMicro}
+	g.settled[e.AttemptID] = settlement{Revision: e.Revision, Tokens: applied.Tokens, Micro: applied.Micro, ReservedTokens: applied.ReservedTokens, ReservedMicro: applied.ReservedMicro, Hash: eventDigest(e), Cancelled: e.Status == "cancelled"}
 	return nil
 }
+
+func (g *MemoryGuard) Cancel(c context.Context, e Event) error { return g.Settle(c, cancelEvent(e)) }
 func (g *MemoryGuard) Counters(_ context.Context, a, m string) (Counters, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -166,6 +190,8 @@ if ARGV[8]=='true' then
  local ok,p=pcall(cjson.decode,raw);if not ok or p.generation~=ARGV[9] or p.expires<tonumber(ARGV[10]) or p.expires<=now then return -1 end
  local app=redis.call('HMGET',ARGV[11],'state','generation');if app[1]~='healthy' or app[2]~=ARGV[12] then return -1 end
 end
+if redis.call('HGET',KEYS[2],'cancelled')=='1' then if ARGV[14]~='true' then return -2 else return 1 end end
+local original=redis.call('HGET',KEYS[2],'start_hash');if original and ARGV[13]~='' and original~=ARGV[13] then return -3 end
 if redis.call('HEXISTS',KEYS[2],'reserved')==1 or redis.call('HEXISTS',KEYS[2],'revision')==1 then return 1 end
 if ARGV[8]=='true' and redis.call('EXISTS','gw:metering:frozen')==1 then return -1 end
 if ARGV[7]=='true' then
@@ -176,7 +202,7 @@ end
 local v=redis.call('HMGET',KEYS[1],'tokens','micro','rt','rm');local t=tonumber(v[1]) or 0;local m=tonumber(v[2]) or 0;local rt=tonumber(v[3]) or 0;local rm=tonumber(v[4]) or 0
 local limit=tonumber(ARGV[3]);local budget=tonumber(ARGV[4]);if limit>0 and t+rt+tonumber(ARGV[1])>limit then return 0 end
 if budget>0 and ARGV[5]=='reject' and m+rm+tonumber(ARGV[2])>budget then return 0 end
-redis.call('HINCRBY',KEYS[1],'rt',ARGV[1]);redis.call('HINCRBY',KEYS[1],'rm',ARGV[2]);redis.call('HSET',KEYS[2],'reserved',1,'rt',ARGV[1],'rm',ARGV[2]);return 1`
+redis.call('HINCRBY',KEYS[1],'rt',ARGV[1]);redis.call('HINCRBY',KEYS[1],'rm',ARGV[2]);redis.call('HSET',KEYS[2],'reserved',1,'rt',ARGV[1],'rm',ARGV[2]);if ARGV[13]~='' then redis.call('HSET',KEYS[2],'start_hash',ARGV[13],'hash',ARGV[13]) end;return 1`
 
 func (g RedisGuard) Reserve(c context.Context, a App, r Reservation) error {
 	// 连接池、DNS 和网络读写共享一次操作的预算，依赖中断不能拖满整个推理请求。
@@ -184,12 +210,19 @@ func (g RedisGuard) Reserve(c context.Context, a App, r Reservation) error {
 	defer cancel()
 	// 90% 水位拒绝新增预占，余量留给已发生费用的结算；INFO/策略无法核验时失败关闭。
 	proof, _ := c.Value(admissionProofKey{}).(admissionProof)
-	v, e := g.Client.Eval(c, reserveLua, quotaKeys(a.ID, r.Month, r.ID), r.Tokens, r.Micro, a.MonthlyTokens, a.BudgetMicro, a.BudgetAction, strconv.FormatBool(g.RequireReady), strconv.FormatBool(g.EnforceMemory), strconv.FormatBool(g.RequireReady && !g.Replay), proof.Permit.Generation, proof.Permit.Expires, appControlKey(a.ID), proof.AppGeneration).Int()
+	hash, _ := c.Value(reservationHashKey{}).(string)
+	v, e := g.Client.Eval(c, reserveLua, quotaKeys(a.ID, r.Month, r.ID), r.Tokens, r.Micro, a.MonthlyTokens, a.BudgetMicro, a.BudgetAction, strconv.FormatBool(g.RequireReady), strconv.FormatBool(g.EnforceMemory), strconv.FormatBool(g.RequireReady && !g.Replay), proof.Permit.Generation, proof.Permit.Expires, appControlKey(a.ID), proof.AppGeneration, hash, strconv.FormatBool(g.Replay)).Int()
 	if e != nil {
 		return ErrUnavailable
 	}
 	if v == -1 {
 		return ErrUnavailable
+	}
+	if v == -2 {
+		return ErrFenced
+	}
+	if v == -3 {
+		return ErrEventConflict
 	}
 	if v == 0 {
 		return ErrLimit
@@ -198,9 +231,11 @@ func (g RedisGuard) Reserve(c context.Context, a App, r Reservation) error {
 }
 
 const settleLua = `if ARGV[4]=='true' and redis.call('GET','gw:quota:state')~='ready' then return -1 end
-local old=redis.call('HMGET',KEYS[2],'revision','tokens','micro','rt','rm','hash');local rev=tonumber(old[1]) or 0;if rev==tonumber(ARGV[1]) and old[6] and old[6]~=ARGV[5] then return -1 end;if rev>=tonumber(ARGV[1]) then return 1 end
-if rev==0 then redis.call('HINCRBY',KEYS[1],'rt',-(tonumber(old[4]) or 0));redis.call('HINCRBY',KEYS[1],'rm',-(tonumber(old[5]) or 0)) end
-redis.call('HINCRBY',KEYS[1],'tokens',tonumber(ARGV[2])-(tonumber(old[2]) or 0));redis.call('HINCRBY',KEYS[1],'micro',tonumber(ARGV[3])-(tonumber(old[3]) or 0));redis.call('HSET',KEYS[2],'revision',ARGV[1],'tokens',ARGV[2],'micro',ARGV[3],'hash',ARGV[5]);return 1`
+local old=redis.call('HMGET',KEYS[2],'revision','tokens','micro','rt','rm','hash');local rev=tonumber(old[1]) or 0
+if rev==tonumber(ARGV[1]) and old[6] and old[6]~=ARGV[5] then return -3 end;if rev>=tonumber(ARGV[1]) then return 1 end
+redis.call('HINCRBY',KEYS[1],'tokens',tonumber(ARGV[2])-(tonumber(old[2]) or 0));redis.call('HINCRBY',KEYS[1],'micro',tonumber(ARGV[3])-(tonumber(old[3]) or 0))
+redis.call('HINCRBY',KEYS[1],'rt',tonumber(ARGV[6])-(tonumber(old[4]) or 0));redis.call('HINCRBY',KEYS[1],'rm',tonumber(ARGV[7])-(tonumber(old[5]) or 0))
+redis.call('HSET',KEYS[2],'revision',ARGV[1],'tokens',ARGV[2],'micro',ARGV[3],'hash',ARGV[5],'rt',ARGV[6],'rm',ARGV[7],'billing_state',ARGV[8]);if ARGV[9]=='true' then redis.call('HSET',KEYS[2],'cancelled',1) end;return 1`
 
 func (g RedisGuard) Settle(c context.Context, e Event) error {
 	c, cancel := context.WithTimeout(c, time.Second)
@@ -208,12 +243,17 @@ func (g RedisGuard) Settle(c context.Context, e Event) error {
 	if e.Revision < 2 {
 		return errors.New("completed event requires revision >= 2")
 	}
-	v, err := g.Client.Eval(c, settleLua, quotaKeys(e.AppID, e.Month, e.AttemptID), e.Revision, e.Usage.Total, e.CostMicro, strconv.FormatBool(g.RequireReady), eventDigest(e)).Int()
+	state, applied := billingExposure(e)
+	v, err := g.Client.Eval(c, settleLua, quotaKeys(e.AppID, e.Month, e.AttemptID), e.Revision, applied.Tokens, applied.Micro, strconv.FormatBool(g.RequireReady), eventDigest(e), applied.ReservedTokens, applied.ReservedMicro, state, strconv.FormatBool(e.Status == "cancelled")).Int()
+	if v == -3 {
+		return ErrEventConflict
+	}
 	if err != nil || v == -1 {
 		return ErrUnavailable
 	}
 	return nil
 }
+func (g RedisGuard) Cancel(c context.Context, e Event) error { return g.Settle(c, cancelEvent(e)) }
 func (g RedisGuard) Counters(c context.Context, a, m string) (Counters, error) {
 	c, cancel := context.WithTimeout(c, time.Second)
 	defer cancel()

@@ -1,0 +1,33 @@
+# 显式叠加启用私有 Grafana；随机密码保存在权限受限的 .grafana.env。
+services:
+  grafana:
+    image: ${GW_GRAFANA_IMAGE:-grafana/grafana:13.2.3}
+    env_file: ${GW_GRAFANA_ENV_FILE:-../../.grafana.env}
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_SERVER_ROOT_URL: ${GW_GRAFANA_ROOT_URL:-http://localhost:13000/}
+      GOMEMLIMIT: 384MiB
+      GOMAXPROCS: "1"
+    ports: ["127.0.0.1:3000:3000"]
+    mem_limit: 512m
+    cpus: 1
+    pids_limit: 128
+    read_only: true
+    tmpfs: ["/tmp:size=32m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+    volumes:
+      - grafana:/var/lib/grafana
+      - ../observability/grafana:/etc/grafana/provisioning:ro
+      - ../observability/dashboard.json:/var/lib/grafana/dashboards/gateway.json:ro
+volumes:
+  grafana: {}

@@ -18,7 +18,7 @@ Redis 预占与结算使用原子操作和 attempt 幂等键；已完成事件�
 
 Redis 治理操作有 1 秒总期限；建连及池等待各上限 1 秒，读取/写入各 250 毫秒，并显式限制建连和命令重试次数。操作期限覆盖叠加的 DNS/连接/重试等待，防止 Redis 停止后 HTTP 请求长时间挂起。首次启动和离线恢复的整体期限另行控制。
 
-生产网关先将 started 保存至 SQL outbox，为 completed 预留空间，再等待 Kafka ACK。completed 尝试 outbox 后，即使 SQL 失败也继续尝试 Kafka；后台发送者从 outbox 补发。账本仅由消费者写入，消费者结算 Redis 后释放补偿容量。事件 ID/版本内容冲突明确失败，不靠 INSERT IGNORE 吞掉。
+生产网关先在短 SQL Prepare 事务内创建 prepared attempt 并预留完成事件空间；同步 Redis 原子检查预算并预占；再用短 SQL Arm 事务写 revision 1 开始账本并将 attempt 转为 inflight，明确提交后才调用上游。事务不跨 Redis、Kafka 或 HTTP。正常路径不再发布 started Kafka；completed 仍先尝试 SQL Outbox，即使 SQL 失败也独立尝试 Kafka，成功 JSON 与 SSE DONE 仍等待完成 ACK。消费者结算 Redis 后释放补偿容量。事件 ID/版本内容冲突明确失败，不靠 INSERT IGNORE 吞掉。
 
 usage 修正事务合并版本分配、审计与 outbox，支持 Idempotency-Key 重试。计量依赖故障通过 SQL 控制状态和 Redis 冻结标记停止新增付费调用，既有重放及结算继续；readyz 同时核验计量状态。清除冻结需停写核验，未知 started 必须核实用量后修正。
 
@@ -26,9 +26,9 @@ usage 修正事务合并版本分配、审计与 outbox，支持 Idempotency-Key
 
 worker 在独占 SQL 连接锁下检查来源、SQL 控制、Redis generation 和已提交 Kafka/Redis 水位，每秒续发有效期 3 秒的 etcd 许可。冻结状态与许可同处配置前缀下的 metering 命名空间；网关通过 etcd 事务读取两者，登记准备/在途 attempt，Redis Lua 再检查绝对到期时间、全局和应用代次。许可不可续期或存储不明时拒绝新费用；SQL 检查点可以领先 Redis，不按正常异步延迟冻结。
 
-正式核验将目标应用置 quiescing，串行化新入口登记、started 保存与管理修正，等待在途登记退出，再捕获 Kafka 固定水位并排空该应用补偿。分页比较月份计数、预占、最新版本、事件哈希以及孤立键；失败保持该应用 frozen，未知 started 不按超时清零。详细核验串行轮转，成功后至少隔 60 秒再核验同一应用，最多等待 150 秒；该应用期间会拒绝新付费调用。控制台与指标展示报告、冻结原因、未核验数量和轮转时间，这不是无中断或所有租户 10 秒内必检的方案。
+正式核验将目标应用置 quiescing，串行化 Prepare、Arm 与管理修正，等待 prepared/inflight 和未完成取消补偿退出，再捕获 Kafka 固定水位并排空该应用补偿。分页比较月份计数、预占、最新版本、事件哈希以及孤立键；失败保持该应用 frozen，未知 started 不按超时清零。详细核验串行轮转，成功后至少隔 60 秒再核验同一应用，最多等待 150 秒；该应用期间会拒绝新付费调用。控制台与指标展示报告、冻结原因、未核验数量和轮转时间，这不是无中断或所有租户 10 秒内必检的方案。
 
-每实例默认最多 8 个付费在途 attempt（GW_MAX_METERING_INFLIGHT），槽位覆盖准备、上游调用及完成计量收尾，等待最多 1 秒；started/completed 保存各最多 8 并发，started 保存槽位满直接拒绝。仅限制登记并发会把已接单费用集中到完成队列并耗尽 SQL 预算，不能保护收尾。登记前预检 outbox 剩余容量以减少满容量时的预占/取消洪峰；最终容量检查仍在原子 outbox 事务中。生产门禁拒绝且尚未调用厂商时保留指标，不再把请求汇总加入受压队列；已经产生的费用、取消和完成事件仍须持久化。
+每实例默认最多 8 个付费在途 attempt（GW_MAX_METERING_INFLIGHT），槽位覆盖 Prepare、上游及完成收尾，等待最多 1 秒；completed 保存并发限制为 8。Prepare 在容量行锁下原子核验并预留 1MiB，完成保存优先使用 attempt 内剩余预留，不再依赖独立 slots 或 admissions 表。预算拒绝或 prepared 崩溃通过取消 CAS、Redis 终止凭据和 SQL 完成补偿释放资源；inflight 不按年龄退款。未知 completed 入账后仍保留预算暴露额度，直到费用修正确认。worker 启动即执行维护，之后每 5 秒分批扫描补偿，每分钟采样状态并清理交付满 24 小时的 Outbox 元数据。账本 hash 和交付凭据继续阻止旧事件重新占用容量。
 
 ## 安全与边界
 
@@ -49,3 +49,5 @@ worker 在独占 SQL 连接锁下检查来源、SQL 控制、Redis generation �
 HTTP 监听器使用 LimitListener 约束 TCP 接入；Engine/Admin 各自共享 admission 槽，控制台 playground 同时受管理与业务槽约束。拒绝在鉴权和正文解析前执行；响应包装器保留 Unwrap/FlushError，按块更新底层 socket 写期限，不将 SSE 的总时限当作单次写期限。监控抓取同样限并发和处理期限。
 
 Kafka 事件及预取、配置快照、记录查询和报表均限制结果规模。MySQL 连接保留 socket 超时；管理查询有 30 秒上下文期限。Go 软内存预算配合容器硬限额使用，不保证任意配置和负载下无 OOM。离线账本/去重达到容量后失败关闭；缓存按字节淘汰，避免只限制条数而被大响应撑满。
+
+新架构字段、迁移和故障窗口见 [metering-flow-refactor-spec.md](metering-flow-refactor-spec.md)。旧 started 回放兼容仍属于恢复依赖；停写迁移成功后删除旧 slots/admissions 表，回滚需要迁移前一致性备份。单主 Redis 的 Lua 原子性不覆盖分布式切主丢写，相关优化仅在 spec 中记录。

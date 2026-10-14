@@ -85,7 +85,8 @@ func TestFallbackHasSeparateAttempts(t *testing.T) {
 		t.Fatalf("expected 2 attempts: %+v", events)
 	}
 	c, _ := e.Guard.Counters(context.Background(), "app", month(time.Now()))
-	if c.ReservedTokens != 0 || c.Tokens <= 0 {
+	// 主模型失败的费用未知，回退成功不应释放上一 attempt 的暴露额度。
+	if c.ReservedTokens <= 0 || c.ReservedMicro <= 0 || c.Tokens <= 0 {
 		t.Fatal(c)
 	}
 }
@@ -130,10 +131,16 @@ func (b failedBus) Publish(c context.Context, e Event) error {
 	return b.Delegate.Publish(c, e)
 }
 func (b failedBus) Close() error { return nil }
+
+type failedArmStore struct{ *MemoryStore }
+
+func (s failedArmStore) ArmAttempt(context.Context, Event) error {
+	return errors.New("injected Arm commit failure")
+}
 func TestMeteringFailureDoesNotCallProvider(t *testing.T) {
 	var calls atomic.Int32
 	e := testEngine(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); MockProvider(w, r) })
-	e.Bus = failedBus{e.Bus, false}
+	e.Store = failedArmStore{e.Store.(*MemoryStore)}
 	w := call(t, e, "hello", false)
 	if w.Code != 503 || calls.Load() != 0 {
 		t.Fatalf("unmetered call: %d %d", w.Code, calls.Load())

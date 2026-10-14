@@ -189,3 +189,7 @@ SSE 首事件 P95 为成功调用的 1329.4ms，拒绝响应不参与该分位�
 最终容器 gw_acceptance_8b1d7477b571：9 项通过，约 206.4 秒，包含全部压力和 SIGKILL/AOF 故障场景。四组短突发零协议错误，仍有 68%～96.7% 保护性拒绝；成功 P99 相比本轮优化前基线有所下降，SSE 首事件 P95 未改善。按事件数折算 offset 提交次数减少约 76%，突发阶段推理内部开销均值约 1061→719ms。五组各 20 秒固定到达率多应用样本共 420 次全部成功，无拒绝/调度丢弃/协议错误，逐应用 SQL/Redis 一致且无预占残留；10次/秒成功 P99 为 449.4ms。详细方法、前后数值和测量限制见 [metering-performance-report.md](metering-performance-report.md) 与 [metering-performance-results.json](metering-performance-results.json)。
 
 随机验收容器及临时凭据文件清理检查通过，现有应用未升级。20 秒样本不证明长期容量，原开销 P50<10ms/P99<30ms 未达标；周期屏障暂停/中断接续、历史生命周期、真实厂商、云预发、Linux race、物理备份/PITR 与整节点故障仍待后续。代码与测试结果待按 AGENTS.md 人工确认，再进入后续方案阶段。
+
+## 2026-10-14 计量生命周期重构
+
+最终 Go 全量测试、vet/build、gofmt 和部署查询校验通过；真实基础设施31项（gw_acceptance_2f7b6b760cf3）与完整容器12项（gw_acceptance_4eb1311b08d7）通过。正常路径移除 started Kafka，Prepare/Arm 同步开始证据，取消补偿、held、GC、旧表迁移与删除均有回归。五分钟2RPS为600/600成功；该轮后续Redis故障失败已另行修复重跑，未将失败整轮标为通过。同环境基线、原始分母、资源范围、遗留瓶颈及全部失败记录见 [验收报告](metering-lifecycle-refactor-report.md)。未推送或升级现有部署。

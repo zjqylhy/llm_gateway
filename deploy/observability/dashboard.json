@@ -4,1137 +4,1398 @@
   "tags": [
     "llm-gateway"
   ],
-  "version": 1,
+  "version": 2,
   "panels": [
     {
       "id": 1,
+      "type": "timeseries",
+      "title": "请求 QPS：全量与流式",
+      "description": "每个已结束客户端请求一次；包括准入拒绝，不把模型重试重复计为请求。unknown 表示尚未解析正文。进程崩溃可能丢失结束指标，需结合客户端负载结果。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(gateway_requests_total[1m]))"
+          "expr": "sum(max by(app,source,api,stream,outcome,http_status,error_code) (rate(gateway_api_calls_total{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\"}[$__rate_interval])))",
+          "legendFormat": "全量请求"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(max by(app,source,api,stream,outcome,http_status,error_code) (rate(gateway_api_calls_total{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\",stream=\"false\"}[$__rate_interval])))",
+          "legendFormat": "非流式"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(max by(app,source,api,stream,outcome,http_status,error_code) (rate(gateway_api_calls_total{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\",stream=\"true\"}[$__rate_interval])))",
+          "legendFormat": "流式"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "ops"
+          "unit": "ops",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 0,
-        "h": 7,
-        "w": 8,
-        "y": 0
-      },
-      "type": "timeseries",
-      "title": "请求 QPS",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 2,
+      "type": "timeseries",
+      "title": "请求成功率",
+      "description": "保护性拒绝仍属于全量分母；SSE 业务错误按实际结束结果计失败。模型筛选不改变请求分母。无流量显示 N/A。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(gateway_requests_total{status=~\"success|fallback_success\"}[5m])) / clamp_min(sum(rate(gateway_requests_total[5m])),0.001)"
+          "expr": "(sum(max by(app,source,api,stream,outcome,http_status,error_code) (rate(gateway_api_calls_total{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\",outcome=\"success\"}[$__rate_interval]))) or vector(0))/sum(max by(app,source,api,stream,outcome,http_status,error_code) (rate(gateway_api_calls_total{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\"}[$__rate_interval])))",
+          "legendFormat": "成功 / 全量"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit"
+          "unit": "percentunit",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 8,
-        "h": 7,
-        "w": 8,
-        "y": 0
-      },
-      "type": "timeseries",
-      "title": "成功率",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 3,
+      "type": "timeseries",
+      "title": "Token 消耗 / 秒：输入、输出、总量",
+      "description": "实际 attempt 用量；重试、embedding 独立计入。estimated 与 reported 分开；cached_input 是 input 子集，不再叠加到总量。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(gateway_requests_total{status=~\"failed|stream_error\"}[5m])) / clamp_min(sum(rate(gateway_requests_total[5m])),0.001)"
+          "expr": "sum by(kind,quality) (rate(gateway_tokens_total{app=~\"$app\",model=~\"$model\",instance=~\"$instance\",kind=~\"input|output\"}[$__rate_interval]))",
+          "legendFormat": "{{kind}} / {{quality}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by(quality) (rate(gateway_tokens_total{app=~\"$app\",model=~\"$model\",instance=~\"$instance\",kind=~\"input|output\"}[$__rate_interval]))",
+          "legendFormat": "总量 / {{quality}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit"
+          "unit": "ops",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 16,
-        "h": 7,
-        "w": 8,
-        "y": 0
-      },
-      "type": "timeseries",
-      "title": "失败率",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 4,
+      "type": "timeseries",
+      "title": "请求平均 RT / ms",
+      "description": "包含缓存命中、流式完整响应及早期拒绝；按实例/应用/API/流式筛选。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(gateway_requests_total{status=\"rate_limited\"}[5m])) / clamp_min(sum(rate(gateway_requests_total[5m])),0.001)"
+          "expr": "sum(rate(gateway_api_seconds_sum{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\"}[$__rate_interval]))/(sum(rate(gateway_api_seconds_count{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\"}[$__rate_interval])))*1000",
+          "legendFormat": "整体请求"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit"
+          "unit": "ms",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 0,
-        "h": 7,
-        "w": 8,
-        "y": 7
-      },
-      "type": "timeseries",
-      "title": "限流比例",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 5,
+      "type": "timeseries",
+      "title": "缓存命中与失败 / 秒",
+      "description": "缓存当前为全局指标，不支持应用/API/模型筛选。缓存禁用时显示 N/A。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.5,sum(rate(gateway_request_seconds_bucket[5m])) by(le))"
+          "expr": "sum by(result) (rate(gateway_cache_operations_total[$__rate_interval]))",
+          "legendFormat": "{{result}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "s"
+          "unit": "ops",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 8,
-        "h": 7,
-        "w": 8,
-        "y": 7
-      },
-      "type": "timeseries",
-      "title": "请求 P50",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 6,
+      "type": "timeseries",
+      "title": "限流与保护性拒绝 / 秒",
+      "description": "限流、预算、实例过载和计量保护分开；不能把拒绝率当作上游执行故障率。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.99,sum(rate(gateway_request_seconds_bucket[5m])) by(le))"
+          "expr": "sum(max by(app,source,api,stream,outcome,http_status,error_code) (rate(gateway_api_calls_total{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\",outcome=\"error\",error_code=~\"insufficient_quota|app_qps_exceeded|gateway_overloaded|governance_unavailable|metering_unavailable\"}[$__rate_interval])))",
+          "legendFormat": "保护性拒绝"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by(error_code) (max by(app,source,api,stream,outcome,http_status,error_code) (rate(gateway_api_calls_total{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\",error_code=~\"insufficient_quota|app_qps_exceeded|gateway_overloaded|governance_unavailable|metering_unavailable\"}[$__rate_interval])))",
+          "legendFormat": "{{error_code}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "s"
+          "unit": "ops",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 16,
-        "h": 7,
-        "w": 8,
-        "y": 7
-      },
-      "type": "timeseries",
-      "title": "请求 P99",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 7,
+      "type": "timeseries",
+      "title": "请求 P95 / P99 RT",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.5,sum(rate(gateway_overhead_seconds_bucket{purpose=\"inference\"}[5m])) by(le))"
+          "expr": "histogram_quantile(0.95,sum by(le)(rate(gateway_api_seconds_bucket{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\"}[$__rate_interval])))*1000",
+          "legendFormat": "0.95"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.99,sum by(le)(rate(gateway_api_seconds_bucket{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\"}[$__rate_interval])))*1000",
+          "legendFormat": "0.99"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "s"
+          "unit": "ms",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 0,
-        "h": 7,
-        "w": 8,
-        "y": 14
-      },
-      "type": "timeseries",
-      "title": "网关开销 P50",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 8,
+      "type": "timeseries",
+      "title": "保护性拒绝率与执行故障率",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.99,sum(rate(gateway_overhead_seconds_bucket{purpose=\"inference\"}[5m])) by(le))"
+          "expr": "(sum(max by(app,source,api,stream,outcome,http_status,error_code) (rate(gateway_api_calls_total{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\",outcome=\"error\",error_code=~\"insufficient_quota|app_qps_exceeded|gateway_overloaded|governance_unavailable|metering_unavailable\"}[$__rate_interval]))) or vector(0))/sum(max by(app,source,api,stream,outcome,http_status,error_code) (rate(gateway_api_calls_total{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\"}[$__rate_interval])))",
+          "legendFormat": "保护性拒绝 / 全量"
+        },
+        {
+          "refId": "B",
+          "expr": "(sum(max by(app,source,api,stream,outcome,http_status,error_code) (rate(gateway_api_calls_total{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\",outcome=\"error\",error_code!~\"insufficient_quota|app_qps_exceeded|gateway_overloaded|governance_unavailable|metering_unavailable\"}[$__rate_interval]))) or vector(0))/sum(max by(app,source,api,stream,outcome,http_status,error_code) (rate(gateway_api_calls_total{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\"}[$__rate_interval])))",
+          "legendFormat": "其他失败 / 全量（含鉴权、输入与执行错误）"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "s"
+          "unit": "percentunit",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 8,
-        "h": 7,
-        "w": 8,
-        "y": 14
-      },
-      "type": "timeseries",
-      "title": "网关开销 P99",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 9,
+      "type": "timeseries",
+      "title": "模型 attempt：成功与失败 / 秒",
+      "description": "实际付费尝试分母；不包含 prepared 取消，不等于客户端请求成功率。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95,sum(rate(gateway_first_token_seconds_bucket[5m])) by(le))"
+          "expr": "sum by(model,status,quality)(rate(gateway_attempts_total{app=~\"$app\",model=~\"$model\",instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "{{model}} / {{status}} / {{quality}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "s"
+          "unit": "ops",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 16,
-        "h": 7,
-        "w": 8,
-        "y": 14
-      },
-      "type": "timeseries",
-      "title": "首事件 P95",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 10,
+      "type": "timeseries",
+      "title": "首 Token P95 / P99",
+      "description": "从 attempt 开始到首次转发，包含准入开销；未转发事件无样本。模型指标不支持 API 筛选。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.99,sum(rate(gateway_attempt_seconds_bucket[5m])) by(le,model))"
+          "expr": "histogram_quantile(0.95,sum by(le,model)(rate(gateway_first_token_seconds_bucket{app=~\"$app\",model=~\"$model\",instance=~\"$instance\"}[$__rate_interval])))",
+          "legendFormat": "{{model}} / 0.95"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.99,sum by(le,model)(rate(gateway_first_token_seconds_bucket{app=~\"$app\",model=~\"$model\",instance=~\"$instance\"}[$__rate_interval])))",
+          "legendFormat": "{{model}} / 0.99"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "s"
+          "unit": "s",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 0,
-        "h": 7,
-        "w": 8,
-        "y": 21
-      },
-      "type": "timeseries",
-      "title": "上游 P99",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 11,
+      "type": "timeseries",
+      "title": "网关自身开销 P95 / P99",
+      "description": "attempt 总时间减上游读取/转发时间，含计量 ACK；当前按 purpose 与实例统计。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(gateway_active_requests)"
+          "expr": "histogram_quantile(0.95,sum by(le,purpose)(rate(gateway_overhead_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "legendFormat": "{{purpose}} / 0.95"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.99,sum by(le,purpose)(rate(gateway_overhead_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "legendFormat": "{{purpose}} / 0.99"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short"
+          "unit": "s",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 8,
-        "h": 7,
-        "w": 8,
-        "y": 21
-      },
-      "type": "timeseries",
-      "title": "活跃请求",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 12,
+      "type": "timeseries",
+      "title": "Prepare / Arm / 完成保存 P95",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 40,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(gateway_attempts_total[1m])) by(model)"
+          "expr": "histogram_quantile(0.95,sum by(le,stage)(rate(gateway_metering_stage_seconds_bucket{stage=~\"prepare|arm|outbox_save\"}[$__rate_interval])))",
+          "legendFormat": "{{stage}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "ops"
+          "unit": "s",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 16,
-        "h": 7,
-        "w": 8,
-        "y": 21
-      },
-      "type": "timeseries",
-      "title": "上游尝试速率",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 13,
+      "type": "timeseries",
+      "title": "计量拒绝原因 / 秒",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 48,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(gateway_tokens_total{kind=\"input\"}[1m])) by(app)"
+          "expr": "sum by(reason)(rate(gateway_metering_rejections_total[$__rate_interval]))",
+          "legendFormat": "{{reason}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short"
+          "unit": "ops",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 0,
-        "h": 7,
-        "w": 8,
-        "y": 28
-      },
-      "type": "timeseries",
-      "title": "输入 Token 速率",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 14,
+      "type": "timeseries",
+      "title": "Prepared / Inflight / Held / 待补偿",
+      "description": "全局 SQL 快照；使用 max 避免多 Worker 重复相加。不是实时 Redis 快照；结合采样新鲜度判断。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 48,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(gateway_tokens_total{kind=\"output\"}[1m])) by(app)"
+          "expr": "max by(state)(gateway_metering_attempt_records{job=\"worker\"})",
+          "legendFormat": "{{state}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short"
+          "unit": "short",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 8,
-        "h": 7,
-        "w": 8,
-        "y": 28
-      },
-      "type": "timeseries",
-      "title": "输出 Token 速率",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 15,
+      "type": "timeseries",
+      "title": "Outbox 逻辑占用与限额",
+      "description": "payload + attempt 剩余完成预留；不含历史账本、元数据、索引、binlog 和数据库物理页。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 56,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(gateway_cost_micro_total[1m])) by(app)/1000000"
+          "expr": "max(gateway_metering_outbox_bytes{job=\"worker\"})",
+          "legendFormat": "已占用"
+        },
+        {
+          "refId": "B",
+          "expr": "max(gateway_metering_outbox_limit_bytes{job=\"worker\"})",
+          "legendFormat": "配置限额"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "currencyCNY"
+          "unit": "bytes",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 16,
-        "h": 7,
-        "w": 8,
-        "y": 28
-      },
-      "type": "timeseries",
-      "title": "成本速率 CNY",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 16,
+      "type": "timeseries",
+      "title": "未知费用保留暴露",
+      "description": "SQL 财务投影，非确认费用或厂商账单；应用/API/模型筛选不作用于全局快照。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 56,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(gateway_cache_operations_total{result=\"hit\"}[5m])) / clamp_min(sum(rate(gateway_cache_operations_total[5m])),0.001)"
+          "expr": "max(gateway_metering_held_micro{job=\"worker\"})/1000000",
+          "legendFormat": "held 预算暴露"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit"
+          "unit": "currencyCNY",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 0,
-        "h": 7,
-        "w": 8,
-        "y": 35
-      },
-      "type": "timeseries",
-      "title": "缓存命中率",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 17,
+      "type": "timeseries",
+      "title": "Kafka 计量积压",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 64,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(gateway_cache_operations_total{result=\"error\"}[5m]))"
+          "expr": "max(gateway_metering_lag_records{job=\"worker\"})",
+          "legendFormat": "未提交记录"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "ops"
+          "unit": "short",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 8,
-        "h": 7,
-        "w": 8,
-        "y": 35
-      },
-      "type": "timeseries",
-      "title": "缓存失败速率",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 18,
+      "type": "timeseries",
+      "title": "最老待补偿年龄",
+      "description": "年龄仅用于告警与领取，不是自动退款证据。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 64,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(gateway_event_publish_errors_total[5m]))"
+          "expr": "max(gateway_metering_compensation_oldest_seconds{job=\"worker\"})",
+          "legendFormat": "待补偿年龄"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "ops"
+          "unit": "s",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 16,
-        "h": 7,
-        "w": 8,
-        "y": 35
-      },
-      "type": "timeseries",
-      "title": "计量发布失败",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 19,
+      "type": "timeseries",
+      "title": "Worker 结算、释放、水位、offset P95",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 72,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "gateway_config_version"
+          "expr": "histogram_quantile(0.95,sum by(le,stage)(rate(gateway_metering_stage_seconds_bucket{stage=~\"redis_settle|outbox_deliver|offset_commit\"}[$__rate_interval])))",
+          "legendFormat": "{{stage}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short"
+          "unit": "s",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 0,
-        "h": 7,
-        "w": 8,
-        "y": 42
-      },
-      "type": "timeseries",
-      "title": "实例配置版本",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 20,
+      "type": "timeseries",
+      "title": "补偿耗时与失败 / 秒",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 72,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "go_goroutines"
+          "expr": "histogram_quantile(0.95,sum by(le)(rate(gateway_metering_stage_seconds_bucket{stage=\"compensation\"}[$__rate_interval])))",
+          "legendFormat": "补偿 P95"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short"
+          "unit": "s",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 8,
-        "h": 7,
-        "w": 8,
-        "y": 42
-      },
-      "type": "timeseries",
-      "title": "Go 协程数量",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 21,
+      "type": "timeseries",
+      "title": "MySQL 连接使用",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 80,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "go_memstats_heap_alloc_bytes"
+          "expr": "sum(gateway_sql_pool_open{instance=~\"$instance\"})",
+          "legendFormat": "已打开"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(gateway_sql_pool_in_use{instance=~\"$instance\"})",
+          "legendFormat": "使用中"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "bytes"
+          "unit": "short",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 16,
-        "h": 7,
-        "w": 8,
-        "y": 42
-      },
-      "type": "timeseries",
-      "title": "Go 堆内存",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 22,
+      "type": "timeseries",
+      "title": "MySQL 连接等待",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 80,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "process_resident_memory_bytes"
+          "expr": "sum(rate(gateway_sql_pool_wait_seconds_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "累计等待秒 / 秒"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "bytes"
+          "unit": "s",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 0,
-        "h": 7,
-        "w": 8,
-        "y": 49
-      },
-      "type": "timeseries",
-      "title": "进程驻留内存",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 23,
+      "type": "timeseries",
+      "title": "进程 RSS / Go 堆",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 88,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "rate(process_cpu_seconds_total[1m])"
+          "expr": "process_resident_memory_bytes{instance=~\"$instance\",job=~\"gateway|admin|worker\"}",
+          "legendFormat": "{{job}} RSS"
+        },
+        {
+          "refId": "B",
+          "expr": "go_memstats_heap_alloc_bytes{instance=~\"$instance\",job=~\"gateway|admin|worker\"}",
+          "legendFormat": "{{job}} 堆"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short"
+          "unit": "bytes",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 8,
-        "h": 7,
-        "w": 8,
-        "y": 49
-      },
-      "type": "timeseries",
-      "title": "进程 CPU",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 24,
+      "type": "timeseries",
+      "title": "进程 CPU 核",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 88,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "up{job=~\"gateway|admin|worker\"}"
+          "expr": "rate(process_cpu_seconds_total{instance=~\"$instance\",job=~\"gateway|admin|worker\"}[$__rate_interval])",
+          "legendFormat": "{{job}} CPU 核"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short"
+          "unit": "none",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 16,
-        "h": 7,
-        "w": 8,
-        "y": 49
-      },
-      "type": "timeseries",
-      "title": "实例可达状态",
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
       "id": 25,
       "type": "timeseries",
-      "title": "计量消费积压",
+      "title": "GC 删除与失败 / 秒",
+      "description": "",
       "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
+        "type": "prometheus",
+        "uid": "prometheus"
       },
       "gridPos": {
         "x": 0,
-        "y": 56,
-        "w": 8,
-        "h": 7
+        "y": 96,
+        "w": 12,
+        "h": 8
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "gateway_metering_lag_records"
+          "expr": "sum(rate(gateway_metering_gc_removed_total[$__rate_interval]))",
+          "legendFormat": "Outbox 删除"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(gateway_metering_gc_errors_total[$__rate_interval]))",
+          "legendFormat": "GC 失败"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "id": 26,
       "type": "timeseries",
-      "title": "接单许可剩余秒数",
+      "title": "生命周期快照新鲜度",
+      "description": "一分钟采样一次；采样失败保留旧值，不能以旧的零积压判健康。",
       "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
+        "type": "prometheus",
+        "uid": "prometheus"
       },
       "gridPos": {
-        "x": 8,
-        "y": 56,
-        "w": 8,
-        "h": 7
+        "x": 12,
+        "y": 96,
+        "w": 12,
+        "h": 8
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "gateway_metering_permit_expires_seconds{job=\"worker\"} - time()"
+          "expr": "time()-max(gateway_metering_snapshot_seconds{job=\"worker\"})",
+          "legendFormat": "距上次成功采样"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "id": 27,
       "type": "timeseries",
-      "title": "待核验应用",
+      "title": "准入许可在采样时的剩余时间",
+      "description": "许可寿命 3 秒，采样周期 10 秒。相对本样本时间计算，表示采样时的有效性；不能据此判断此刻是否允许请求。请求仍实时校验 Redis/etcd 许可，指标缺失和组件不可达分别告警。",
       "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
+        "type": "prometheus",
+        "uid": "prometheus"
       },
       "gridPos": {
-        "x": 16,
-        "y": 56,
-        "w": 8,
-        "h": 7
+        "x": 0,
+        "y": 104,
+        "w": 12,
+        "h": 8
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "gateway_metering_unchecked_apps"
+          "expr": "clamp_min(max(gateway_metering_permit_expires_seconds{job=\"worker\"} - timestamp(gateway_metering_permit_expires_seconds{job=\"worker\"})), 0)",
+          "legendFormat": "采样时许可剩余"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "id": 28,
       "type": "timeseries",
-      "title": "应用核验轮转秒数",
+      "title": "用量报告的费用 / 秒",
+      "description": "请求观测值，非结算账本；修正不通过重跑模型产生此指标，财务金额以账本为准。",
       "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
+        "type": "prometheus",
+        "uid": "prometheus"
       },
       "gridPos": {
-        "x": 0,
-        "y": 63,
-        "w": 8,
-        "h": 7
+        "x": 12,
+        "y": 104,
+        "w": 12,
+        "h": 8
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "gateway_metering_rotation_seconds"
+          "expr": "sum by(quality)(rate(gateway_cost_micro_total{app=~\"$app\",model=~\"$model\",instance=~\"$instance\"}[$__rate_interval]))/1000000",
+          "legendFormat": "{{quality}}"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyCNY",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "id": 29,
       "type": "timeseries",
-      "title": "补偿载荷与预留字节",
+      "title": "事件发布失败 / 秒",
+      "description": "",
       "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
+        "type": "prometheus",
+        "uid": "prometheus"
       },
       "gridPos": {
-        "x": 8,
-        "y": 63,
-        "w": 8,
-        "h": 7
+        "x": 0,
+        "y": 112,
+        "w": 12,
+        "h": 8
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "gateway_metering_outbox_bytes"
+          "expr": "sum(rate(gateway_event_publish_errors_total[$__rate_interval]))",
+          "legendFormat": "发布错误"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "id": 30,
       "type": "timeseries",
-      "title": "SQL 连接等待秒数",
+      "title": "应用核验及覆盖",
+      "description": "",
       "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 16,
-        "y": 63,
-        "w": 8,
-        "h": 7
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "rate(gateway_sql_pool_wait_seconds_total[1m])"
-        }
-      ]
-    },
-    {
-      "id": 31,
-      "type": "timeseries",
-      "title": "SQL 活跃连接",
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 0,
-        "y": 70,
-        "w": 8,
-        "h": 7
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "gateway_sql_pool_in_use"
-        }
-      ]
-    },
-    {
-      "id": 32,
-      "type": "timeseries",
-      "title": "核验失败次数",
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 8,
-        "y": 70,
-        "w": 8,
-        "h": 7
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "increase(gateway_metering_audit_failures_total[5m])"
-        }
-      ]
-    },
-    {
-      "id": 33,
-      "type": "timeseries",
-      "title": "计量阶段 P95（含失败）",
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 0,
-        "y": 77,
-        "w": 12,
-        "h": 7
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, stage, kind, result) (rate(gateway_metering_stage_seconds_bucket[5m])))",
-          "legendFormat": "{{stage}} / {{kind}} / {{result}}"
-        }
-      ]
-    },
-    {
-      "id": 34,
-      "type": "timeseries",
-      "title": "计量拒绝原因",
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
+        "type": "prometheus",
+        "uid": "prometheus"
       },
       "gridPos": {
         "x": 12,
-        "y": 77,
+        "y": 112,
         "w": 12,
-        "h": 7
+        "h": 8
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (reason) (rate(gateway_metering_rejections_total[5m]))",
-          "legendFormat": "{{reason}}"
-        }
-      ]
-    },
-    {
-      "id": 35,
-      "type": "timeseries",
-      "title": "消费位置平均提交批次",
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 0,
-        "y": 84,
-        "w": 12,
-        "h": 7
-      },
-      "targets": [
+          "expr": "max(gateway_metering_unchecked_apps)",
+          "legendFormat": "待核验应用"
+        },
         {
-          "refId": "A",
-          "expr": "sum(rate(gateway_metering_commit_batch_records_sum[5m])) / clamp_min(sum(rate(gateway_metering_commit_batch_records_count[5m])), 0.001)"
+          "refId": "B",
+          "expr": "sum(increase(gateway_metering_audit_failures_total[$__rate_interval]))",
+          "legendFormat": "核验失败"
         }
-      ]
-    },
-    {
-      "id": 36,
-      "type": "timeseries",
-      "title": "应用成功 QPS",
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 0,
-        "y": 91,
-        "w": 8,
-        "h": 7
-      },
+      ],
       "fieldConfig": {
         "defaults": {
-          "unit": "ops"
+          "unit": "short",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12
+          }
         },
         "overrides": []
       },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum by(app) (max by(app,source) (rate(gateway_calls_total{app=~\"$app\",job=~\"gateway|admin\",outcome=\"success\"}[1m])))",
-          "legendFormat": "{{app}}"
-        }
-      ],
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     },
     {
-      "id": 37,
+      "id": 31,
+      "title": "进程 Goroutine",
       "type": "timeseries",
-      "title": "应用失败 QPS（按错误码）",
       "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
+        "type": "prometheus",
+        "uid": "prometheus"
       },
       "gridPos": {
-        "x": 8,
-        "y": 91,
-        "w": 8,
-        "h": 7
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ops"
-        },
-        "overrides": []
+        "x": 0,
+        "y": 120,
+        "w": 12,
+        "h": 8
       },
       "targets": [
         {
-          "refId": "A",
-          "expr": "sum by(app,http_status,error_code) (max by(app,source,http_status,error_code) (rate(gateway_calls_total{app=~\"$app\",job=~\"gateway|admin\",outcome=\"error\"}[1m]))) > 0",
-          "legendFormat": "{{app}} / {{http_status}} / {{error_code}}"
+          "refId": "B",
+          "expr": "go_goroutines{instance=~\"$instance\",job=~\"gateway|admin|worker\"}",
+          "legendFormat": "{{job}} goroutine"
         }
       ],
-      "options": {
-        "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
-        }
-      }
-    },
-    {
-      "id": 38,
-      "type": "timeseries",
-      "title": "应用生效 QPS 上限（0 不限制）",
-      "datasource": {
-        "uid": "prometheus",
-        "type": "prometheus"
-      },
-      "gridPos": {
-        "x": 16,
-        "y": 91,
-        "w": 8,
-        "h": 7
-      },
       "fieldConfig": {
         "defaults": {
-          "unit": "ops"
+          "unit": "short",
+          "noValue": "N/A"
         },
         "overrides": []
       },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "max by(app) (gateway_app_qps_limit{app=~\"$app\",job=~\"gateway|admin\"})",
-          "legendFormat": "{{app}}"
-        }
-      ],
       "options": {
         "legend": {
-          "placement": "bottom",
-          "displayMode": "list"
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       }
     }
@@ -1142,23 +1403,90 @@
   "uid": "llm-gateway",
   "timezone": "browser",
   "time": {
-    "from": "now-1h",
+    "from": "now-15m",
     "to": "now"
   },
   "editable": true,
-  "title": "LLM Gateway 运行监控",
+  "title": "LLM Gateway 可靠性与调用监控",
   "templating": {
     "list": [
       {
-        "name": "app",
-        "label": "应用",
+        "name": "instance",
+        "label": "网关实例",
         "type": "query",
         "datasource": {
-          "uid": "prometheus",
-          "type": "prometheus"
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values(gateway_api_calls_total, instance)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "app",
+        "label": "应用 / 消费者",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
         },
         "query": "label_values(gateway_app_qps_limit, app)",
         "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "api",
+        "label": "API",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values(gateway_api_calls_total, api)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "model",
+        "label": "实际模型（attempt 面板）",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values(gateway_attempts_total, model)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "stream",
+        "label": "流式",
+        "type": "custom",
+        "query": "false,true,unknown",
         "includeAll": true,
         "allValue": ".*",
         "multi": true,
