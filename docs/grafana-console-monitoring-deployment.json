@@ -37,8 +37,25 @@
   "feishu": "https://my.feishu.cn/wiki/J6v6wHF05i9ecikyXV1cSDZrntc",
   "developer_scope": {
     "local_real_grafana_two_owners": "passed",
-    "remote_real_developer_login": "pending_user_login",
-    "forged_session_test_executed": false
+    "remote_real_developer_login": "passed_browser_scope_checks",
+    "forged_session_test_executed": false,
+    "remote_browser_evidence": {
+      "checked_at": "2026-10-14T14:03:21.716Z",
+      "authentication": "user_logged_in_existing_developer",
+      "owned_app_count": 1,
+      "application_dashboard_panels": 13,
+      "console_and_grafana_options_owned_only": true,
+      "all_variable_metric_app_count": 1,
+      "foreign_app_variable_visible_panels_have_no_data": true,
+      "test_range_hours": 24,
+      "secondary_grafana_login_required": false,
+      "direct_json_navigation": "browser_blocked_http_status_not_observed",
+      "raw_promql_and_interface_bypass_evidence": "previous_local_real_grafana_tests_passed",
+      "business_config_changed": false,
+      "business_users_changed": false,
+      "forged_session_used": false,
+      "real_model_called": false
+    }
   },
   "initial_failed_attempt": {
     "reason": "Windows archive did not preserve Linux executable file modes",
