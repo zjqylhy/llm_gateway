@@ -15,8 +15,8 @@ data:
   GW_METERING_COMMIT_BATCH_SIZE: "32"
   GW_METERING_COMMIT_INTERVAL_MS: "100"
   GW_MAX_ADMIN_REQUESTS: "8"
-  # 按集群已有的私有 Prometheus 服务填写；为空时监控区显示未接入。
-  GW_PROMETHEUS_URL: ""
+  # 按集群已有的私有 Grafana 服务填写；Viewer 凭据放入 Secret，空 URL 表示未接入。
+  GW_GRAFANA_URL: ""
   GW_MAX_CONNECTIONS: "256"
   GW_OUTBOX_GLOBAL_BYTES: "536870912"
   GW_OUTBOX_APP_BYTES: "67108864"

@@ -16,7 +16,7 @@ x-app: &app
     GW_METERING_COMMIT_BATCH_SIZE: ${GW_METERING_COMMIT_BATCH_SIZE:-32}
     GW_METERING_COMMIT_INTERVAL_MS: ${GW_METERING_COMMIT_INTERVAL_MS:-100}
     GW_MAX_ADMIN_REQUESTS: ${GW_MAX_ADMIN_REQUESTS:-8}
-    GW_PROMETHEUS_URL: ${GW_PROMETHEUS_URL:-http://prometheus:9090}
+    GW_GRAFANA_URL: ${GW_GRAFANA_URL:-}
     GW_MAX_CONNECTIONS: ${GW_MAX_CONNECTIONS:-256}
     GW_OUTBOX_GLOBAL_BYTES: ${GW_OUTBOX_GLOBAL_BYTES:-536870912}
     GW_OUTBOX_APP_BYTES: ${GW_OUTBOX_APP_BYTES:-67108864}
@@ -178,13 +178,20 @@ services:
     volumes: ["../observability/prometheus.yaml:/etc/prometheus/prometheus.yml:ro", "../observability/alerts.yaml:/etc/prometheus/alerts.yml:ro", "prometheus:/prometheus"]
     ports: ["127.0.0.1:9090:9090"]
   grafana:
-    image: grafana/grafana:12.1.0
+    image: grafana/grafana:13.2.3
     logging: *logging
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GW_GRAFANA_PASSWORD:?set Grafana password}
       GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SERVER_ROOT_URL: ${GW_ADMIN_ORIGIN:-https://localhost:8443}/admin/grafana/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_SERVER_ENABLE_GZIP: "true"
+      GF_LIVE_MAX_CONNECTIONS: "0"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
     ports: ["127.0.0.1:3000:3000"]
-    volumes: ["../observability/grafana:/etc/grafana/provisioning:ro", "../observability/dashboard.json:/var/lib/grafana/dashboards/gateway.json:ro", "grafana:/var/lib/grafana"]
+    volumes: ["../observability/grafana:/etc/grafana/provisioning:ro", "../observability/dashboard.json:/var/lib/grafana/dashboards/gateway.json:ro", "../observability/application-dashboard.json:/var/lib/grafana/dashboards/applications.json:ro", "grafana:/var/lib/grafana"]
 volumes:
   mysql: {}
   redis: {}

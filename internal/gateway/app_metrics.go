@@ -21,7 +21,7 @@ var callErrorStatuses = map[string]int{
 
 type appMetricState struct {
 	sync.Mutex
-	apps map[string]bool
+	apps map[string]string
 }
 
 func (m *Metrics) initializeCalls(app string) {
@@ -37,22 +37,27 @@ func (m *Metrics) refreshApps(cfg Config) {
 	m.appState.Lock()
 	defer m.appState.Unlock()
 	if m.appState.apps == nil {
-		m.appState.apps = map[string]bool{}
+		m.appState.apps = map[string]string{}
 	}
 	for id, app := range cfg.Apps {
-		if !m.appState.apps[id] {
+		if _, exists := m.appState.apps[id]; !exists {
 			m.initializeCalls(id)
 		}
+		if old, exists := m.appState.apps[id]; exists && old != app.Name {
+			m.AppInfo.DeleteLabelValues(id, old)
+		}
+		m.AppInfo.WithLabelValues(id, app.Name).Set(1)
 		m.QPSLimits.WithLabelValues(id).Set(float64(app.QPS))
 	}
 	for id := range m.appState.apps {
 		if _, exists := cfg.Apps[id]; !exists {
 			m.QPSLimits.DeleteLabelValues(id)
+			m.AppInfo.DeleteLabelValues(id, m.appState.apps[id])
 		}
 	}
-	m.appState.apps = make(map[string]bool, len(cfg.Apps))
-	for id := range cfg.Apps {
-		m.appState.apps[id] = true
+	m.appState.apps = make(map[string]string, len(cfg.Apps))
+	for id, app := range cfg.Apps {
+		m.appState.apps[id] = app.Name
 	}
 }
 

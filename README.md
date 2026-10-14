@@ -58,7 +58,7 @@ GitHub Actions 配置包含 Linux race 测试、构建与 Docker 镜像构建。
 
 配置保存后发布版本；发布失败会显示待生效，并保留新签发的一次性 Key。密钥吊销后，数据面在 3 秒内同步；配置失联超过 3 秒拒绝鉴权。流式响应开始后禁止降级混入其他模型输出。
 
-控制台应用调用监控支持最近 24 小时内任意区间，展示成功 QPS、按 HTTP 状态码和业务错误码拆分的失败 QPS、QPS 上限及趋势。需配置 `GW_PROMETHEUS_URL`；未接入或缺失采样时明确显示无数据。其他概览统计采用最近记录样本；容量和分位数使用 [Grafana 监控](deploy/observability/dashboard.json)。万级并发和延迟目标尚未完成容量验收。
+控制台嵌入同源只读 Grafana，按应用名称/ID、错误码和 HTTP 状态查看监控，最长最近 24 小时。管理员查看完整可靠性面板；开发者仅查看自己拥有应用的数据，服务端约束所有 PromQL 选择器及标签查询。配置私有 `GW_GRAFANA_URL` 和专用 Viewer 凭据，详见 [嵌入规格](docs/grafana-console-monitoring-spec.md)。计量/成本仍以持久化账本为准；最大吞吐与长期容量未因本次页面集成得到新的结论。
 
 ![本地验收：降级后的成本与待核实记录](docs/images/console.jpg)
 

@@ -8,7 +8,7 @@
 
 Dockerfile 使用多阶段 Go/Node 构建，最终镜像包含所有命令和控制台静态资源，以非 root 用户运行。镜像没有 shell，不在镜像中写入凭据。修改配置后须重启应用进程；业务配置由 etcd 动态同步。
 
-应用调用监控需在管理端配置 `GW_PROMETHEUS_URL`，例如完整 Compose 栈的 `http://prometheus:9090`。Compose 默认连接栈内 Prometheus；Kubernetes 和轻量部署需显式设置私有监控服务地址。按随项目提供的抓取配置，job 使用 `gateway`/`admin`，抓取所有网关实例的 `/metrics`；仅消费计量的 worker 不计入调用 QPS。监控依赖新增的 `gateway_calls_total` 和 `gateway_app_qps_limit`，历史采样需覆盖欲查看区间。控制台限定最近 24 小时内选择，按应用权限查询；未配置、查询失败或缺失采样显示无数据。详见 [监控规格](app-traffic-spec.md)。
+应用概览使用同源 Grafana 嵌入，已退休旧 `/admin/app-traffic` 及 `GW_PROMETHEUS_URL`。管理服务配置 `GW_GRAFANA_URL=http://grafana:3000`、`GW_GRAFANA_VIEWER_USER` 和 `GW_GRAFANA_VIEWER_PASSWORD`；只使用专用 Viewer 用户，不用管理员凭据。Grafana 设置 root_url 为控制台 HTTPS 地址 + `/admin/grafana/`，开启 serve_from_sub_path 与 allow_embedding，禁用匿名访问和注册。Lite 叠加 compose.monitoring.yaml 与 compose.grafana.yaml，仍只绑定远端 localhost:3000；查询隔离和授权由控制台代理逐请求执行。开发者专用应用面板，管理员完整面板，cost 沿用现有应用数据权限；时间范围最近 24 小时，刷新最短 10 秒。预算与成本以原账本为准。完整权限、查询限制及验收见 [监控嵌入规格](grafana-console-monitoring-spec.md)。
 
 轻量部署可显式叠加 `-f deploy/lite/compose.monitoring.yaml`，再启动 `prometheus` 和重建 `admin`，启用私有采集。该覆盖文件不发布端口，额外预留 256 MiB 内存，保留 26 小时采样，TSDB 大小上限 256 MB；实际磁盘占用还包括 WAL。所有后续 Compose 运维命令应带上此覆盖文件。若应用/标签数量增长导致磁盘上限提前淘汰历史，应调整容量后再验收一天窗口。
 
