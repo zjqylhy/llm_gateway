@@ -1,6 +1,6 @@
 # 计量生命周期重构：实现、性能与故障证据
 
-日期：2026-10-14。代码提交 `80b76c3`，交付分支 `codex/metering-lifecycle-delivery`，独立工作树避免与共享绘图任务混写。基于已确认的 [spec](metering-flow-refactor-spec.md) 实施，结果供代码和测试人工审阅。只操作随机隔离验收资源，现有本地/云部署未升级；未调用真实模型。数值及二进制 SHA-256 见 [原始结果](metering-lifecycle-refactor-results.json)。
+日期：2026-10-14。代码提交 `80b76c3`，交付分支 `codex/metering-lifecycle-delivery`，独立工作树避免与共享绘图任务混写。基于已确认的 [spec](metering-flow-refactor-spec.md) 实施，结果供代码和测试人工审阅。本地性能与故障验证使用随机隔离资源；用户确认后完成云端迁移及两次真实模型冒烟，详见末尾上线补充。数值及二进制 SHA-256 见 [原始结果](metering-lifecycle-refactor-results.json)。
 
 ## 实现结果
 
@@ -72,12 +72,36 @@ worker 每分钟采样生命周期并分批 GC：交付满 24 小时、payload �
 
 监控参考用户截图：实例/调用方/API/模型/stream 筛选；请求 QPS、成功率、保护拒绝、Token/s、RT 平均/P95/P99、首事件、缓存、限流、网关开销；加上 Prepare/Arm、容量锁、prepared/inflight/held、补偿年龄、Outbox/GC、追平/许可、SQL 池和资源。请求与 attempt 分母分开，reported/estimated 分开，无流量显示 N/A。进程死亡可能丢失结束指标，客户端结果与持久账本共同验证。
 
-31 个面板、14 条告警及 44 条面板查询通过 `scripts/verify-monitoring.ps1` 的部署结构和官方 promtool 校验。未发送外部告警消息，未升级现有 Grafana 服务。
+31 个面板、14 条告警及 44 条面板查询通过 `scripts/verify-monitoring.ps1` 的部署结构和官方 promtool 校验。未发送外部告警消息；用户后来确认部署独立私有 Grafana，见末尾上线补充。
 
 ## 可讲述的结论与后续范围
 
 可以讲清：用证据定位容量登记与 started 持久化成本；将归属和空间合到 attempt，用 Prepare/Arm 明确跨 SQL/Redis 的崩溃边界；减少 started Kafka 和重复状态；用预算、版本/hash、检查点及容量守恒核验保护正确性。追平改善明显，网关突发开销改善有限，实测还暴露并修复了取消批次租约延迟。
 
-可控上游支持本机短时低流量和五分钟 2 RPS 的上述结论。真实模型费用及超时用量仍需厂商证据；当前版本尚未云部署验证，历史云低流量结论只适用于当时版本。五分钟不证明数周容量，突发成功 RPS 不等于最大持续吞吐。
+可控上游支持本机短时低流量和五分钟 2 RPS 的上述结论。真实模型费用及超时用量仍需厂商证据；当前版本已完成两次云端真实模型冒烟，历史云负载结论仍只适用于当时版本；本次云冒烟不代表持续性能验收。五分钟不证明数周容量，突发成功 RPS 不等于最大持续吞吐。
 
 分布式 Redis 仅列后续优化：按 app hash tag 整理 Lua 键，解决全局控制键跨槽；切主先撤销入口许可并更新 generation，重建并核验后开放；评估复制丢写、双主、旧主隔离、WAIT 的局限以及更严格的预算权威。不能把单主 Lua 原子性推广为故障切换安全。下一步性能优化需以全局容量锁和在途等待为证据，设计可回收的容量分配并验证守恒，不能直接删全局检查或降低完成预留来“改善”拒绝率。
+
+
+## 云端上线补充：2026-10-14
+
+用户确认代码与测试结果后创建 [PR #9](https://github.com/zjqylhy/llm_gateway/pull/9)，保持 PR 开放。业务二进制对应 `2d1e250`，统一镜像 SHA-256 为 `ce7389c8e02bd2f2f741c22d75a8e4e76990f6dd7883fe48d4e7bd7f28766f93`；监控补丁对应 `d49f894`。可机器核验的上线数据见 [部署结果](metering-lifecycle-cloud-deployment.json)，不包含密码、主密钥、SSH 密钥或私有备份内容。
+
+先对生产快照克隆库演练迁移，再关闭入口、停写、排空旧 worker；对 MySQL、Redis、Kafka、etcd 四个命名卷做一致冷备份。配置、加密主密钥与 SQL 逻辑备份一起保留在权限受限目录。四个冷备份已复制到本机并核对 SHA-256，避免只留在 ECS 同一系统盘。
+
+`migrate → quota-rebuild → metering-audit → metering-resume` 全部通过后启动统一新版本；协议为 2，两张旧表已删除。迁移保留 319 个实际计费 attempt，以及请求汇总等合计 656 条记录；Token 351,900、按配置价格计量费用 765,996 micro、业务配置版本 29、Kafka 源身份和迁移前水位未变。最后一次切换开放前用时 62.928 秒。先前两次尝试和回滚不能从总停机时间中省略。
+
+部署过程保留失败证据：第一次因 Grafana 在 256MiB 下首次初始化超过 120 秒而回滚；第二次因 Grafana 未刷新已替换的仪表盘而回滚，恢复 Grafana 时又发现官方镜像缺少默认别名，修正后验证旧服务与财务总额再开放。两次均在新入口开放前恢复四个依赖和旧配置；没有将新请求账单丢弃。后续改为先单独初始化 Grafana，保留其首次随机密码；仪表盘更新保留挂载 inode、刷新时间戳并显式 reload，核验实际 31 个面板。真实请求开放后只能保留新账本修复，不允许恢复迁移前快照覆盖新费用。
+
+| 云端真实模型冒烟 | HTTP | 耗时 ms | 厂商报告 Token | 可见回复 |
+| --- | ---: | ---: | ---: | --- |
+| JSON | 200 | 3094.0 | 53 | OK |
+| SSE（含用量，收到 DONE） | 200 | 3688.0 | 50 | OK |
+
+两次主 attempt 均完成 revision 2、quality=reported，合计 103 Token、404 micro（配置价格计算，不等同厂商发票）。最终 321 个计费 attempt 全部 completed/settled，Token 352,003、费用 766,400 micro；未交付 Outbox、逻辑容量占用、prepared/待补偿均为 0，三应用周期核验健康。HTTPS、控制台登录、未授权拒绝和前端哈希均通过。仅两次低流量功能冒烟，没有重跑持续负载；不能由此推出云端最大吞吐、长期容量或 P99。
+
+私有 Grafana OSS 13.2.3 只绑定回环端口，禁用匿名访问和注册；镜像由官方源下载、离线上传并核验哈希。已实际加载 31 个面板、14 条 Prometheus 告警，线上 44 个面板表达式可执行，三个采集目标正常。Grafana 容器上限改为 512MiB/1 CPU（Go 软限 384MiB），观测约 309–484MiB；官方最低内存建议为 512MB，先前“额外约 256MiB”估算偏低。[Grafana 官方要求](https://grafana.com/docs/grafana/latest/setup-grafana/installation/)
+
+上线核验还发现一个监控问题：3 秒许可每秒续约，Prometheus 每 10 秒采样。用 `expiry-time()` 会把健康的旧样本判断为当前过期；实测实时指标仍有效，而 Prometheus 样本已经比当前时间旧约 4 秒。改为 `expiry-timestamp(sample)`，面板明确显示采样时有效性，另对失效和指标缺失告警。正常短许可、standby、停止续约、零值、缺失/stale 五组 promtool 回归通过并纳入 CI；修复后 14 条告警均 inactive。请求侧仍实时检查 Redis/etcd，不延长 TTL、不放宽预算。
+
+末次资源快照：gateway/admin/worker 约 16.9/18.8/15.7MiB，Prometheus 40.4MiB、Grafana 484.1MiB；全部组件运行且无 OOM/自动重启。主机可用内存约 1.75GiB，磁盘余量约 43GiB。这是一次部署快照，不替代长期观测。Grafana 接近其容器限额，持续使用须继续观测峰值；本次未通过提高业务限额改善吞吐。
