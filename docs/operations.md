@@ -12,6 +12,10 @@
 
 隔离压测命令为 `pwsh -File scripts/verify-capacity.ps1`，快速功能冒烟加 `-Quick -Seconds 3`。脚本固定主机与容器二进制，在六个容量档位间轮换三种模式，为每个组合创建独立 schema/topic/配置前缀，模式之间清空本轮专用 Redis，保存原始 JSON、Prometheus、角色资源和 SQL EXPLAIN。结束后仅清理随机测试项目，不读取或修改用户 `.env`。
 
+中断后用 `-ResumeFrom data/acceptance/<原run>` 补跑未通过组合；复用并核对两份二进制哈希，保留原失败证据。`-CaseIndices 2` 可限定容量档位，`-CaseIndices 2 -Auxiliary` 单独检查 SSE/250 ms 上游和后台模式的 worker 重启。辅助运行用 `-ConfirmQPS <固定QPS>` 做 5 秒预热及三次 60 秒确认，`-SustainedQPS <已确认QPS>` 单独复核 300 秒；不混入原 QPS 矩阵。新驱动每档等待计量许可恢复并单列等待时间，细分档也预热；旧驱动的恢复期样本保留。Windows 压测期间仅临时保持线程唤醒，结束时恢复，不修改电源计划。通过 `node scripts/summarize-capacity.mjs <原目录>,<补跑目录> <结果.json>` 合并同二进制、同参数的结果；出现超时或最终核账失败的组合不能发布可接受 QPS。
+
+`-BinarySource data/acceptance/<已验证的v2run>` 只复用并校验两份二进制，仍执行本次选中的所有组合，可用于不同固定档位之间保持代码一致；它不跳过已通过案例，不能与 ResumeFrom 同用。首次构建串行并临时降低编译器的内存目标，测试运行前恢复原环境。驱动最长观察排空 120 秒，但性能通过条件仍为 5 秒；HTTP 结果先保存，排空未结束时为 `awaiting_drain`、耗时为 null。首次无 headroom 时间表示 SQL 快照已不足再容纳 1 MiB，不含尚未覆盖的本地预留，精度受约 200 ms 采样影响。
+
 ## 配置、密钥与会话
 
 MySQL 保存期望配置，etcd 保存已发布版本；实例每秒获取版本，控制台展示各实例心跳。保存但发布失败时返回待发布状态，应重试发布并检查每个存活实例版本。旧版本通过 CAS 不能覆盖新版本。

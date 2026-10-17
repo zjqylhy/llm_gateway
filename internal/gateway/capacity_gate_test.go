@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -215,5 +216,47 @@ func TestCapacityFailedSampleDoesNotPublishPartialCoverage(t *testing.T) {
 	defer g.mu.Unlock()
 	if !g.snapshot.At.Equal(old.At) || len(g.tickets) != 1 {
 		t.Fatal("failed sample changed snapshot or local receipts")
+	}
+}
+
+func TestCapacityGateQueuedRequestsUseLatestApplicationLimits(t *testing.T) {
+	g := newCapacityGate(10<<20, nil, nil)
+	defer g.close()
+	var limit atomic.Int64
+	var active atomic.Bool
+	limit.Store(2 << 20)
+	active.Store(true)
+	g.limits = func(string) (int64, bool) { return limit.Load(), active.Load() }
+	snapshot := capacitySnapshot{At: time.Now(), Global: 2 << 20, Apps: map[string]int64{"a": 2 << 20}}
+	g.publish(snapshot)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- g.acquire(ctx, capacityEvent("updated", "a"), 100<<20) }()
+	awaitCapacityQueue(t, g, 1)
+	// 排队时扩容无需重新发请求；调用者携带的旧限额不能覆盖最新配置。
+	limit.Store(3 << 20)
+	snapshot.At = time.Now()
+	g.publish(snapshot)
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued request did not observe increased limit")
+	}
+	go func() { result <- g.acquire(ctx, capacityEvent("disabled", "a"), 100<<20) }()
+	awaitCapacityQueue(t, g, 1)
+	active.Store(false)
+	snapshot.At = time.Now()
+	g.publish(snapshot)
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrUnavailable) {
+			t.Fatal("disabled application admitted", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("disabled application remained queued")
 	}
 }

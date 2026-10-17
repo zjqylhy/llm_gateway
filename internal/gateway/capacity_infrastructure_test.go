@@ -23,34 +23,38 @@ import (
 )
 
 type capacityLoadSample struct {
-	Mode         string  `json:"mode"`
-	Scope        string  `json:"scope"`
-	AppMiB       int64   `json:"application_mib"`
-	GlobalMiB    int64   `json:"global_mib"`
-	Phase        string  `json:"phase"`
-	Rate         int     `json:"offered_rps"`
-	Seconds      int     `json:"offered_seconds"`
-	Requests     int     `json:"requests"`
-	Accepted     int     `json:"accepted"`
-	Rejected     int     `json:"rejected"`
-	Failed       int     `json:"failed"`
-	Dropped      int     `json:"scheduler_dropped"`
-	P50          float64 `json:"accepted_p50_ms"`
-	P95          float64 `json:"accepted_p95_ms"`
-	P99          float64 `json:"accepted_p99_ms"`
-	FirstP95     float64 `json:"accepted_first_event_p95_ms,omitempty"`
-	DoneP95      float64 `json:"accepted_done_p95_ms,omitempty"`
-	Wall         float64 `json:"wall_seconds"`
-	SuccessRPS   float64 `json:"accepted_per_wall_second"`
-	Drain        float64 `json:"drain_seconds"`
-	Peak         int64   `json:"peak_global_bytes"`
-	PeakApp      int64   `json:"peak_application_bytes"`
-	Over         int64   `json:"peak_over_global_bytes"`
-	OverApp      int64   `json:"peak_over_application_bytes"`
-	OverSeconds  float64 `json:"sampled_over_limit_seconds"`
-	BacklogFirst int64   `json:"first_half_mean_bytes"`
-	BacklogLast  int64   `json:"second_half_mean_bytes"`
-	Passed       bool    `json:"meets_comparison_threshold"`
+	Mode         string   `json:"mode"`
+	Scope        string   `json:"scope"`
+	AppMiB       int64    `json:"application_mib"`
+	GlobalMiB    int64    `json:"global_mib"`
+	Phase        string   `json:"phase"`
+	Rate         int      `json:"offered_rps"`
+	Seconds      int      `json:"offered_seconds"`
+	Requests     int      `json:"requests"`
+	Accepted     int      `json:"accepted"`
+	Rejected     int      `json:"rejected"`
+	Failed       int      `json:"failed"`
+	Dropped      int      `json:"scheduler_dropped"`
+	P50          float64  `json:"accepted_p50_ms"`
+	P95          float64  `json:"accepted_p95_ms"`
+	P99          float64  `json:"accepted_p99_ms"`
+	FirstP95     float64  `json:"accepted_first_event_p95_ms,omitempty"`
+	DoneP95      float64  `json:"accepted_done_p95_ms,omitempty"`
+	Wall         float64  `json:"wall_seconds"`
+	SuccessRPS   float64  `json:"accepted_per_wall_second"`
+	Drain        *float64 `json:"drain_seconds"`
+	SampleState  string   `json:"sample_state"`
+	PermitWait   float64  `json:"permit_recovery_wait_seconds"`
+	GlobalFullAt *float64 `json:"first_global_no_headroom_seconds"`
+	AppFullAt    *float64 `json:"first_application_no_headroom_seconds"`
+	Peak         int64    `json:"peak_global_bytes"`
+	PeakApp      int64    `json:"peak_application_bytes"`
+	Over         int64    `json:"peak_over_global_bytes"`
+	OverApp      int64    `json:"peak_over_application_bytes"`
+	OverSeconds  float64  `json:"sampled_over_limit_seconds"`
+	BacklogFirst int64    `json:"first_half_mean_bytes"`
+	BacklogLast  int64    `json:"second_half_mean_bytes"`
+	Passed       bool     `json:"meets_comparison_threshold"`
 }
 
 // 容器、schema、topic 和角色环境都由 verify-capacity.ps1 随机创建。
@@ -198,7 +202,7 @@ func TestCapacityIntegration(t *testing.T) {
 	})
 	drain := func() float64 {
 		at := time.Now()
-		wait("capacity drained", 40*time.Second, func() bool {
+		wait("capacity drained", 2*time.Minute, func() bool {
 			snap, e := s.sampleCapacity(ctx, nil)
 			if e != nil || snap.Global != 0 {
 				return false
@@ -316,7 +320,13 @@ func TestCapacityIntegration(t *testing.T) {
 		var runLoad func(int, int, string, bool, bool) capacityLoadSample
 		loadIndex := ci * 100
 		runLoad = func(rate, duration int, phase string, stream, slow bool) capacityLoadSample {
-			result := capacityLoadSample{Mode: mode, Scope: cfg.scope, AppMiB: cfg.app, GlobalMiB: cfg.global, Phase: phase, Rate: rate, Seconds: duration, Requests: rate * duration}
+			// 排空 SQL 不代表许可已经续发；恢复期必须结束后再开始下一档测量。
+			recoveryAt := time.Now()
+			wait("metering permit recovery", 10*time.Second, func() bool {
+				_, err := r.readPermit(ctx)
+				return err == nil
+			})
+			result := capacityLoadSample{Mode: mode, Scope: cfg.scope, AppMiB: cfg.app, GlobalMiB: cfg.global, Phase: phase, Rate: rate, Seconds: duration, Requests: rate * duration, PermitWait: time.Since(recoveryAt).Seconds()}
 			prefix := fmt.Sprintf("case-%d-%s-%d", ci, phase, rate)
 			metricURLs := append(append([]string{}, gateways...), worker)
 			if err := captureAcceptanceMetrics(client, metricURLs, dir, prefix+"-before"); err != nil {
@@ -349,6 +359,14 @@ func TestCapacityIntegration(t *testing.T) {
 							appPeak = max(appPeak, v)
 						}
 						result.PeakApp = max(result.PeakApp, appPeak)
+						// SQL 快照不足再容纳一份预留；不包含尚未覆盖的本地 ticket。
+						observedSeconds := elapsed.Seconds()
+						if result.GlobalFullAt == nil && maxEventBytes > (cfg.global<<20)-snap.Global {
+							result.GlobalFullAt = &observedSeconds
+						}
+						if result.AppFullAt == nil && maxEventBytes > (cfg.app<<20)-appPeak {
+							result.AppFullAt = &observedSeconds
+						}
 						if snap.Global > cfg.global<<20 || appPeak > cfg.app<<20 {
 							result.OverSeconds += .2
 						}
@@ -396,14 +414,11 @@ func TestCapacityIntegration(t *testing.T) {
 					}
 				}
 			}
-			result.Wall = time.Since(startTime).Seconds()
+			httpFinished := time.Now()
+			result.Wall = httpFinished.Sub(startTime).Seconds()
 			result.SuccessRPS = float64(result.Accepted) / result.Wall
 			endSample()
 			<-sampleDone
-			result.Drain = drain()
-			if err := stopResources(); err != nil {
-				t.Fatal(err)
-			}
 			if len(latency) > 0 {
 				sort.Float64s(latency)
 				result.P50 = latency[(len(latency)-1)*50/100]
@@ -424,8 +439,19 @@ func TestCapacityIntegration(t *testing.T) {
 			}
 			result.Over = max(0, result.Peak-(cfg.global<<20))
 			result.OverApp = max(0, result.PeakApp-(cfg.app<<20))
-			result.Passed = float64(result.Accepted) >= .99*float64(result.Requests) && result.Failed == 0 && result.Dropped == 0 && result.P95 <= 500 && result.P99 <= 1000 && result.Drain <= 5 && result.BacklogLast <= result.BacklogFirst+maxEventBytes
+			// 先保存全部 HTTP 结果；恢复超时仍保留此档数据，未知排空时间不能写零。
+			result.SampleState = "awaiting_drain"
 			all = append(all, result)
+			write()
+			drain()
+			drainSeconds := time.Since(httpFinished).Seconds()
+			result.Drain = &drainSeconds
+			if err := stopResources(); err != nil {
+				t.Fatal(err)
+			}
+			result.Passed = float64(result.Accepted) >= .99*float64(result.Requests) && result.Failed == 0 && result.Dropped == 0 && result.P95 <= 500 && result.P99 <= 1000 && drainSeconds <= 5 && result.BacklogLast <= result.BacklogFirst+maxEventBytes
+			result.SampleState = "complete"
+			all[len(all)-1] = result
 			write()
 			if result.Failed > 0 || result.Accepted == 0 {
 				t.Fatalf("capacity protocol/smoke failure: %+v", result)
@@ -442,62 +468,96 @@ func TestCapacityIntegration(t *testing.T) {
 		}
 		best := 0
 		passedRates := map[int]bool{}
-		for ri := 0; ri < len(rates); ri++ {
-			rate := rates[ri]
-			warm := 5
-			if quick {
-				warm = 1
-			}
-			runLoad(rate, warm, "warmup", false, false)
-			sample := runLoad(rate, seconds, "coarse", false, false)
-			if sample.Passed {
-				best = rate
-				passedRates[rate] = true
-			}
-			if !quick && ri == len(rates)-1 && sample.Passed && rate < 1024 {
-				rates = append(rates, 2*rate)
-			}
-		}
-		if !quick && best > 0 {
-			upper := 0
-			for _, rate := range rates {
-				if rate > best && (upper == 0 || rate < upper) {
-					upper = rate
+		auxiliary := os.Getenv("GW_CAPACITY_AUX_ONLY") == "1"
+		if !auxiliary {
+			for ri := 0; ri < len(rates); ri++ {
+				rate := rates[ri]
+				warm := 5
+				if quick {
+					warm = 1
 				}
-			}
-			for probe := 0; probe < 3 && upper-best > 1; probe++ {
-				rate := (best + upper) / 2
-				v := runLoad(rate, seconds, "refine", false, false)
-				if v.Passed {
+				runLoad(rate, warm, "warmup", false, false)
+				sample := runLoad(rate, seconds, "coarse", false, false)
+				if sample.Passed {
 					best = rate
 					passedRates[rate] = true
-				} else {
-					upper = rate
+				}
+				if !quick && ri == len(rates)-1 && sample.Passed && rate < 1024 {
+					rates = append(rates, 2*rate)
 				}
 			}
-			candidates := []int{}
-			for rate := range passedRates {
-				candidates = append(candidates, rate)
-			}
-			sort.Sort(sort.Reverse(sort.IntSlice(candidates)))
-			confirmed := 0
-			for _, rate := range candidates {
-				passed := true
-				for repeat := 1; repeat <= 3; repeat++ {
-					if !runLoad(rate, 60, fmt.Sprintf("confirm-%d", repeat), false, false).Passed {
-						passed = false
+			if !quick && best > 0 {
+				upper := 0
+				for _, rate := range rates {
+					if rate > best && (upper == 0 || rate < upper) {
+						upper = rate
+					}
+				}
+				for probe := 0; probe < 3 && upper-best > 1; probe++ {
+					rate := (best + upper) / 2
+					runLoad(rate, 5, "refine-warmup", false, false)
+					v := runLoad(rate, seconds, "refine", false, false)
+					if v.Passed {
+						best = rate
+						passedRates[rate] = true
+					} else {
+						upper = rate
+					}
+				}
+				candidates := []int{}
+				for rate := range passedRates {
+					candidates = append(candidates, rate)
+				}
+				sort.Sort(sort.Reverse(sort.IntSlice(candidates)))
+				confirmed := 0
+				for _, rate := range candidates {
+					passed := true
+					for repeat := 1; repeat <= 3; repeat++ {
+						if !runLoad(rate, 60, fmt.Sprintf("confirm-%d", repeat), false, false).Passed {
+							passed = false
+							break
+						}
+					}
+					if passed {
+						confirmed = rate
 						break
 					}
 				}
-				if passed {
-					confirmed = rate
-					break
+				if ci == 2 && confirmed > 0 {
+					runLoad(confirmed, 300, "sustained", false, false)
 				}
 			}
-			if ci == 2 && confirmed > 0 {
-				runLoad(confirmed, 300, "sustained", false, false)
-				runLoad(2, 20, "stream", true, false)
-				runLoad(2, 20, "slow", false, true)
+		}
+		if auxiliary {
+			confirmRate, parseErr := strconv.Atoi(env("GW_CAPACITY_CONFIRM_QPS", "0"))
+			if parseErr != nil || confirmRate < 0 || confirmRate > 1024 {
+				t.Fatal("invalid fixed confirmation rate")
+			}
+			if confirmRate > 0 {
+				runLoad(confirmRate, 5, "warmup", false, false)
+				for repeat := 1; repeat <= 3; repeat++ {
+					runLoad(confirmRate, 60, fmt.Sprintf("confirm-%d", repeat), false, false)
+				}
+			}
+			rate, parseErr := strconv.Atoi(env("GW_CAPACITY_SUSTAINED_QPS", "0"))
+			if parseErr != nil || rate < 0 || rate > 1024 {
+				t.Fatal("invalid auxiliary sustained rate")
+			}
+			if rate > 0 {
+				runLoad(rate, 300, "sustained", false, false)
+			}
+		}
+		// 协议样本独立于可接受 QPS；没有达标档位也必须检查 SSE 和慢上游。
+		if ci == 2 {
+			runLoad(2, 20, "stream", true, false)
+			runLoad(2, 20, "slow", false, true)
+			if auxiliary && s.backgroundCapacity() {
+				t.Run("worker_restart_preserves_capacity", func(t *testing.T) {
+					testCapacityWorkerRestart(t, ctx, r, client, gateways[0], upstream, roles["worker"], dir, docker)
+				})
+				if t.Failed() {
+					return
+				}
 			}
 		}
 		if err := s.AuditCapacity(ctx); err != nil {
@@ -523,5 +583,8 @@ func TestCapacityIntegration(t *testing.T) {
 				t.Fatalf("quota mismatch %s SQL=%d/%d Redis=%+v error=%v", app, tokens, micro, quota, e)
 			}
 		}
+	}
+	if len(all) == 0 {
+		t.Fatal("capacity run did not produce load samples")
 	}
 }

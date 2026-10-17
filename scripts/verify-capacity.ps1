@@ -1,9 +1,19 @@
 param(
     [ValidateSet('all','locked-reject','locked-wait','background-wait')][string]$Mode = 'all',
     [ValidateRange(1,60)][int]$Seconds = 20,
-    [switch]$Quick
+    [switch]$Quick,
+    [ValidateRange(0,5)][int[]]$CaseIndices = @(0,1,2,3,4,5),
+    [string]$ResumeFrom = '',
+    [string]$BinarySource = '',
+    [switch]$Auxiliary,
+    [ValidateRange(0,1024)][int]$SustainedQPS = 0,
+    [ValidateRange(0,1024)][int]$ConfirmQPS = 0
 )
 $ErrorActionPreference = 'Stop'
+if($ResumeFrom -and $BinarySource) { throw 'ResumeFrom and BinarySource are mutually exclusive' }
+if($Auxiliary -and ($Quick -or $ResumeFrom -or $CaseIndices.Count -ne 1)) { throw 'Auxiliary requires one CaseIndices value and cannot use Quick or ResumeFrom' }
+if(($SustainedQPS -or $ConfirmQPS) -and -not $Auxiliary) { throw 'Fixed confirmation or sustained QPS requires Auxiliary' }
+if($Auxiliary -and $CaseIndices[0] -ne 2 -and -not ($SustainedQPS -or $ConfirmQPS)) { throw 'Auxiliary outside case 2 requires a fixed QPS' }
 $root = Split-Path $PSScriptRoot -Parent
 Set-Location -LiteralPath $root
 $run = 'gw_capacity_' + [guid]::NewGuid().ToString('N').Substring(0,12)
@@ -28,6 +38,9 @@ $values = @{
     GW_OUTBOX_APP_BYTES='268435456'; GW_OUTBOX_GLOBAL_BYTES='1073741824'
     GW_METERING_COMMIT_BATCH_SIZE='32'; GW_METERING_COMMIT_INTERVAL_MS='100'
     GW_RUN_CAPACITY_TESTS='1'; GW_CAPACITY_TEST_SECONDS="$Seconds"; GW_CAPACITY_TEST_QUICK=$(if($Quick){'1'}else{'0'})
+    GW_CAPACITY_AUX_ONLY=$(if($Auxiliary){'1'}else{'0'})
+    GW_CAPACITY_SUSTAINED_QPS="$SustainedQPS"
+    GW_CAPACITY_CONFIRM_QPS="$ConfirmQPS"
     OTEL_EXPORTER_OTLP_ENDPOINT=''; GOMEMLIMIT='192MiB'; GOMAXPROCS='2'
     GW_LITE_RUN_DIR=$runDir.Replace('\','/'); GW_LITE_ENV_FILE=(Join-Path $runDir 'infra.env').Replace('\','/')
     GW_KAFKA_TOPIC=$run; GW_KAFKA_GROUP=$run; GW_ETCD_PREFIX="/$run"
@@ -43,18 +56,46 @@ $saved = @{}
 $created = $false
 $secretFiles = @($infraEnv)
 $caseRuns=@()
+$failedCases=@()
+$previousExecutionState=[uint32]0
+$reference=''
+if($ResumeFrom -or $BinarySource) {
+    $reference=(Resolve-Path -LiteralPath $(if($ResumeFrom){$ResumeFrom}else{$BinarySource})).Path
+    if(-not $reference.StartsWith((Join-Path $root 'data/acceptance')+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)) { throw 'Resume source must be an acceptance run' }
+    foreach($file in @('gateway.test','gateway-host.test.exe','manifest.json')) { if(-not (Test-Path -LiteralPath (Join-Path $reference $file))) { throw "Missing resume input: $file" } }
+}
 try {
+    # 仅当前线程保持系统唤醒，不改电源计划；finally 恢复原状态。
+    if($IsWindows) {
+        if(-not ('CapacityPowerState' -as [type])) {
+            Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public static class CapacityPowerState { [DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint state); }'
+        }
+        $previousExecutionState=[CapacityPowerState]::SetThreadExecutionState([uint32]2147483649)
+        if($previousExecutionState -eq 0) { throw 'Cannot request temporary awake state for capacity run' }
+    }
     [IO.File]::WriteAllLines($infraEnv,[string[]]@($values.Keys | Sort-Object | ForEach-Object { "$_=$($values[$_])" }),[Text.UTF8Encoding]::new($false))
     $buildEnv = @{}
-    foreach($name in @('GOOS','GOARCH','CGO_ENABLED')) { $buildEnv[$name] = [Environment]::GetEnvironmentVariable($name,'Process') }
-    try {
+    foreach($name in @('GOOS','GOARCH','CGO_ENABLED','GOMEMLIMIT','GOGC','GOMAXPROCS')) { $buildEnv[$name] = [Environment]::GetEnvironmentVariable($name,'Process') }
+    $hostRunner=Join-Path $runDir 'gateway-host.test.exe'
+    $driverVersion=2
+    if($reference) {
+        $original=Get-Content -Raw -LiteralPath (Join-Path $reference 'manifest.json') | ConvertFrom-Json
+        $driverVersion=$(if($original.benchmark_driver_version){$original.benchmark_driver_version}else{1})
+        if($ResumeFrom -and ($original.quick -ne [bool]$Quick -or $original.seconds -ne $Seconds -or $original.auxiliary)) { throw 'Resume must preserve load parameters and use a QPS matrix source' }
+        if($BinarySource -and $driverVersion -ne 2) { throw 'BinarySource requires benchmark driver version 2' }
+        foreach($file in @('gateway.test','gateway-host.test.exe')) { Copy-Item -LiteralPath (Join-Path $reference $file) -Destination (Join-Path $runDir $file) }
+        if((Get-FileHash (Join-Path $runDir 'gateway.test')).Hash -ne $original.binary_sha256 -or (Get-FileHash $hostRunner).Hash -ne $original.host_binary_sha256) { throw 'Resume binary hash mismatch' }
+    } else { try {
+        # 只约束编译器的临时内存，测试运行前恢复；避免提交内存紧张时交叉编译失败。
+        $env:GOMEMLIMIT='128MiB'; $env:GOGC='20'; $env:GOMAXPROCS='2'
         $env:GOOS='linux'; $env:GOARCH='amd64'; $env:CGO_ENABLED='0'
         & go test -p 1 -c -o (Join-Path $runDir 'gateway.test') ./internal/gateway
         if($LASTEXITCODE) { throw 'Build capacity runner failed' }
+        foreach($name in @('GOOS','GOARCH','CGO_ENABLED')) { [Environment]::SetEnvironmentVariable($name,$buildEnv[$name],'Process') }
+        & go test -p 1 -c -o $hostRunner ./internal/gateway
+        if($LASTEXITCODE) { throw 'Build host capacity driver failed' }
     } finally { foreach($name in $buildEnv.Keys) { [Environment]::SetEnvironmentVariable($name,$buildEnv[$name],'Process') } }
-    $hostRunner=Join-Path $runDir 'gateway-host.test.exe'
-    & go test -p 1 -c -o $hostRunner ./internal/gateway
-    if($LASTEXITCODE) { throw 'Build host capacity driver failed' }
+    }
     & docker @compose config --quiet
     if($LASTEXITCODE) { throw 'Invalid capacity dependency Compose' }
     $created=$true
@@ -62,13 +103,17 @@ try {
     if($LASTEXITCODE) { throw 'Capacity dependencies failed to start' }
     $modes = @('locked-reject','locked-wait','background-wait')
     if($Mode -ne 'all') { $modes=@($Mode) }
-    $summary = [ordered]@{run=$run; quick=[bool]$Quick; seconds=$Seconds; started_utc=[DateTime]::UtcNow.ToString('o'); binary_sha256=(Get-FileHash (Join-Path $runDir 'gateway.test') -Algorithm SHA256).Hash; host_binary_sha256=(Get-FileHash $hostRunner -Algorithm SHA256).Hash; modes=$modes}
+    $drainObservation=$(if($reference -and $original.drain_observation_limit_seconds){$original.drain_observation_limit_seconds}elseif($driverVersion -eq 1){40}else{120})
+    $summary = [ordered]@{run=$run; benchmark_driver_version=$driverVersion; drain_observation_limit_seconds=$drainObservation; quick=[bool]$Quick; auxiliary=[bool]$Auxiliary; sustained_qps=$SustainedQPS; confirm_qps=$ConfirmQPS; seconds=$Seconds; started_utc=[DateTime]::UtcNow.ToString('o'); binary_sha256=(Get-FileHash (Join-Path $runDir 'gateway.test') -Algorithm SHA256).Hash; host_binary_sha256=(Get-FileHash $hostRunner -Algorithm SHA256).Hash; modes=$modes; case_indices=$CaseIndices; resume_from=$(if($ResumeFrom){$original.run}else{$null}); binary_source=$(if($BinarySource){$original.run}else{$null})}
     $summary | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding utf8
-    $caseIndices=@(0,1,2,3,4,5)
-    if($Quick){$caseIndices=@(0)}
-    foreach($caseIndex in $caseIndices) {
+    if($Quick){$CaseIndices=@(0)}
+    foreach($caseIndex in $CaseIndices) {
       for($modeIndex=0;$modeIndex -lt $modes.Count;$modeIndex++) {
         $item=$modes[($modeIndex+$caseIndex)%$modes.Count]
+        if($ResumeFrom) {
+            $priorLog=Join-Path $reference "case-$caseIndex/$item/test.log"
+            if((Test-Path -LiteralPath $priorLog) -and (Select-String -LiteralPath $priorLog -Pattern '^PASS\s*$' -Quiet)) { continue }
+        }
         $suffix=$item.Replace('-','')+[char](97+$caseIndex)
         $caseRun="${run}_$suffix"
         $dir=Join-Path $runDir "case-$caseIndex/$item"
@@ -109,10 +154,21 @@ try {
         Write-Host "容量对照：$caseRun；结果：$dir"
         $testArgs=@('-test.run=^TestCapacityIntegration$','-test.count=1','-test.v','-test.timeout=95m')
         & $hostRunner @testArgs 2>&1 | Tee-Object -FilePath (Join-Path $dir 'test.log')
-        if($LASTEXITCODE) { throw "Capacity acceptance failed: $dir" }
+        if($LASTEXITCODE) {
+            $failedCases+=$dir
+            Write-Warning "Capacity acceptance failed; preserving evidence and continuing: $dir"
+            $ids=@(& docker ps -aq --filter "label=llm-gateway.capacity=$caseRun")
+            foreach($id in $ids) {
+                & docker logs $id 2>&1 | Out-File -LiteralPath (Join-Path $dir "failed-$id.log") -Encoding utf8
+                & docker stop --time 5 $id | Out-Null
+                & docker rm -v $id | Out-Null
+            }
+        }
       }
     }
+    if($failedCases.Count) { throw "Capacity acceptance failed for $($failedCases.Count) combinations" }
 } finally {
+  try {
     if($created) {
         foreach($caseRun in $caseRuns) {
             $ids=@(& docker ps -aq --filter "label=llm-gateway.capacity=$caseRun")
@@ -129,4 +185,7 @@ try {
     }
     foreach($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name,$saved[$name],'Process') }
     foreach($path in $secretFiles) { if(Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path } }
+  } finally {
+    if($previousExecutionState) { [CapacityPowerState]::SetThreadExecutionState($previousExecutionState) | Out-Null }
+  }
 }
