@@ -1,4 +1,3 @@
-import React from "react";
 import { instanceLabel, meteringLabel } from "./application";
 
 export type InstanceView = {
