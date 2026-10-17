@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-func testEngine(t *testing.T, upstream http.HandlerFunc) *Engine {
+func testEngine(t *testing.T, upstream http.HandlerFunc, configure ...func(*Engine)) *Engine {
 	t.Helper()
 	server := httptest.NewServer(upstream)
 	t.Cleanup(server.Close)
@@ -51,12 +51,23 @@ func testEngine(t *testing.T, upstream http.HandlerFunc) *Engine {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 故障依赖在刷新协程启动前注入，运行中只切换测试替身内部的同步状态。
+	for _, setup := range configure {
+		setup(e)
+	}
 	if err = e.Refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go e.RunRefresh(ctx)
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	go func() {
+		defer close(done)
+		e.RunRefresh(ctx)
+	}()
 	return e
 }
 func call(t *testing.T, e *Engine, text string, stream bool) *httptest.ResponseRecorder {
@@ -139,8 +150,9 @@ func (s failedArmStore) ArmAttempt(context.Context, Event) error {
 }
 func TestMeteringFailureDoesNotCallProvider(t *testing.T) {
 	var calls atomic.Int32
-	e := testEngine(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); MockProvider(w, r) })
-	e.Store = failedArmStore{e.Store.(*MemoryStore)}
+	e := testEngine(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); MockProvider(w, r) }, func(e *Engine) {
+		e.Store = failedArmStore{e.Store.(*MemoryStore)}
+	})
 	w := call(t, e, "hello", false)
 	if w.Code != 503 || calls.Load() != 0 {
 		t.Fatalf("unmetered call: %d %d", w.Code, calls.Load())
