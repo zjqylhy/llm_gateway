@@ -141,3 +141,11 @@ Grafana 仪表盘支持 instance、app（调用方）、API、model 和 stream�
 可控上游验收：`./scripts/verify-infrastructure.ps1 -Reliability -SustainedSeconds 300`；参数范围 0–600 秒（按用户要求最长 10 分钟），在固定五组 20 秒样本后增加一组 2 RPS JSON 持续负载。原始延迟、拒绝、追平和每 10 秒资源/指标采样存入本次随机验收目录。真实模型费用、云低流量、长期容量和最大吞吐分别验收。
 
 监控结构与 PromQL 验证：`./scripts/verify-monitoring.ps1`，需要本机 Docker 中的官方 `prom/prometheus:v3.5.0` 镜像。
+
+私有 Grafana（用户于 2026-10-14 确认部署）：在 Lite 和 Prometheus 配置之外显式叠加 `deploy/lite/compose.grafana.yaml`。只监听服务器 `127.0.0.1:3000`，SSH 转发到本机 `127.0.0.1:13000`；不开放安全组端口。随机管理员密码保存在权限为 0600 的 `.grafana.env`，包含 `GF_SECURITY_ADMIN_USER` 和 `GF_SECURITY_ADMIN_PASSWORD`，不提交 Git。持久卷保存账户及仪表盘；已有卷的管理员密码不会随环境变量自动重置，部署须复用原密码。
+
+当前固定 Grafana OSS 13.2.3，容器上限 512MiB、1 CPU，Go 软限额 384MiB。首次初始化不能占用财务切换窗口；先初始化、验证登录与数据源，再停止业务写入者。256MiB 首次启动超时，512MiB 低流量样本占用约 309MiB；这是单次观测，并非长期容量结论。[官方最低硬件要求](https://grafana.com/docs/grafana/latest/setup-grafana/installation/)
+
+更新挂载的仪表盘时保留当前文件 inode，更新时间戳，并调用 `/api/admin/provisioning/dashboards/reload` 验证实际面板数量。仅校验文件哈希或等待固定时间不能证明 Grafana 已加载新配置。
+
+准入许可寿命为 3 秒，Prometheus 采样为 10 秒。`gateway_metering_permit_expires_seconds` 必须和 `timestamp()` 返回的本样本时间比较，不能用 `time()` 把健康的旧采样误判为当前过期。面板明确表示“采样时剩余时间”；告警覆盖采样时失效、停止续约及指标缺失，检测受采样和告警 `for` 延迟影响。请求门禁仍实时核验 Redis/etcd，不延长许可寿命。`verify-monitoring.ps1` 和 CI 的 promtool 回归覆盖正常短许可（含 standby worker）、停止续约、零值、指标缺失与 stale 五种情形。

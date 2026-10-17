@@ -7,6 +7,238 @@
   "version": 2,
   "panels": [
     {
+      "id": 101,
+      "type": "timeseries",
+      "title": "各应用请求 QPS",
+      "description": "应用名称取当前配置，历史名称无映射时保留稳定 ID。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((sum by(app) (max by(app,source,api,stream,outcome,http_status,error_code) (rate(gateway_api_calls_total{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\"}[$__rate_interval])))) * on(app) group_left(app_name) topk by(app) (1, max by(app,app_name) (gateway_app_info{app=~\"$app\",job=~\"gateway|admin\"}))) or on(app) label_replace((sum by(app) (max by(app,source,api,stream,outcome,http_status,error_code) (rate(gateway_api_calls_total{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\"}[$__rate_interval])))),\"app_name\",\"$1\",\"app\",\"(.+)\")",
+          "legendFormat": "{{app_name}} ({{app}})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 102,
+      "type": "timeseries",
+      "title": "各应用成功率",
+      "description": "分母包含所有请求及保护性拒绝，不受错误码筛选影响。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(((sum by(app) (max by(app,source,api,stream,outcome,http_status,error_code) (rate(gateway_api_calls_total{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\",outcome=\"success\"}[$__rate_interval]))) or on(app) (0 * sum by(app) (max by(app,source,api,stream,outcome,http_status,error_code) (rate(gateway_api_calls_total{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\"}[$__rate_interval]))))) / sum by(app) (max by(app,source,api,stream,outcome,http_status,error_code) (rate(gateway_api_calls_total{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\"}[$__rate_interval])))) * on(app) group_left(app_name) topk by(app) (1, max by(app,app_name) (gateway_app_info{app=~\"$app\",job=~\"gateway|admin\"}))) or on(app) label_replace(((sum by(app) (max by(app,source,api,stream,outcome,http_status,error_code) (rate(gateway_api_calls_total{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\",outcome=\"success\"}[$__rate_interval]))) or on(app) (0 * sum by(app) (max by(app,source,api,stream,outcome,http_status,error_code) (rate(gateway_api_calls_total{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\"}[$__rate_interval]))))) / sum by(app) (max by(app,source,api,stream,outcome,http_status,error_code) (rate(gateway_api_calls_total{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\"}[$__rate_interval])))),\"app_name\",\"$1\",\"app\",\"(.+)\")",
+          "legendFormat": "{{app_name}} ({{app}})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 103,
+      "type": "timeseries",
+      "title": "错误 QPS：应用与错误码",
+      "description": "SSE 已返回 HTTP 200 后发生的业务错误仍计入；只采用网关固定错误码。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((sum by(app,error_code,http_status) (max by(app,source,api,stream,outcome,http_status,error_code) (rate(gateway_api_calls_total{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\",outcome=\"error\",error_code=~\"$error_code\"}[$__rate_interval])))) * on(app) group_left(app_name) topk by(app) (1, max by(app,app_name) (gateway_app_info{app=~\"$app\",job=~\"gateway|admin\"}))) or on(app,error_code,http_status) label_replace((sum by(app,error_code,http_status) (max by(app,source,api,stream,outcome,http_status,error_code) (rate(gateway_api_calls_total{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\",outcome=\"error\",error_code=~\"$error_code\"}[$__rate_interval])))),\"app_name\",\"$1\",\"app\",\"(.+)\")",
+          "legendFormat": "{{app_name}} ({{app}}) · {{error_code}} · HTTP {{http_status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 104,
+      "type": "timeseries",
+      "title": "Token / 秒：各应用",
+      "description": "按 attempt 采样；reported 与 estimated 分开，不随错误码筛选变化。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((sum by(app,kind,quality) (rate(gateway_tokens_total{app=~\"$app\",model=~\"$model\",job=~\"gateway|admin\"}[$__rate_interval]))) * on(app) group_left(app_name) topk by(app) (1, max by(app,app_name) (gateway_app_info{app=~\"$app\",job=~\"gateway|admin\"}))) or on(app,kind,quality) label_replace((sum by(app,kind,quality) (rate(gateway_tokens_total{app=~\"$app\",model=~\"$model\",job=~\"gateway|admin\"}[$__rate_interval]))),\"app_name\",\"$1\",\"app\",\"(.+)\")",
+          "legendFormat": "{{app_name}} ({{app}}) · {{kind}} · {{quality}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "tps",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 105,
+      "type": "timeseries",
+      "title": "HTTP 状态码 QPS",
+      "description": "HTTP 状态不等同业务结果；SSE 错误可能为 200。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(http_status) (max by(app,source,api,stream,outcome,http_status,error_code) (rate(gateway_api_calls_total{app=~\"$app\",instance=~\"$instance\",api=~\"$api\",stream=~\"$stream\",job=~\"gateway|admin\"}[$__rate_interval])))",
+          "legendFormat": "HTTP {{http_status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "noValue": "N/A",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
       "id": 1,
       "type": "timeseries",
       "title": "请求 QPS：全量与流式",
@@ -16,8 +248,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 0,
-        "y": 0,
+        "x": 12,
+        "y": 16,
         "w": 12,
         "h": 8
       },
@@ -69,8 +301,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 12,
-        "y": 0,
+        "x": 0,
+        "y": 24,
         "w": 12,
         "h": 8
       },
@@ -88,7 +320,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 12
-          }
+          },
+          "min": 0,
+          "max": 1
         },
         "overrides": []
       },
@@ -112,8 +346,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 0,
-        "y": 8,
+        "x": 12,
+        "y": 24,
         "w": 12,
         "h": 8
       },
@@ -160,8 +394,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 12,
-        "y": 8,
+        "x": 0,
+        "y": 32,
         "w": 12,
         "h": 8
       },
@@ -203,8 +437,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 0,
-        "y": 16,
+        "x": 12,
+        "y": 32,
         "w": 12,
         "h": 8
       },
@@ -246,8 +480,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 12,
-        "y": 16,
+        "x": 0,
+        "y": 40,
         "w": 12,
         "h": 8
       },
@@ -294,8 +528,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 0,
-        "y": 24,
+        "x": 12,
+        "y": 40,
         "w": 12,
         "h": 8
       },
@@ -342,8 +576,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 12,
-        "y": 24,
+        "x": 0,
+        "y": 48,
         "w": 12,
         "h": 8
       },
@@ -366,7 +600,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 12
-          }
+          },
+          "min": 0,
+          "max": 1
         },
         "overrides": []
       },
@@ -390,8 +626,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 0,
-        "y": 32,
+        "x": 12,
+        "y": 48,
         "w": 12,
         "h": 8
       },
@@ -433,8 +669,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 12,
-        "y": 32,
+        "x": 0,
+        "y": 56,
         "w": 12,
         "h": 8
       },
@@ -481,8 +717,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 0,
-        "y": 40,
+        "x": 12,
+        "y": 56,
         "w": 12,
         "h": 8
       },
@@ -529,8 +765,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 12,
-        "y": 40,
+        "x": 0,
+        "y": 64,
         "w": 12,
         "h": 8
       },
@@ -572,8 +808,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 0,
-        "y": 48,
+        "x": 12,
+        "y": 64,
         "w": 12,
         "h": 8
       },
@@ -615,8 +851,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 12,
-        "y": 48,
+        "x": 0,
+        "y": 72,
         "w": 12,
         "h": 8
       },
@@ -658,8 +894,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 0,
-        "y": 56,
+        "x": 12,
+        "y": 72,
         "w": 12,
         "h": 8
       },
@@ -706,8 +942,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 12,
-        "y": 56,
+        "x": 0,
+        "y": 80,
         "w": 12,
         "h": 8
       },
@@ -749,8 +985,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 0,
-        "y": 64,
+        "x": 12,
+        "y": 80,
         "w": 12,
         "h": 8
       },
@@ -792,8 +1028,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 12,
-        "y": 64,
+        "x": 0,
+        "y": 88,
         "w": 12,
         "h": 8
       },
@@ -835,8 +1071,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 0,
-        "y": 72,
+        "x": 12,
+        "y": 88,
         "w": 12,
         "h": 8
       },
@@ -878,8 +1114,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 12,
-        "y": 72,
+        "x": 0,
+        "y": 96,
         "w": 12,
         "h": 8
       },
@@ -921,8 +1157,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 0,
-        "y": 80,
+        "x": 12,
+        "y": 96,
         "w": 12,
         "h": 8
       },
@@ -969,8 +1205,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 12,
-        "y": 80,
+        "x": 0,
+        "y": 104,
         "w": 12,
         "h": 8
       },
@@ -1012,8 +1248,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 0,
-        "y": 88,
+        "x": 12,
+        "y": 104,
         "w": 12,
         "h": 8
       },
@@ -1060,8 +1296,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 12,
-        "y": 88,
+        "x": 0,
+        "y": 112,
         "w": 12,
         "h": 8
       },
@@ -1103,8 +1339,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 0,
-        "y": 96,
+        "x": 12,
+        "y": 112,
         "w": 12,
         "h": 8
       },
@@ -1151,8 +1387,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 12,
-        "y": 96,
+        "x": 0,
+        "y": 120,
         "w": 12,
         "h": 8
       },
@@ -1187,23 +1423,23 @@
     {
       "id": 27,
       "type": "timeseries",
-      "title": "准入许可剩余时间",
-      "description": "",
+      "title": "准入许可在采样时的剩余时间",
+      "description": "许可寿命 3 秒，采样周期 10 秒。相对本样本时间计算，表示采样时的有效性；不能据此判断此刻是否允许请求。请求仍实时校验 Redis/etcd 许可，指标缺失和组件不可达分别告警。",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 0,
-        "y": 104,
+        "x": 12,
+        "y": 120,
         "w": 12,
         "h": 8
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "max(gateway_metering_permit_expires_seconds{job=\"worker\"})-time()",
-          "legendFormat": "许可剩余"
+          "expr": "clamp_min(max(gateway_metering_permit_expires_seconds{job=\"worker\"} - timestamp(gateway_metering_permit_expires_seconds{job=\"worker\"})), 0)",
+          "legendFormat": "采样时许可剩余"
         }
       ],
       "fieldConfig": {
@@ -1237,8 +1473,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 12,
-        "y": 104,
+        "x": 0,
+        "y": 128,
         "w": 12,
         "h": 8
       },
@@ -1280,8 +1516,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 0,
-        "y": 112,
+        "x": 12,
+        "y": 128,
         "w": 12,
         "h": 8
       },
@@ -1323,8 +1559,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 12,
-        "y": 112,
+        "x": 0,
+        "y": 136,
         "w": 12,
         "h": 8
       },
@@ -1370,8 +1606,8 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 0,
-        "y": 120,
+        "x": 12,
+        "y": 136,
         "w": 12,
         "h": 8
       },
@@ -1406,7 +1642,7 @@
     "from": "now-15m",
     "to": "now"
   },
-  "editable": true,
+  "editable": false,
   "title": "LLM Gateway 可靠性与调用监控",
   "templating": {
     "list": [
@@ -1430,13 +1666,13 @@
       },
       {
         "name": "app",
-        "label": "应用 / 消费者",
+        "label": "应用名称 / ID",
         "type": "query",
         "datasource": {
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "query": "label_values(gateway_app_qps_limit, app)",
+        "query": "label_values(gateway_app_info, app)",
         "refresh": 1,
         "includeAll": true,
         "allValue": ".*",
@@ -1494,7 +1730,28 @@
           "text": "All",
           "value": "$__all"
         }
+      },
+      {
+        "name": "error_code",
+        "label": "错误码（仅错误面板）",
+        "type": "custom",
+        "query": "invalid_api_key,request_too_large,invalid_request_error,model_not_allowed,model_not_found,safety_blocked,unsupported_capability,upstream_invalid_request,upstream_unavailable,metering_unavailable,governance_unavailable,insufficient_quota,app_qps_exceeded,gateway_overloaded,cache_invalid,stream_interrupted,client_write_failed,http_error,client_canceled",
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
       }
+    ]
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "10s",
+      "30s",
+      "1m",
+      "5m"
     ]
   }
 }

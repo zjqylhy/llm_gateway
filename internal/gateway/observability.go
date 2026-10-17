@@ -38,6 +38,7 @@ type Metrics struct {
 	Overload                *prometheus.CounterVec
 	Calls                   *prometheus.CounterVec
 	QPSLimits               *prometheus.GaugeVec
+	AppInfo                 *prometheus.GaugeVec
 	APICalls                *prometheus.CounterVec
 	APILatency              *prometheus.HistogramVec
 	MeteringStates          *prometheus.GaugeVec
@@ -54,7 +55,8 @@ func NewMetrics() *Metrics {
 	m := &Metrics{Registry: prometheus.NewRegistry()}
 	m.Calls = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_calls_total", Help: "Client model calls including early and streamed failures, without upstream retry duplication", ConstLabels: prometheus.Labels{"source": ID("metrics_")}}, []string{"app", "outcome", "http_status", "error_code"})
 	m.QPSLimits = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "gateway_app_qps_limit", Help: "Applied application token-bucket QPS limit; zero means unlimited"}, []string{"app"})
-	m.Registry.MustRegister(m.Calls, m.QPSLimits)
+	m.AppInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "gateway_app_info", Help: "Current application display name; stable identity remains app"}, []string{"app", "app_name"})
+	m.Registry.MustRegister(m.Calls, m.QPSLimits, m.AppInfo)
 	m.initializeCalls("_unknown")
 	m.APICalls = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_api_calls_total", Help: "One client call per API; stream unknown before body validation, protective rejects remain errors", ConstLabels: prometheus.Labels{"source": ID("api_metrics_")}}, []string{"app", "api", "stream", "outcome", "http_status", "error_code"})
 	m.APILatency = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "gateway_api_seconds", Help: "Client request wall time including early refusals and cache hits", Buckets: []float64{.001, .005, .01, .03, .1, .3, 1, 3, 10, 30, 60, 120}}, []string{"app", "api", "stream"})

@@ -1,5 +1,6 @@
 # 应用调用监控验证记录
 
+> 历史版本记录：2026-10-14 的 Grafana 控制台嵌入已替换旧手绘曲线及 app-traffic 接口。当前方案见 [监控嵌入规格](grafana-console-monitoring-spec.md)，下文保留当时的验证证据。
 2026-10-12，Windows 本地验证。规格见 [app-traffic-spec.md](app-traffic-spec.md)。
 
 ## 已通过

@@ -32,7 +32,7 @@ type Admin struct {
 	Sessions      SessionStore
 	MaxConcurrent int
 	admission     admission
-	Prometheus    *TrafficPrometheus
+	Grafana       *GrafanaProxy
 }
 
 func NewAdmin(e *Engine, secure bool, origin string) *Admin {
@@ -108,7 +108,7 @@ func (a *Admin) Handler() http.Handler {
 	mux.HandleFunc("GET /admin/payload/{id}", a.payload)
 	mux.HandleFunc("GET /admin/cost-report", a.cost)
 	mux.HandleFunc("GET /admin/metrics", a.metrics)
-	mux.HandleFunc("GET /admin/app-traffic", a.appTraffic)
+	mux.HandleFunc("GET /admin/monitoring", a.grafanaStatus)
 	mux.HandleFunc("GET /admin/audit", a.audit)
 	mux.HandleFunc("GET /admin/metering", a.meteringStatus)
 	mux.HandleFunc("GET /admin/instances", a.instances)
@@ -149,7 +149,15 @@ func (a *Admin) Handler() http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
-	return protectedHandler(handler, &a.admission, a.MaxConcurrent, defaultAdminConcurrency, "/admin/", "admin", a.Engine.Metrics)
+	ordinary := protectedHandler(handler, &a.admission, a.MaxConcurrent, defaultAdminConcurrency, "/admin/", "admin", a.Engine.Metrics)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Grafana 只读查询采用独立同源策略及并发池，不占普通管理槽位。
+		if strings.HasPrefix(r.URL.Path, grafanaPrefix) {
+			a.grafana(w, r)
+			return
+		}
+		ordinary.ServeHTTP(w, r)
+	})
 }
 func readJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))

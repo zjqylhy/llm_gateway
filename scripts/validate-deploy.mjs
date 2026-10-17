@@ -56,8 +56,19 @@ const liteMonitoring = parse(fs.readFileSync(path.join(root, 'deploy/lite/compos
 const collector = liteMonitoring.services.prometheus;
 if (collector.ports || collector.mem_limit !== '256m' || !collector.read_only ||
     !collector.command.includes('--storage.tsdb.retention.time=26h') ||
-    !collector.command.includes('--storage.tsdb.retention.size=256MB') ||
-    liteMonitoring.services.admin.environment.GW_PROMETHEUS_URL !== 'http://prometheus:9090') {
+    !collector.command.includes('--storage.tsdb.retention.size=256MB')) {
   throw Error('lite monitoring: private access or resource budget mismatch');
+}
+const liteGrafana = parse(fs.readFileSync(path.join(root, 'deploy/lite/compose.grafana.yaml'), 'utf8'));
+const viewer = liteGrafana.services.grafana;
+if (viewer.ports.length !== 1 || viewer.ports[0] !== '127.0.0.1:3000:3000' ||
+    viewer.mem_limit !== '512m' || !viewer.read_only || !viewer.env_file ||
+    viewer.environment.GF_AUTH_ANONYMOUS_ENABLED !== 'false' ||
+    viewer.environment.GF_USERS_ALLOW_SIGN_UP !== 'false' ||
+    viewer.environment.GF_SERVER_SERVE_FROM_SUB_PATH !== 'true' ||
+    viewer.environment.GF_SECURITY_ALLOW_EMBEDDING !== 'true' ||
+    liteGrafana.services.admin.environment.GW_GRAFANA_URL !== 'http://grafana:3000' ||
+    !viewer.volumes.includes('../observability/dashboard.json:/var/lib/grafana/dashboards/gateway.json:ro')) {
+  throw Error('lite Grafana: private access, authentication or resource budget mismatch');
 }
 console.log(`PASS: ${count} YAML documents; ${dashboard.panels.length} monitoring panels. Container and cluster integration must run separately.`);

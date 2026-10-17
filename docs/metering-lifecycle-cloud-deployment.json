@@ -1,0 +1,131 @@
+{
+  "date": "2026-10-14",
+  "pr": "https://github.com/zjqylhy/llm_gateway/pull/9",
+  "runtime_revision": "2d1e250632ceeb9b42cf1f8f38c7ce2b3d5e482e",
+  "monitoring_revision": "d49f894f8e6e95e6113e97f6fdf09cae70fec899",
+  "image": "llm-gateway:lifecycle-20261014-2d1e250",
+  "image_id": "sha256:ce7389c8e02bd2f2f741c22d75a8e4e76990f6dd7883fe48d4e7bd7f28766f93",
+  "protocol": 2,
+  "retired_tables": [
+    "gw_outbox_slots",
+    "gw_metering_admissions"
+  ],
+  "existing_billable_attempts_preserved": 319,
+  "migrated_total_records": 656,
+  "original_tokens": 351900,
+  "original_cost_micro": 765996,
+  "business_config_version": 29,
+  "business_config_preserved": true,
+  "source_and_preopen_offsets_preserved": true,
+  "final_preopen_seconds": 62.928,
+  "off_host_backup_verified": true,
+  "cold_backup_hashes": {
+    "mysql": "6e559b03036ced50d39e55c2d76076529397c128f2b7d45dde205da193a8f117",
+    "redis": "91232773416f90890ac9a7b834964703f0a97ad29898d2c4fbd1ca4cf50d4227",
+    "kafka": "50715f7ec6723da78b130d357d96d94f3fef745c4eac028b615e3a1649edaae3",
+    "etcd": "f1ad69aa33a1a251c18d697ca001876acaf160dbd189fcd8ceb6278c2698c5fe"
+  },
+  "rollbacks": [
+    {
+      "attempt": 1,
+      "reason": "Grafana initial startup exceeded 120 seconds at 256MiB",
+      "complete_state_restore_verified": true
+    },
+    {
+      "attempt": 2,
+      "reason": "Grafana still served previous provisioned dashboard",
+      "complete_state_restore_verified": true,
+      "restore_fix": "Cached official image alias corrected before private Grafana restart"
+    }
+  ],
+  "real_provider_smoke": {
+    "checked_at": "2026-10-14T06:37:55.691930+00:00",
+    "https_verified": true,
+    "frontend_verified": true,
+    "admin_login_verified": true,
+    "unauthenticated_models_rejected": true,
+    "config_version": 29,
+    "app_id": "app_3fc350d2a01c889ced7fbce16e0cc7f4",
+    "calls": [
+      {
+        "stream": false,
+        "request_id": "req_9c7d247c5684dfd8c476a1766f69e28f",
+        "http": 200,
+        "duration_ms": 3094.0,
+        "usage": {
+          "prompt_tokens": 35,
+          "completion_tokens": 18,
+          "total_tokens": 53,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 16
+          },
+          "prompt_cache_hit_tokens": 0,
+          "prompt_cache_miss_tokens": 35
+        },
+        "visible_answer": "OK",
+        "sse_done": false
+      },
+      {
+        "stream": true,
+        "request_id": "req_b68c7d30976bb4908ca4771c9e7cc8dc",
+        "http": 200,
+        "duration_ms": 3688.0,
+        "usage": {
+          "prompt_tokens": 35,
+          "completion_tokens": 15,
+          "total_tokens": 50,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 13
+          },
+          "prompt_cache_hit_tokens": 0,
+          "prompt_cache_miss_tokens": 35
+        },
+        "visible_answer": "OK",
+        "sse_done": true
+      }
+    ],
+    "reported_attempts": 2,
+    "total_tokens": 103,
+    "cost_micro": 404,
+    "metering_healthy": true,
+    "permit_valid": true,
+    "undelivered_events": 0,
+    "settled_attempt_ids": [
+      "att_90601d5e5b2c7544d62d8f3e9e5574b5",
+      "att_fa6870f6a935b238b0029b8edb9ad530"
+    ]
+  },
+  "final_billable_attempts": 321,
+  "final_tokens": 352003,
+  "final_cost_micro": 766400,
+  "outbox_pending": 0,
+  "capacity_bytes": 0,
+  "compensation_pending": 0,
+  "billing_state": "settled",
+  "monitoring": {
+    "version": "13.2.3",
+    "image_id": "sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572",
+    "panels": 31,
+    "queries_passed": 44,
+    "alerts": 14,
+    "firing_alerts": [],
+    "targets_up": 3,
+    "grafana_host_bind": "127.0.0.1:3000",
+    "grafana_memory_limit_mib": 512,
+    "grafana_cpu_limit": 1,
+    "permit_regression_scenarios": 5,
+    "hashes": {
+      "alerts.yaml": "ba68072bd736b2f7be77b9e9a61d641f20c82fcc4cdd4211d4638d3b0972bc34",
+      "dashboard.json": "e1a8292217dccf4b76739e2c67445c1160b4573fed41696dfca67e5b578e71d8"
+    }
+  },
+  "resource_sample": "llm-gateway-lite-grafana-1 | 484.1MiB / 512MiB | 0.39% | 100\nllm-gateway-lite-gateway-1 | 16.91MiB / 256MiB | 0.15% | 9\nllm-gateway-lite-admin-1 | 18.78MiB / 256MiB | 0.10% | 9\nllm-gateway-lite-worker-1 | 15.7MiB / 256MiB | 0.61% | 9\nllm-gateway-lite-prometheus-1 | 40.36MiB / 256MiB | 0.03% | 7\nllm-gateway-lite-edge-local-1 | 18.43MiB / 128MiB | 0.00% | 7\nllm-gateway-lite-redis-1 | 7.301MiB / 256MiB | 0.35% | 6\nllm-gateway-lite-mysql-1 | 234.5MiB / 768MiB | 0.96% | 43\nllm-gateway-lite-kafka-1 | 371.5MiB / 1GiB | 1.34% | 97\nllm-gateway-lite-etcd-1 | 53.07MiB / 256MiB | 0.69% | 9\n",
+  "all_roles_running_without_oom_or_restart": true,
+  "scope": "Two small real model calls; no sustained cloud load or maximum throughput/long-term capacity claim"
+}
