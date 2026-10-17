@@ -1,5 +1,17 @@
 # 运行与故障处理
 
+## 后台 Outbox 容量实验
+
+默认 `GW_OUTBOX_CAPACITY_MODE=locked`、`GW_OUTBOX_CAPACITY_WAIT=false`，保留同步容量计数和满额拒绝。`locked` 加 `WAIT=true` 在事务外等待后重试原子准入；`background` 必须配合 `WAIT=true`，按后台快照和本地临时预留进行可取消等待，属于允许多实例短暂超额的软上限。配置及测试矩阵见 [实验规格](outbox-background-capacity-spec.md)。本轮开发和验证不代表已更新线上服务。
+
+后台模式每实例约每 200 ms 对实际正数预留/Outbox 占用做一致性读，并回查未覆盖的本地 attempt ID；单轮 SQL 预算 500 ms，快照从采样开始计时，超过 1 秒不再准入。等待不占用数据库连接或付费在途槽位，仍占用有限的 HTTP 槽位。JSON/SSE 沿用 60/120 秒请求总期限；容量等待超时返回 `outbox_capacity_timeout`。已获准调用的完成保存、补偿和交付释放继续执行，不等待容量。
+
+`gw_capacity_protocol` 保存容量模式和版本 1。后台模式的计量协议为 3，锁定模式为 2；启动及配置刷新检查模式，旧网关的协议 2 Prepare/Arm 无法进入协议 3。运行角色不执行 DDL。切换前先停止新准入，让完成/补偿/消费排空，再停止所有写入角色并等待至少 5 秒心跳退出；确认没有 prepared/inflight、待补偿和未交付记录后，以目标模式及 `GW_METERING_MIGRATION_ACK=writers-stopped` 执行 migrate，再统一启动。未知 inflight 必须核实，不能为切换而清零。新空部署可直接迁移到目标模式；回退 locked 时重建空容量计数。
+
+后台模式不维护 `gw_metering_capacity`；监控和离线重建读取 attempt.reserved_remaining_bytes 与 outbox.charged_bytes。`gateway_outbox_capacity_sample_timestamp_seconds` 表示采样开始时刻，`gateway_outbox_capacity_local_bytes` 是尚未覆盖的本地预留；另有等待者、正数来源行数、成功快照次数、全局及最大单应用超额指标。多个网关观察的是同一份数据库总量，不能求和；`readyz=200` 也不代表容量充足。
+
+隔离压测命令为 `pwsh -File scripts/verify-capacity.ps1`，快速功能冒烟加 `-Quick -Seconds 3`。脚本固定主机与容器二进制，在六个容量档位间轮换三种模式，为每个组合创建独立 schema/topic/配置前缀，模式之间清空本轮专用 Redis，保存原始 JSON、Prometheus、角色资源和 SQL EXPLAIN。结束后仅清理随机测试项目，不读取或修改用户 `.env`。
+
 ## 配置、密钥与会话
 
 MySQL 保存期望配置，etcd 保存已发布版本；实例每秒获取版本，控制台展示各实例心跳。保存但发布失败时返回待发布状态，应重试发布并检查每个存活实例版本。旧版本通过 CAS 不能覆盖新版本。

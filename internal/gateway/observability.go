@@ -11,6 +11,13 @@ import (
 )
 
 type Metrics struct {
+	CapacitySampleAt        prometheus.Gauge
+	CapacityLocalBytes      prometheus.Gauge
+	CapacityOverBytes       prometheus.Gauge
+	CapacityWaiters         prometheus.Gauge
+	CapacitySampleRows      prometheus.Gauge
+	CapacitySampleVersion   prometheus.Counter
+	CapacityAppOverBytes    prometheus.Gauge
 	MeteringLag             prometheus.Gauge
 	MeteringPermit          prometheus.Gauge
 	MeteringUnchecked       prometheus.Gauge
@@ -53,6 +60,15 @@ type Metrics struct {
 
 func NewMetrics() *Metrics {
 	m := &Metrics{Registry: prometheus.NewRegistry()}
+	m.CapacitySampleAt = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_outbox_capacity_sample_timestamp_seconds", Help: "Start of latest successful capacity SQL snapshot"})
+	m.CapacityLocalBytes = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_outbox_capacity_local_bytes", Help: "Local reservations not yet covered by SQL snapshot"})
+	m.CapacityOverBytes = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_outbox_capacity_over_limit_bytes", Help: "Observed global soft-capacity excess; do not sum across gateways"})
+	m.CapacityWaiters = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_outbox_capacity_waiters", Help: "Requests inside capacity admission, including immediate grants"})
+	m.CapacitySampleRows = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_outbox_capacity_source_rows", Help: "Positive occupancy source rows counted by the latest successful sample"})
+	m.CapacitySampleVersion = prometheus.NewCounter(prometheus.CounterOpts{Name: "gateway_outbox_capacity_snapshots_total", Help: "Successfully published local capacity snapshots"})
+	m.CapacityAppOverBytes = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gateway_outbox_capacity_max_app_over_limit_bytes", Help: "Maximum observed application soft-limit excess"})
+	m.Registry.MustRegister(m.CapacitySampleRows, m.CapacitySampleVersion, m.CapacityAppOverBytes)
+	m.Registry.MustRegister(m.CapacitySampleAt, m.CapacityLocalBytes, m.CapacityOverBytes, m.CapacityWaiters)
 	m.Calls = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_calls_total", Help: "Client model calls including early and streamed failures, without upstream retry duplication", ConstLabels: prometheus.Labels{"source": ID("metrics_")}}, []string{"app", "outcome", "http_status", "error_code"})
 	m.QPSLimits = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "gateway_app_qps_limit", Help: "Applied application token-bucket QPS limit; zero means unlimited"}, []string{"app"})
 	m.AppInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "gateway_app_info", Help: "Current application display name; stable identity remains app"}, []string{"app", "app_name"})

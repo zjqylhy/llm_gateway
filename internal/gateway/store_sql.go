@@ -13,8 +13,10 @@ import (
 )
 
 type SQLStore struct {
-	DB      *sql.DB
-	Metrics *Metrics
+	DB           *sql.DB
+	Metrics      *Metrics
+	CapacityMode string
+	CapacityWait bool
 }
 
 func gatewayMySQLConfig(dsn string) (*mysql.Config, error) {
@@ -43,6 +45,10 @@ func gatewayMySQLConfig(dsn string) (*mysql.Config, error) {
 	return cfg, nil
 }
 func NewSQLStore(c context.Context, dsn string) (*SQLStore, error) {
+	mode, wait, e := capacityOptions()
+	if e != nil {
+		return nil, e
+	}
 	open, idle, e := mysqlPoolOptions()
 	if e != nil {
 		return nil, e
@@ -62,7 +68,7 @@ func NewSQLStore(c context.Context, dsn string) (*SQLStore, error) {
 		db.Close()
 		return nil, e
 	}
-	s := &SQLStore{DB: db}
+	s := &SQLStore{DB: db, CapacityMode: mode, CapacityWait: wait}
 	return s, nil
 }
 
@@ -94,6 +100,9 @@ func (s *SQLStore) Migrate(c context.Context) error {
 		return err
 	}
 	if err := s.migrateAttemptLifecycle(c); err != nil {
+		return err
+	}
+	if err := s.migrateCapacityMode(c); err != nil {
 		return err
 	}
 	b, _ := json.Marshal(EmptyConfig())

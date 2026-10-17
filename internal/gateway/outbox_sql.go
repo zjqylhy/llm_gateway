@@ -21,7 +21,7 @@ func (s *SQLStore) MeteringHealthy(c context.Context) error {
 	if err := s.DB.QueryRowContext(c, `SELECT state,metering_protocol FROM gw_metering_control WHERE id=1`).Scan(&state, &protocol); err != nil {
 		return err
 	}
-	if state != "healthy" || protocol != 2 {
+	if state != "healthy" || protocol != s.meteringProtocol() {
 		return ErrUnavailable
 	}
 	return nil
@@ -65,12 +65,12 @@ func adjustCapacity(c context.Context, tx *sql.Tx, app string, delta int64) erro
 	return nil
 }
 
-func saveOutbox(c context.Context, tx *sql.Tx, e Event, globalLimit, appLimit int64, metrics *Metrics) error {
+func (s *SQLStore) saveOutbox(c context.Context, tx *sql.Tx, e Event, globalLimit, appLimit int64) error {
 	raw, err := eventBytes(e)
 	if err != nil {
 		return err
 	}
-	globalUsed, appUsed, err := outboxCapacity(c, tx, e.AppID, metrics)
+	globalUsed, appUsed, err := s.outboxCapacity(c, tx, e.AppID)
 	if err != nil {
 		return err
 	}
@@ -106,10 +106,10 @@ func saveOutbox(c context.Context, tx *sql.Tx, e Event, globalLimit, appLimit in
 			return err
 		}
 	}
-	if delta > 0 && (delta > globalLimit-globalUsed || delta > appLimit-appUsed) {
+	if !s.backgroundCapacity() && delta > 0 && (delta > globalLimit-globalUsed || delta > appLimit-appUsed) {
 		return ErrOutboxCapacity
 	}
-	if err = adjustCapacity(c, tx, e.AppID, delta); err != nil {
+	if err = s.adjustCapacity(c, tx, e.AppID, delta); err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(c, `INSERT INTO gw_metering_outbox(event_id,attempt_id,app_id,revision,payload,payload_hash,charged_bytes,next_retry_at) VALUES(?,?,?,?,?,?,?,UTC_TIMESTAMP(6))`, e.ID, e.AttemptID, e.AppID, e.Revision, raw, Hash(string(raw)), len(raw))
@@ -131,7 +131,7 @@ func (s *SQLStore) SaveOutbox(c context.Context, e Event, globalLimit, appLimit 
 		return err
 	}
 	defer tx.Rollback()
-	if err = saveOutbox(c, tx, e, globalLimit, appLimit, s.Metrics); err != nil {
+	if err = s.saveOutbox(c, tx, e, globalLimit, appLimit); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -263,7 +263,7 @@ func (s *SQLStore) CorrectOutbox(c context.Context, actor, key string, e Event, 
 	if n := cfg.Apps[e.AppID].OutboxBytes; n > 0 {
 		appLimit = n
 	}
-	if err = saveOutbox(c, tx, e, globalLimit, appLimit, s.Metrics); err != nil {
+	if err = s.saveOutbox(c, tx, e, globalLimit, appLimit); err != nil {
 		return Event{}, err
 	}
 	raw, err = eventBytes(e)
@@ -339,7 +339,7 @@ func (s *SQLStore) DeliveredOutbox(c context.Context, e Event) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, _, err = outboxCapacity(c, tx, e.AppID, s.Metrics); err != nil {
+	if _, _, err = s.outboxCapacity(c, tx, e.AppID); err != nil {
 		return err
 	}
 	var charged int64
@@ -380,7 +380,7 @@ func (s *SQLStore) DeliveredOutbox(c context.Context, e Event) error {
 			}
 		}
 	}
-	if err = adjustCapacity(c, tx, e.AppID, -charged); err != nil {
+	if err = s.adjustCapacity(c, tx, e.AppID, -charged); err != nil {
 		return err
 	}
 	return tx.Commit()
