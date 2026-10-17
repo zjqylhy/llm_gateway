@@ -100,7 +100,15 @@ func (s *SQLStore) migrateCapacityMode(c context.Context) error {
 		if err = tx.QueryRowContext(c, `SELECT COUNT(*) FROM gw_instances WHERE seen>UTC_TIMESTAMP(6)-INTERVAL 5 SECOND`).Scan(&live); err != nil {
 			return err
 		}
-		if occupied != 0 || live != 0 || os.Getenv("GW_METERING_MIGRATION_ACK") != "writers-stopped" && !missing {
+		// 缺少模式行也可能是已有历史的旧部署，仅首次空库可省略停写确认。
+		var history int
+		if missing {
+			if err = tx.QueryRowContext(c, `SELECT EXISTS(SELECT 1 FROM gw_attempts LIMIT 1) OR EXISTS(SELECT 1 FROM gw_metering_outbox LIMIT 1)`).Scan(&history); err != nil {
+				return err
+			}
+		}
+		fresh := missing && history == 0
+		if occupied != 0 || live != 0 || os.Getenv("GW_METERING_MIGRATION_ACK") != "writers-stopped" && !fresh {
 			return fmt.Errorf("capacity switch requires stopped writers and drained state: occupied=%d live=%d", occupied, live)
 		}
 		if !s.backgroundCapacity() {

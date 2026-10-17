@@ -146,6 +146,28 @@ func testCapacityModeSQL(t *testing.T, ctx context.Context, s *SQLStore) {
 	if err := s.validateCapacityMode(ctx); err != nil {
 		t.Fatal(err)
 	}
+	if !s.backgroundCapacity() {
+		// 模拟尚无容量模式元数据、但有已交付历史的旧部署。
+		if _, err := s.DB.ExecContext(ctx, `INSERT INTO gw_metering_outbox(event_id,attempt_id,app_id,revision,payload,payload_hash,charged_bytes,delivered,next_retry_at) VALUES('capacity-legacy-history','legacy','fixture',2,NULL,'fixture',0,1,UTC_TIMESTAMP(6))`); err != nil {
+			t.Fatal(err)
+		}
+		defer s.DB.ExecContext(ctx, `DELETE FROM gw_metering_outbox WHERE event_id='capacity-legacy-history'`)
+		if _, err := s.DB.ExecContext(ctx, `DELETE FROM gw_capacity_protocol WHERE id=1`); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("GW_METERING_MIGRATION_ACK", "")
+		background := &SQLStore{DB: s.DB, CapacityMode: "background", CapacityWait: true}
+		if err := background.migrateCapacityMode(ctx); err == nil {
+			t.Fatal("legacy history switched without stopped-writers confirmation")
+		}
+		t.Setenv("GW_METERING_MIGRATION_ACK", "writers-stopped")
+		if err := background.migrateCapacityMode(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.migrateCapacityMode(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
 	other := &SQLStore{DB: s.DB, CapacityMode: "background", CapacityWait: true}
 	if s.backgroundCapacity() {
 		other.CapacityMode = "locked"
