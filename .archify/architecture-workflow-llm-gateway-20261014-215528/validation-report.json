@@ -1,0 +1,53 @@
+{
+  "sourceSnapshot": "597c6225d0d571498a8f22f1725001f6ee2418ba",
+  "architecture": {
+    "type": "architecture",
+    "specification": {
+      "path": "C:\\Users\\LHY95\\Documents\\Codex\\llm_gateway\\.archify\\architecture-workflow-llm-gateway-20261014-215528\\architecture-candidate.json",
+      "sha256": "4e94f0b7fff7d52b91d29f6ebc1ce221b3de436464bb324538de7d51fc4faa19",
+      "bytes": 10732
+    },
+    "artifact": {
+      "path": "C:\\Users\\LHY95\\Documents\\Codex\\llm_gateway\\.archify\\architecture-workflow-llm-gateway-20261014-215528\\architecture.html",
+      "sha256": "05b927a75853457c8d0e1d547e3b4188c1aa1e8a5d061315d9147d4674677a48",
+      "bytes": 772907
+    },
+    "validation": {
+      "checksPassed": 9,
+      "checkCount": 9,
+      "compositionProfile": "showcase",
+      "compositionStatus": "pass",
+      "errors": 0,
+      "warnings": 0
+    },
+    "browser_evidence": "passed",
+    "visual_review": "inspected 1440x900 light and 2048x1320 dark captures; 5 resolved crossover bridges remain",
+    "correction_rounds": 1,
+    "receipt": "review-2/architecture.finalize-summary.json"
+  },
+  "workflow": {
+    "type": "workflow",
+    "specification": {
+      "path": "C:\\Users\\LHY95\\Documents\\Codex\\llm_gateway\\.archify\\architecture-workflow-llm-gateway-20261014-215528\\workflow-candidate.json",
+      "sha256": "ca4d361667ec1077b0d9a750b72a80b7cecb430eb5ef94f9cc111c1500b4bc01",
+      "bytes": 21040
+    },
+    "artifact": {
+      "path": "C:\\Users\\LHY95\\Documents\\Codex\\llm_gateway\\.archify\\architecture-workflow-llm-gateway-20261014-215528\\execution-flow.html",
+      "sha256": "1002f6cf7de088d59fd8e420b514c9369c05ed1f1397a3740b260ff5d5898d4c",
+      "bytes": 800664
+    },
+    "validation": {
+      "checksPassed": 9,
+      "checkCount": 9,
+      "compositionProfile": "showcase",
+      "compositionStatus": "pass",
+      "errors": 0,
+      "warnings": 0
+    },
+    "browser_evidence": "passed",
+    "visual_review": "inspected first-screen captures at 1440x900 light and 2048x1320 dark; page-level vertical scrolling",
+    "correction_rounds": 0,
+    "receipt": "execution-flow.finalize-summary.json"
+  }
+}

@@ -1,0 +1,36 @@
+# 仓库架构与执行流程图规格
+
+## 已确认需求与方案
+- 用 archify 绘制中文架构组件图与执行流程图。
+- 用户明确选择包含工作区未提交改动。
+- 以真实源码调用和写入行为为依据；保留源码定位、深浅主题及导出能力。
+- 产物独立保存到本目录；仅将本次图文件提交到独立分支。
+
+## 源码身份
+- 原 HEAD：6129a3e2aa908f5a7c0611f8e4d6b534cccf1441。
+- 工作区源码快照：03b17cfbc5a40e51ac439d64bf92b2db207e2787。
+- 快照保存于本地 Git 引用 refs/archify/llm-gateway-source-20261014-053323，使用临时索引创建，原索引及工作区代码未被提交到开发分支。
+- 来源为 SSH 仓库，源码定位采用 local-only；快照未推送。改变文件清单见 source-snapshot.json。
+
+## 架构组件图
+覆盖业务应用、Gateway 请求引擎、模型供应商、Admin 服务、React 控制台、Worker、MySQL、治理 Redis、etcd、Kafka、可选语义缓存。
+说明配置发布与刷新、在线治理、付费准入、完成事件及异步结算；Milvus 与缓存 Redis 属于同一可选缓存子系统。开发内存模式、Lite 缓存关闭、观测与恢复命令以说明卡呈现。
+
+## 执行流程图
+覆盖鉴权和参数权限校验、QPS 和安全规则、候选策略与灰度、可选缓存和内部 Embedding、Prepare → Redis 预留 → Arm、上游 JSON/SSE、完成事件 ACK、返回与按条件回填、候选切换、取消补偿及拒绝。
+Worker 链路为来源校验 → SQL 账本与位点事务 → Redis 幂等结算 → Outbox 交付与水位 → Kafka 位点提交；估计用量仍持有暴露额度。
+SSE 输出后不得切换候选；成功终止标记等待完成事件 ACK。背景补偿、Relay、审计和许可续租以节点或说明卡呈现。
+
+## 验收
+- 每张图均须通过 archify finalize 的 validate、deliver、strict check 和 browser-check。
+- Showcase 9/9，零错误、零警告。
+- 检查 1440×900、1600×1000、1920×1080、2048×1320 桌面尺寸，以及深浅主题。
+- 架构图已检查浅色 1440×900 与深色 2048×1320 截图；交叉关系采用跳线桥接。
+- 执行图已检查上述尺寸的首屏截图；完整链路使用页面纵向滚动。
+- 核验对象仅为图与源码引用，本次未改 Go 代码，未运行 Go 单元或集成测试。
+- 规格/产物 SHA-256、最新检查回执和截图见 validation-report.json、review-2 与 visual-check 目录。
+
+## 使用与维护
+直接打开 architecture.html 或 execution-flow.html。查看组件来源，使用页面工具缩放、切换主题或导出。
+以后更新源码时，创建新的请求目录和源码快照；从两个 candidate JSON 修改后重新运行完整 finalize。
+

@@ -1,0 +1,50 @@
+{
+  "architecture": {
+    "type": "architecture",
+    "specification": {
+      "path": "C:\\Users\\LHY95\\Documents\\Codex\\llm_gateway\\.archify\\architecture-workflow-llm-gateway-20261014-053323\\architecture-candidate.json",
+      "sha256": "f479012b2d3bda0ff6470744fe37c860369951e06065c33d1e792c6512562775",
+      "bytes": 10600
+    },
+    "artifact": {
+      "path": "C:\\Users\\LHY95\\Documents\\Codex\\llm_gateway\\.archify\\architecture-workflow-llm-gateway-20261014-053323\\architecture.html",
+      "sha256": "a57fe2f986a5ffcdb7d75ba62b017368aae83c8476c95aaaf9c313fe71e30297",
+      "bytes": 773245
+    },
+    "validation": {
+      "checksPassed": 9,
+      "checkCount": 9,
+      "compositionProfile": "showcase",
+      "compositionStatus": "pass",
+      "errors": 0,
+      "warnings": 0
+    },
+    "browser_evidence": "passed",
+    "visual_review": "inspected 1440x900 light and 2048x1320 dark captures; crossover bridges remain visible",
+    "receipt": "review-2/architecture.finalize-summary.json"
+  },
+  "workflow": {
+    "type": "workflow",
+    "specification": {
+      "path": "C:\\Users\\LHY95\\Documents\\Codex\\llm_gateway\\.archify\\architecture-workflow-llm-gateway-20261014-053323\\workflow-candidate.json",
+      "sha256": "f5c4c25d8350ddeb0212629be81da98fd04576f361a4be3e844cea4b5da17b39",
+      "bytes": 20593
+    },
+    "artifact": {
+      "path": "C:\\Users\\LHY95\\Documents\\Codex\\llm_gateway\\.archify\\architecture-workflow-llm-gateway-20261014-053323\\execution-flow.html",
+      "sha256": "96019a1323f0847fc11b0f1318a1d0f3b6d6b095c61289a611f483404a41915e",
+      "bytes": 800276
+    },
+    "validation": {
+      "checksPassed": 9,
+      "checkCount": 9,
+      "compositionProfile": "showcase",
+      "compositionStatus": "pass",
+      "errors": 0,
+      "warnings": 0
+    },
+    "browser_evidence": "passed",
+    "visual_review": "inspected first-screen captures at 1440x900 light and 2048x1320 dark; diagram uses page-level vertical scrolling",
+    "receipt": "execution-flow.finalize-summary.json"
+  }
+}

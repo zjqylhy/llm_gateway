@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "2ca3ebf4-6d81-4ff1-b192-87bb283c53c5",
+  "status": "current",
+  "command": "deliver",
+  "type": "workflow",
+  "input": "C:\\Users\\LHY95\\Documents\\Codex\\llm_gateway\\.archify\\architecture-workflow-llm-gateway-20261014-215528\\workflow-candidate.json",
+  "output": "C:\\Users\\LHY95\\Documents\\Codex\\llm_gateway\\.archify\\architecture-workflow-llm-gateway-20261014-215528\\execution-flow.html",
+  "specification": {
+    "sha256": "ca4d361667ec1077b0d9a750b72a80b7cecb430eb5ef94f9cc111c1500b4bc01",
+    "bytes": 21040
+  },
+  "artifact": {
+    "sha256": "1002f6cf7de088d59fd8e420b514c9369c05ed1f1397a3740b260ff5d5898d4c",
+    "bytes": 800664
+  }
+}
