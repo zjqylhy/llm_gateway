@@ -1,8 +1,8 @@
 # 运行与故障处理
 
-## 后台 Outbox 容量实验
+## 后台 Outbox 容量管理
 
-默认 `GW_OUTBOX_CAPACITY_MODE=locked`、`GW_OUTBOX_CAPACITY_WAIT=false`，保留同步容量计数和满额拒绝。`locked` 加 `WAIT=true` 在事务外等待后重试原子准入；`background` 必须配合 `WAIT=true`，按后台快照和本地临时预留进行可取消等待，属于允许多实例短暂超额的软上限。配置及测试矩阵见 [实验规格](outbox-background-capacity-spec.md)。本轮开发和验证不代表已更新线上服务。
+默认 `GW_OUTBOX_CAPACITY_MODE=locked`、`GW_OUTBOX_CAPACITY_WAIT=false`，保留同步容量计数和满额拒绝。`locked` 加 `WAIT=true` 在事务外等待后重试原子准入；`background` 必须配合 `WAIT=true`，按后台快照和本地临时预留进行可取消等待，属于允许多实例短暂超额的软上限。配置及测试矩阵见 [实验规格](outbox-background-capacity-spec.md)。现有服务器已于 2026-10-18 按用户授权迁移并启用 background，真实调用与离线核账通过，见 [部署记录](outbox-background-capacity-cloud-deployment.md)；其他已有部署仍须显式停写迁移。
 
 后台模式每实例约每 200 ms 对实际正数预留/Outbox 占用做一致性读，并回查未覆盖的本地 attempt ID；单轮 SQL 预算 500 ms，快照从采样开始计时，超过 1 秒不再准入。等待不占用数据库连接或付费在途槽位，仍占用有限的 HTTP 槽位。JSON/SSE 沿用 60/120 秒请求总期限；容量等待超时返回 `outbox_capacity_timeout`。已获准调用的完成保存、补偿和交付释放继续执行，不等待容量。
 
