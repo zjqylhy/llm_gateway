@@ -26,7 +26,7 @@ func testPermitContext(t *testing.T, client *redis.Client, ctx context.Context, 
 			t.Fatal(err)
 		}
 	}
-	return context.WithValue(ctx, admissionProofKey{}, admissionProof{p, "app-generation", string(raw)})
+	return context.WithValue(ctx, admissionProofKey{}, admissionProof{Permit: p, AppGeneration: "app-generation"})
 }
 
 func TestMeteringPermitGenerationExpiryAndApplicationIsolation(t *testing.T) {

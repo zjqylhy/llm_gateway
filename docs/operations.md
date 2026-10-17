@@ -10,7 +10,7 @@ MySQL 保存期望配置，etcd 保存已发布版本；实例每秒获取版本
 
 ## 用量与对账
 
-所有实际推理、重试及内部向量化分别产生 started/completed 事件。Kafka ACK 后才开始上游调用；completed ACK 后才发送成功终止标记。队列不可用时拒绝新付费调用，流式计量失败会发送错误而不发送 `[DONE]`。
+每次实际推理、重试及内部向量化分别拥有 attempt。Prepare 提交 → Redis 同步预算预占 → Arm 同事务写开始账本和 inflight → Arm 明确提交后调用模型。新的 started 不发布 Kafka；completed ACK 后才发送成功终止标记。队列不可用时拒绝新付费调用，流式计量失败会发送错误而不发送 `[DONE]`。
 
 worker 按事件 ID 去重、按 attempt revision 更新账本和配额。MySQL 入账后 Redis 结算，再提交 Kafka offset；任何一步失败停止 worker，修复后重放。同一个事件重放不会重复计费。Kafka lag、写入错误、MySQL 事务延迟和 Redis 预占量需要监控；默认基础设施指标接入由部署环境提供。
 
@@ -28,7 +28,7 @@ worker 按事件 ID 去重、按 attempt revision 更新账本和配额。MySQL 
 
 ## outbox 与计量冻结恢复
 
-生产模式启动前需完成新迁移。网关保存 outbox，不更新账本；worker 后台重试，消费入账并结算 Redis 后清除冗余载荷、释放逻辑容量。未交付容量默认全局 512MiB、每应用 64MiB，环境变量为 `GW_OUTBOX_GLOBAL_BYTES`、`GW_OUTBOX_APP_BYTES`；应用 `outbox_bytes` 可覆盖默认，每个新调用为 completed 预留 1MiB。限额不覆盖索引、已交付元数据及其他 SQL 表，不能代替磁盘、备份和连接池监控。
+生产模式启动前需完成新迁移。网关在 Arm 同步写开始账本，完成/修正仍由 worker 消费入账；worker 后台重试，结算 Redis 后清除冗余载荷、释放逻辑容量。未交付容量默认全局 512MiB、每应用 64MiB，环境变量为 `GW_OUTBOX_GLOBAL_BYTES`、`GW_OUTBOX_APP_BYTES`；应用 `outbox_bytes` 可覆盖默认，每个新调用为 completed 预留 1MiB。限额不覆盖索引、已交付元数据及其他 SQL 表，不能代替磁盘、备份和连接池监控。
 
 网关保存/发布计量失败及消费者事件冲突会触发 SQL/Redis 冻结并使 readyz 返回 503；启动新网关也要检查 SQL 控制状态。已有结算继续，新付费调用停止。worker 每秒核验消费/结算水位并续发 3 秒许可；worker 停止或依赖无法核验时许可失效。累计积压超过 10,000 条或未交付 outbox 的调度年龄超过 30 秒时不续期；这不是瞬时检测所有 Redis 键损坏。两路 completed 保存都失败或上游未返回 usage 时，精确费用仍可能需要厂商记录核实；不自动释放 pending。普通计量失败返回 `metering_unavailable`，可能已经产生费用，请按 X-Request-Id 检查记录再决定重试。
 
@@ -78,7 +78,7 @@ go run ./cmd/metering-resume  # 未知 started 必须先核实并修正，禁止
 
 生产模式依赖 worker 续发许可。只启动 gateway/admin 不会获得付费接单资格。许可为 etcd lease 3 秒，Redis 同时保存绝对到期时间，旧 AOF 的 TTL 不会重新激活已经过期的许可。应用、worker 与 Redis 的主机应同步时钟。正常检测不会修改丢失的 Redis generation 或结算水位；出现来源/水位异常必须按离线恢复流程修复。
 
-准备阶段先登记 gw_metering_admissions 再预占；退出时删除登记。进程崩溃留下登记不能按年龄自动删除。应用核验将其置 quiescing，等候准备/在途退出，排空固定消费水位后比较 SQL 与 Redis。超过 150 秒、未知 started、哈希冲突或孤立记录均保持冻结，其他应用可在公共依赖健康时继续。等待屏障与扫描本身会导致该应用出现 503，持续吞吐和可用性必须包含这部分影响。
+准备阶段在 gw_attempts 登记 prepared 并预留空间，预占后 Arm 提交 inflight。prepared 的 30 秒期限只触发取消 CAS：CAS 胜出后通过持久补偿取消 Redis 预占，失败保留 pending 并重试；不直接删除行。inflight 即使没有发出 HTTP 的证据也可能已收费，不能按年龄取消。应用核验将其置 quiescing，等候准备/在途和待补偿退出，排空固定消费水位后比较 SQL 与 Redis。超过 150 秒、未知 started、哈希冲突或孤立记录均保持冻结，其他应用可在公共依赖健康时继续。等待屏障与扫描本身会导致该应用出现 503，持续吞吐和可用性必须包含这部分影响。
 
 worker 在核验中退出（包括正常发布重启）也会使本次核验失败并保留应用冻结；清理保存失败时可能留下 quiescing。不要直接修改控制表恢复接单，按停写、重建、核验和显式 resume 流程处理。当前版本没有自动接续被中断的在线核验，发布前应检查应用状态及报告。
 
@@ -123,3 +123,21 @@ Compose 的 Docker 日志轮转为每文件 10MiB、最多 3 份。云部署须�
 `gateway_metering_rejections_total{reason}` 区分在途槽位、许可、SQL 登记、全局/应用状态及 outbox 容量/保存槽位拒绝；同一次调用可能进入多个阶段，不将此指标直接当作去重 HTTP 请求数。`gateway_metering_commit_batch_records` 统计成功提交包含的连续已结算记录数；它不是付费请求数量，也不改变至少一次重放语义。Grafana 新增阶段 P95、拒绝原因和平均提交批次面板。
 
 99.95% 是持续 SLO，需要真实可用性采样、错误预算、基础设施 HA、故障演练和运维响应；当前本地测试不能证明该指标。
+
+## 新架构迁移与维护
+
+备份并停止所有旧版 gateway/admin/worker 与其他写入者后，设置 `GW_METERING_MIGRATION_ACK=writers-stopped` 执行 `go run ./cmd/migrate`。命令导入旧开始证据、复制 slots 剩余额度、核验两张旧表归属并审计逻辑容量；存在缺少不可变事件证据的旧记录时明确失败，保留旧表且冻结准入。全部核验成功后提交 metering_protocol=2，再删除 `gw_outbox_slots`、`gw_metering_admissions`。随后依次执行 quota-rebuild、metering-audit、metering-resume；只运行 migrate 不会自动重新开放已有数据的入口。禁止两版混写。迁移后回滚依赖备份/binlog恢复，不支持直接启动旧二进制。
+
+取消补偿维护随 worker 启动，首轮立即执行，然后每 5 秒用索引和 SKIP LOCKED 分批领取 prepared 到期/取消 pending 记录，每批最多各 32 条。领取 epoch、60 秒租约和持久重试期限防止多 worker 重复领取。只取消 prepared，不能以 owner 心跳失效作为 inflight 未调用证明。Redis 取消确认后才完成 SQL 取消及容量释放；迟到 Reserve 被 Redis 取消凭据拒绝。
+
+Outbox GC 默认交付满 24 小时后分批删除，每轮最多 100 行；删除前核验 SQL 账本的 delivered_at 和事件 hash。SQL 账本、attempt、版本和费用修正证据不会随 GC 删除。逻辑容量只覆盖未交付 payload 与完成预留，不等同 MySQL 的物理占用；历史账本与索引还需规划备份、归档和磁盘告警。
+
+## 新监控面板
+
+Grafana 仪表盘支持 instance、app（调用方）、API、model 和 stream。HTTP 请求与上游 attempt 使用不同指标，失败重试不会增加请求 QPS；模型维度仅影响模型相关面板。未请求时成功率显示无数据，不能当成 100%。展示请求 QPS、成功/保护性拒绝、Token 消耗（reported/estimated 分开）、平均及 P95/P99 RT、首事件、缓存、限流、网关自身开销、Prepare/Arm/容量锁、预算 held、补偿年龄、Outbox 容量与 GC、计量 lag、水位及许可、SQL 连接池和进程资源。
+
+`gateway_metering_snapshot_seconds` 标识 SQL 状态采样时效；采样每分钟一次，失败保留旧值并告警，不能把旧零值当成没有积压。网关自身开销按 attempt 总耗时减上游读取和转发时间统计，包含计量 ACK，不能和 HTTP RT 相减混算。Token 指标是事件用量观测，不是财务总账，费用修正及 Kafka 重放不能靠抓取计数证明一致性。进程突然死亡可能来不及累计 HTTP 完成指标，负载端结果和持久账本须同时核验。14 条告警规则和 31 个面板由部署验证脚本与 promtool 校验。
+
+可控上游验收：`./scripts/verify-infrastructure.ps1 -Reliability -SustainedSeconds 300`；参数范围 0–600 秒（按用户要求最长 10 分钟），在固定五组 20 秒样本后增加一组 2 RPS JSON 持续负载。原始延迟、拒绝、追平和每 10 秒资源/指标采样存入本次随机验收目录。真实模型费用、云低流量、长期容量和最大吞吐分别验收。
+
+监控结构与 PromQL 验证：`./scripts/verify-monitoring.ps1`，需要本机 Docker 中的官方 `prom/prometheus:v3.5.0` 镜像。

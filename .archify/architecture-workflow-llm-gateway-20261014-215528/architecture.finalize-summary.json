@@ -1,0 +1,280 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "C:\\Users\\LHY95\\Documents\\Codex\\llm_gateway\\.archify\\architecture-workflow-llm-gateway-20261014-215528\\architecture-candidate.json",
+    "sha256": "8c8693b9c8f96527f4f0c65b7b2a1b79926a1537a3e0923849de96cb5c3fbb5b",
+    "bytes": 10730
+  },
+  "artifact": {
+    "path": "C:\\Users\\LHY95\\Documents\\Codex\\llm_gateway\\.archify\\architecture-workflow-llm-gateway-20261014-215528\\architecture.html",
+    "sha256": "59e9ad2ca545c5df81b778c70fb38f8bac8ef98a9e2199fdbbd2f7aaedde5cbe",
+    "bytes": 773382
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "C:\\Users\\LHY95\\Documents\\Codex\\llm_gateway\\.archify\\architecture-workflow-llm-gateway-20261014-215528\\architecture.finalize.json",
+    "summaryReceipt": "C:\\Users\\LHY95\\Documents\\Codex\\llm_gateway\\.archify\\architecture-workflow-llm-gateway-20261014-215528\\architecture.finalize-summary.json",
+    "browserCheckReceipt": "C:\\Users\\LHY95\\Documents\\Codex\\llm_gateway\\.archify\\architecture-workflow-llm-gateway-20261014-215528\\architecture.browser-check.json"
+  },
+  "update": {
+    "status": "update_available",
+    "installedVersion": "3.0.1",
+    "availableVersion": "3.1.0",
+    "releaseNotes": "https://github.com/tt-a1i/archify/releases/tag/v3.1.0",
+    "severity": "normal",
+    "checkedAt": "2026-10-13T21:37:14.771Z",
+    "source": "cache",
+    "noticeRequired": true,
+    "noticeText": "Archify update: 3.0.1 → 3.1.0. A previous check at 2026-10-13T21:37:14.771Z found a newer release. Release notes: https://github.com/tt-a1i/archify/releases/tag/v3.1.0. The installed Skill has not changed; ask to snooze or ignore this reminder.",
+    "eventKey": "archify@sha256:ffedc53390c9da6e859f41e432c5d2d0615a23cf00a503181f07efbba88a7ce8"
+  },
+  "visualReview": "not-requested",
+  "durationMs": 2707,
+  "visualReviewRecommendation": {
+    "action": "inspect-route-readability",
+    "signals": {
+      "resolvedCrossovers": 7,
+      "routesOverSuggestedBends": 4
+    },
+    "reason": "Automated gates passed, but crossings or detours still need perceptual review before claiming visual quality.",
+    "affectedRoutes": {
+      "crossings": [
+        {
+          "left": {
+            "id": "admin-sql",
+            "from": "admin",
+            "to": "mysql",
+            "label": "保存 / 查询",
+            "collectionIndex": 1,
+            "artifactIndex": 2
+          },
+          "right": {
+            "id": "gateway-redis",
+            "from": "gateway",
+            "to": "redis",
+            "label": "限流 / 预留",
+            "collectionIndex": 6,
+            "artifactIndex": 7
+          },
+          "point": [
+            787,
+            617
+          ]
+        },
+        {
+          "left": {
+            "id": "admin-sql",
+            "from": "admin",
+            "to": "mysql",
+            "label": "保存 / 查询",
+            "collectionIndex": 1,
+            "artifactIndex": 2
+          },
+          "right": {
+            "id": "kafka-worker",
+            "from": "kafka",
+            "to": "worker",
+            "label": "分区消费",
+            "collectionIndex": 10,
+            "artifactIndex": 11
+          },
+          "point": [
+            969.1999999999998,
+            408
+          ]
+        },
+        {
+          "left": {
+            "id": "admin-sql",
+            "from": "admin",
+            "to": "mysql",
+            "label": "保存 / 查询",
+            "collectionIndex": 1,
+            "artifactIndex": 2
+          },
+          "right": {
+            "id": "worker-ledger",
+            "from": "worker",
+            "to": "mysql",
+            "label": "账本 / 位点 / Relay",
+            "collectionIndex": 11,
+            "artifactIndex": 12
+          },
+          "point": [
+            969.1999999999999,
+            422
+          ],
+          "sharedNode": "mysql"
+        },
+        {
+          "left": {
+            "id": "admin-sql",
+            "from": "admin",
+            "to": "mysql",
+            "label": "保存 / 查询",
+            "collectionIndex": 1,
+            "artifactIndex": 2
+          },
+          "right": {
+            "id": "worker-permit",
+            "from": "worker",
+            "to": "etcd",
+            "label": "续租许可",
+            "collectionIndex": 13,
+            "artifactIndex": 14
+          },
+          "point": [
+            976,
+            367.0800000000212
+          ]
+        },
+        {
+          "left": {
+            "id": "gateway-provider",
+            "from": "gateway",
+            "to": "provider",
+            "label": "HTTP / SSE",
+            "collectionIndex": 4,
+            "artifactIndex": 5
+          },
+          "right": {
+            "id": "gateway-config",
+            "from": "gateway",
+            "to": "etcd",
+            "label": "读取配置 / 许可",
+            "collectionIndex": 7,
+            "artifactIndex": 8
+          },
+          "point": [
+            460,
+            310
+          ],
+          "sharedNode": "gateway"
+        },
+        {
+          "left": {
+            "id": "gateway-ledger",
+            "from": "gateway",
+            "to": "mysql",
+            "label": "Prepare / Arm",
+            "collectionIndex": 5,
+            "artifactIndex": 6
+          },
+          "right": {
+            "id": "gateway-redis",
+            "from": "gateway",
+            "to": "redis",
+            "label": "限流 / 预留",
+            "collectionIndex": 6,
+            "artifactIndex": 7
+          },
+          "point": [
+            474,
+            470
+          ],
+          "sharedNode": "gateway"
+        },
+        {
+          "left": {
+            "id": "gateway-redis",
+            "from": "gateway",
+            "to": "redis",
+            "label": "限流 / 预留",
+            "collectionIndex": 6,
+            "artifactIndex": 7
+          },
+          "right": {
+            "id": "worker-ledger",
+            "from": "worker",
+            "to": "mysql",
+            "label": "账本 / 位点 / Relay",
+            "collectionIndex": 11,
+            "artifactIndex": 12
+          },
+          "point": [
+            940,
+            617
+          ]
+        }
+      ],
+      "detours": [
+        {
+          "relationship": {
+            "id": "admin-sql",
+            "from": "admin",
+            "to": "mysql",
+            "label": "保存 / 查询",
+            "collectionIndex": 1,
+            "artifactIndex": 2
+          },
+          "bends": 4,
+          "stretch": 1
+        },
+        {
+          "relationship": {
+            "id": "gateway-ledger",
+            "from": "gateway",
+            "to": "mysql",
+            "label": "Prepare / Arm",
+            "collectionIndex": 5,
+            "artifactIndex": 6
+          },
+          "bends": 3,
+          "stretch": 1
+        },
+        {
+          "relationship": {
+            "id": "gateway-redis",
+            "from": "gateway",
+            "to": "redis",
+            "label": "限流 / 预留",
+            "collectionIndex": 6,
+            "artifactIndex": 7
+          },
+          "bends": 3,
+          "stretch": 1
+        },
+        {
+          "relationship": {
+            "id": "gateway-config",
+            "from": "gateway",
+            "to": "etcd",
+            "label": "读取配置 / 许可",
+            "collectionIndex": 7,
+            "artifactIndex": 8
+          },
+          "bends": 3,
+          "stretch": 1
+        }
+      ],
+      "truncated": false
+    },
+    "hints": [
+      "admin → mysql crosses gateway → redis: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "admin → mysql crosses kafka → worker: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "admin → mysql and worker → mysql cross next to mysql: move node admin or worker so the two reach mysql from different sides (for example one level with it, one directly above or below it).",
+      "admin → mysql crosses worker → etcd: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "gateway → provider and gateway → etcd cross next to gateway: move node provider or etcd so the two reach gateway from different sides (for example one level with it, one directly above or below it).",
+      "gateway → mysql and gateway → redis cross next to gateway: move node mysql or redis so the two reach gateway from different sides (for example one level with it, one directly above or below it).",
+      "gateway → redis crosses worker → mysql: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "admin → mysql needs 4 bends: move node admin or mysql so they share a row or column with matching centers, or sit diagonally with a clear corner."
+    ],
+    "repair": "Trace these relationships at the desktop viewport. For Architecture, use references/architecture-layout-repair.md: reflow a blocked main path or tangled connected scene, and repair an isolated defect locally only when the surrounding composition is accepted. Preserve all semantic content and user-fixed geometry. Rerun finalize once after the edit."
+  }
+}

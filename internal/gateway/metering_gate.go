@@ -24,7 +24,6 @@ type meteringPermit struct {
 type admissionProof struct {
 	Permit        meteringPermit
 	AppGeneration string
-	Raw           string
 }
 type admissionProofKey struct{}
 
@@ -34,112 +33,63 @@ func (r *Runtime) permitKey() string {
 }
 
 // 许可不缓存：etcd 不可访问时停止新费用；Redis 脚本再次校验绝对到期时间。
-func (r *Runtime) readPermit(c context.Context) (meteringPermit, string, error) {
+func (r *Runtime) readPermit(c context.Context) (meteringPermit, error) {
 	ctx, done := context.WithTimeout(c, time.Second)
 	defer done()
 	et := r.Engine.Publisher.(EtcdPublisher).Client
 	res, err := et.Txn(ctx).Then(clientv3.OpGet(r.permitKey()), clientv3.OpGet(r.permitStateKey())).Commit()
 	if err != nil || len(res.Responses) != 2 || len(res.Responses[0].GetResponseRange().Kvs) != 1 || len(res.Responses[1].GetResponseRange().Kvs) != 1 {
-		return meteringPermit{}, "", ErrUnavailable
+		return meteringPermit{}, ErrUnavailable
 	}
 	var p meteringPermit
 	raw := string(res.Responses[0].GetResponseRange().Kvs[0].Value)
 	if json.Unmarshal([]byte(raw), &p) != nil || p.Generation == "" || p.Token == "" || p.Expires <= time.Now().UnixMilli() || p.Expires > time.Now().Add(meteringPermitTTL).UnixMilli() {
-		return p, "", ErrUnavailable
+		return p, ErrUnavailable
 	}
 	if string(res.Responses[1].GetResponseRange().Kvs[0].Value) != "healthy:"+p.Generation {
-		return p, "", ErrUnavailable
+		return p, ErrUnavailable
 	}
-	return p, raw, nil
+	return p, nil
 }
 
 // 登记早于 Redis 预占，应用屏障与登记共用同一行锁，涵盖尚未写 started 的准备阶段。
-func (r *Runtime) beginAdmission(c context.Context, app, attempt string, required, appLimit int64) (admitted context.Context, finish func(), result error) {
-	start := time.Now()
-	reason := "admission_slots"
-	defer func() {
-		r.Engine.Metrics.meteringStage("admission", "started", start, result)
-		if result != nil {
-			r.Engine.Metrics.meteringRejected(reason)
-		}
-	}()
-	slot, endSlot := context.WithTimeout(c, time.Second)
-	defer endSlot()
+func (r *Runtime) prepareAdmission(c context.Context, event Event, appLimit int64) (context.Context, func(), error) {
+	slot, end := context.WithTimeout(c, time.Second)
+	defer end()
 	select {
 	case r.admissionSlots <- struct{}{}:
 	case <-slot.Done():
 		return c, nil, ErrUnavailable
 	}
-	registered := false
-	defer func() {
-		if !registered {
-			<-r.admissionSlots
-		}
-	}()
-	reason = "permit"
-	step := time.Now()
-	p, raw, err := r.readPermit(c)
-	r.Engine.Metrics.meteringStage("permit_read", "started", step, err)
+	release := func() { <-r.admissionSlots }
+	p, err := r.readPermit(c)
 	if err != nil {
+		release()
 		return c, nil, err
 	}
+	var appGeneration string
 	s := r.Engine.Store.(*SQLStore)
-	reason = "admission_sql"
-	ctx, done := context.WithTimeout(c, time.Second)
-	defer done()
-	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
-	if err != nil {
+	if err = s.DB.QueryRowContext(c, `SELECT generation FROM gw_metering_apps WHERE app_id=?`, event.AppID).Scan(&appGeneration); err != nil {
+		release()
 		return c, nil, err
 	}
-	defer tx.Rollback()
-	var state, gen, appGen string
-	if err = tx.QueryRowContext(ctx, `SELECT state,generation FROM gw_metering_control WHERE id=1 FOR SHARE`).Scan(&state, &gen); err != nil {
-		return c, nil, err
-	}
-	if state != "healthy" || gen != p.Generation {
-		reason = "global_state"
-		return c, nil, ErrUnavailable
-	}
-	if err = tx.QueryRowContext(ctx, `SELECT state,generation FROM gw_metering_apps WHERE app_id=? FOR SHARE`, app).Scan(&state, &appGen); err != nil {
-		return c, nil, ErrUnavailable
-	}
-	if state != "healthy" {
-		reason = "application_barrier"
-		return c, nil, ErrUnavailable
-	}
-	// 只做只读预检来减少已满容量下的预占/取消洪峰，最终额度仍由 outbox 原子事务决定。
-	var globalUsed, appUsed int64
-	if err = tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT used_bytes FROM gw_metering_capacity WHERE id='global'),0),COALESCE((SELECT used_bytes FROM gw_metering_capacity WHERE id=?),0)`, "app:"+app).Scan(&globalUsed, &appUsed); err != nil {
-		return c, nil, err
-	}
-	if required > appLimit-appUsed || required > r.Engine.Bus.(*DurableBus).GlobalBytes-globalUsed {
-		reason = "outbox_capacity"
-		return c, nil, ErrUnavailable
-	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO gw_metering_admissions(attempt_id,app_id,at) VALUES(?,?,UTC_TIMESTAMP(6))`, attempt, app); err != nil {
-		return c, nil, err
-	}
-	if err = tx.Commit(); err != nil {
-		return c, nil, err
-	}
-	proof := admissionProof{p, appGen, raw}
+	proof := admissionProof{Permit: p, AppGeneration: appGeneration}
 	c = context.WithValue(c, admissionProofKey{}, proof)
-	registered = true
-	end := func() {
-		// 槽位涵盖上游与完成事件收尾，避免廉价接单把 completed 持久化压垮。
-		defer func() { <-r.admissionSlots }()
-		cleanup, cancel := context.WithTimeout(context.WithoutCancel(c), time.Second)
-		defer cancel()
-		// 删除失败保留登记；对账超时会冻结，不能把未知调用当成已经退出。
-		_, _ = s.DB.ExecContext(cleanup, `DELETE FROM gw_metering_admissions WHERE attempt_id=?`, attempt)
+	ctx, done := context.WithTimeout(c, time.Second)
+	err = s.PrepareAttempt(ctx, event, r.Engine.Bus.(*DurableBus).GlobalBytes, appLimit)
+	done()
+	if err != nil {
+		release()
+		r.Engine.Metrics.meteringRejected("prepare")
+		return c, nil, err
 	}
-	return c, end, nil
+	return c, release, nil
 }
 
 func checkAppBarrier(c context.Context, tx *sql.Tx, app string, correction bool) error {
 	var state string
 	err := tx.QueryRowContext(c, `SELECT state FROM gw_metering_apps WHERE app_id=? FOR SHARE`, app).Scan(&state)
-	// 离线修复/旧测试来源可以没有应用控制行，真实入口必须先 beginAdmission。
+	// 离线修复/旧测试来源可以没有应用控制行，真实入口必须先 prepareAdmission。
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -434,7 +384,7 @@ func (r *Runtime) nextAuditApp(c context.Context, cursor string) (string, string
 		gen := previous[1]
 		if !present {
 			gen = ID("appgen_")
-			res, e := s.DB.ExecContext(c, `INSERT IGNORE INTO gw_metering_apps(app_id,state,generation,reason,report_id) SELECT ?,'initializing',?,'empty_verification','' WHERE NOT EXISTS(SELECT 1 FROM gw_attempts WHERE app_id=?) AND NOT EXISTS(SELECT 1 FROM gw_metering_outbox WHERE app_id=?) AND NOT EXISTS(SELECT 1 FROM gw_metering_admissions WHERE app_id=?)`, app, gen, app, app, app)
+			res, e := s.DB.ExecContext(c, `INSERT IGNORE INTO gw_metering_apps(app_id,state,generation,reason,report_id) SELECT ?,'initializing',?,'empty_verification','' WHERE NOT EXISTS(SELECT 1 FROM gw_attempts WHERE app_id=?) AND NOT EXISTS(SELECT 1 FROM gw_metering_outbox WHERE app_id=?)`, app, gen, app, app)
 			if e != nil {
 				return "", cursor, e
 			}

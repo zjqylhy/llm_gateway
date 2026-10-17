@@ -67,6 +67,9 @@ func auditMetering(c context.Context, r *Runtime, initializing bool) (MeteringAu
 	if !ok || r.Redis == nil {
 		return result, errors.New("SQL and Redis required")
 	}
+	if err := s.AuditCapacity(c); err != nil {
+		return result, err
+	}
 	var undelivered int
 	if err := s.DB.QueryRowContext(c, `SELECT COUNT(*) FROM gw_metering_outbox WHERE delivered=0`).Scan(&undelivered); err != nil {
 		return result, err
@@ -95,36 +98,21 @@ func auditMetering(c context.Context, r *Runtime, initializing bool) (MeteringAu
 			}
 		}
 	}
-	rows, err := s.DB.QueryContext(c, `SELECT app_id,JSON_UNQUOTE(JSON_EXTRACT(payload,'$.month')),SUM(IF(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.kind'))='started',0,tokens)),SUM(IF(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.kind'))='started',0,cost_micro)),SUM(IF(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.kind'))='started',JSON_EXTRACT(payload,'$.reserve_tokens'),0)),SUM(IF(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.kind'))='started',JSON_EXTRACT(payload,'$.reserve_micro'),0)),SUM(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.kind'))='started') FROM gw_attempts WHERE purpose<>'request' GROUP BY app_id,JSON_UNQUOTE(JSON_EXTRACT(payload,'$.month')) LIMIT 10001`)
+	expected, pending, err := expectedQuota(c, s)
+	result.Pending = pending
 	if err != nil {
 		return result, err
 	}
-	expected := map[string]Counters{}
-	for rows.Next() {
-		var app, month string
-		var v Counters
-		var pending int
-		if err = rows.Scan(&app, &month, &v.Tokens, &v.Micro, &v.ReservedTokens, &v.ReservedMicro, &pending); err != nil {
-			rows.Close()
-			return result, err
+	result.Groups = len(expected)
+	for key, v := range expected {
+		app, month, decodeErr := decodeQuotaGroup(key)
+		if decodeErr != nil {
+			return result, decodeErr
 		}
-		result.Groups++
-		result.Pending += pending
-		if result.Groups > 10000 {
-			rows.Close()
-			return result, errors.New("audit exceeds 10000 application-month groups")
-		}
-		expected[quotaKeys(app, month, "")[0]] = v
 		actual, readErr := r.Engine.Guard.Counters(c, app, month)
 		if readErr != nil || actual != v {
-			rows.Close()
 			return result, fmt.Errorf("quota mismatch for application %s month %s", app, month)
 		}
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return result, err
 	}
 	// 双向检查，识别 SQL 中没有的 Redis 月度计数、预占或已结算记录。
 	var cursor uint64
@@ -179,14 +167,21 @@ func auditMetering(c context.Context, r *Runtime, initializing bool) (MeteringAu
 					}
 				}
 				value := func(name string) int64 { n, _ := strconv.ParseInt(fields[name], 10, 64); return n }
+				var raw []byte
+				if readErr = s.DB.QueryRowContext(c, `SELECT payload FROM gw_attempts WHERE attempt_id=?`, attempt).Scan(&raw); readErr != nil {
+					return result, readErr
+				}
+				event, decodeErr := decodeAttempt(raw)
+				if decodeErr != nil {
+					return result, decodeErr
+				}
+				_, applied := billingExposure(event)
 				if kind == "started" {
-					if value("revision") != 0 || fields["reserved"] != "1" || value("rt") != rt || value("rm") != rm {
+					if value("revision") != 0 || fields["reserved"] != "1" || value("rt") != applied.ReservedTokens || value("rm") != applied.ReservedMicro {
 						return result, fmt.Errorf("pending reservation mismatch %s", attempt)
 					}
-				} else {
-					if value("revision") != revision || value("tokens") != tokens || value("micro") != cost {
-						return result, fmt.Errorf("settled attempt mismatch %s", attempt)
-					}
+				} else if value("revision") != revision || value("tokens") != applied.Tokens || value("micro") != applied.Micro || value("rt") != applied.ReservedTokens || value("rm") != applied.ReservedMicro {
+					return result, fmt.Errorf("settlement or held exposure mismatch %s", attempt)
 				}
 				result.Attempts++
 			} else if _, exists := expected[key]; !exists {
@@ -262,9 +257,6 @@ func ResumeMetering(c context.Context, r *Runtime) (MeteringAudit, error) {
 		if _, err = tx.ExecContext(c, `INSERT IGNORE INTO gw_metering_apps(app_id,state,generation,reason,report_id,checked_at) VALUES(?,'healthy',?,'',?,UTC_TIMESTAMP(6))`, app, ID("appgen_"), reportID); err != nil {
 			return result, err
 		}
-	}
-	if _, err = tx.ExecContext(c, `DELETE FROM gw_metering_admissions`); err != nil {
-		return result, err
 	}
 	if _, err = tx.ExecContext(c, `UPDATE gw_metering_control SET state='healthy',reason='',generation=?,updated_at=UTC_TIMESTAMP(6) WHERE id=1`, ID("gen_")); err != nil {
 		return result, err

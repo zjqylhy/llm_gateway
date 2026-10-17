@@ -113,6 +113,7 @@ func TestCostReportBreakdownCorrectionAndFilters(t *testing.T) {
 	// 重复事件及旧 revision 不改变分项；修正保留历史价格快照。
 	fixed := fixtures[0]
 	fixed.Revision = 3
+	fixed.ID = fixed.AttemptID + ":3"
 	fixed.Usage = Usage{Input: 200, Cached: 100, Output: 20, Total: 220}
 	fixed.Quality = "reconciled"
 	fixed.CostMicro = Cost(fixed.Model, fixed.Usage)

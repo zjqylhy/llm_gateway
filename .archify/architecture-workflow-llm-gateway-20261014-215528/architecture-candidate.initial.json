@@ -1,0 +1,462 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "LLM Gateway · 架构组件图",
+    "locale": "zh-CN",
+    "output": ".archify/architecture-workflow-llm-gateway-20261014-215528/architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "ssh://git@ssh.github.com:443/zjqylhy/llm_gateway.git",
+      "revision": "597c6225d0d571498a8f22f1725001f6ee2418ba",
+      "link_mode": "local-only"
+    }
+  },
+  "components": [
+    {
+      "id": "console",
+      "type": "frontend",
+      "label": "管理控制台",
+      "sublabel": "React / TypeScript",
+      "pos": [
+        1000,
+        0
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "web/src/main.tsx",
+          "line": 335,
+          "end_line": 363
+        }
+      ]
+    },
+    {
+      "id": "admin",
+      "type": "backend",
+      "label": "Admin 管理服务",
+      "sublabel": "资源管理 · 配置发布 · 报表",
+      "pos": [
+        1000,
+        150
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/gateway/admin.go",
+          "line": 79,
+          "end_line": 128
+        },
+        {
+          "path": "internal/gateway/admin.go",
+          "line": 233,
+          "end_line": 246
+        }
+      ]
+    },
+    {
+      "id": "provider",
+      "type": "external",
+      "label": "模型供应商",
+      "sublabel": "Chat · Embedding · Rerank",
+      "pos": [
+        360,
+        150
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/gateway/provider.go",
+          "line": 1,
+          "end_line": 120
+        },
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 635,
+          "end_line": 650
+        }
+      ]
+    },
+    {
+      "id": "app",
+      "type": "external",
+      "label": "业务应用",
+      "sublabel": "Bearer API Key / HTTP",
+      "pos": [
+        40,
+        370
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 87,
+          "end_line": 102
+        },
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 149,
+          "end_line": 183
+        }
+      ]
+    },
+    {
+      "id": "gateway",
+      "type": "backend",
+      "label": "Gateway 请求引擎",
+      "sublabel": "鉴权 · 路由 · 准入 · 协议适配",
+      "pos": [
+        360,
+        370
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 155,
+          "end_line": 336
+        },
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 484,
+          "end_line": 645
+        },
+        {
+          "path": "internal/gateway/runtime.go",
+          "line": 432,
+          "end_line": 440
+        }
+      ]
+    },
+    {
+      "id": "mysql",
+      "type": "database",
+      "label": "MySQL 权威账本",
+      "sublabel": "配置 · Attempts · Outbox · 位点",
+      "pos": [
+        680,
+        620
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/gateway/store_sql.go",
+          "line": 70,
+          "end_line": 99
+        },
+        {
+          "path": "internal/gateway/attempt_lifecycle.go",
+          "line": 41,
+          "end_line": 101
+        },
+        {
+          "path": "internal/gateway/checkpoint.go",
+          "line": 327,
+          "end_line": 364
+        }
+      ]
+    },
+    {
+      "id": "etcd",
+      "type": "database",
+      "label": "etcd 配置与许可",
+      "sublabel": "配置版本 · 计量租约",
+      "pos": [
+        680,
+        150
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/gateway/infrastructure.go",
+          "line": 57,
+          "end_line": 98
+        },
+        {
+          "path": "internal/gateway/metering_gate.go",
+          "line": 36,
+          "end_line": 54
+        },
+        {
+          "path": "internal/gateway/metering_gate.go",
+          "line": 209,
+          "end_line": 231
+        }
+      ]
+    },
+    {
+      "id": "redis",
+      "type": "database",
+      "label": "Redis 治理状态",
+      "sublabel": "限流 · 配额预留 · 结算 · 会话",
+      "pos": [
+        1000,
+        620
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/gateway/guard.go",
+          "line": 143,
+          "end_line": 256
+        },
+        {
+          "path": "internal/gateway/runtime.go",
+          "line": 185,
+          "end_line": 193
+        },
+        {
+          "path": "internal/gateway/runtime.go",
+          "line": 259,
+          "end_line": 260
+        }
+      ]
+    },
+    {
+      "id": "cache",
+      "type": "database",
+      "label": "语义缓存（可选）",
+      "sublabel": "Milvus 向量 + 独立 Redis 响应",
+      "pos": [
+        360,
+        620
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/gateway/infrastructure.go",
+          "line": 224,
+          "end_line": 269
+        },
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 238,
+          "end_line": 270
+        },
+        {
+          "path": "internal/gateway/runtime.go",
+          "line": 245,
+          "end_line": 248
+        }
+      ]
+    },
+    {
+      "id": "worker",
+      "type": "backend",
+      "label": "Worker 计量服务",
+      "sublabel": "分区消费 · 补偿 · 审计 · Relay",
+      "pos": [
+        1000,
+        370
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/gateway/runtime.go",
+          "line": 404,
+          "end_line": 423
+        },
+        {
+          "path": "internal/gateway/partition_consumer.go",
+          "line": 240,
+          "end_line": 269
+        },
+        {
+          "path": "internal/gateway/attempt_compensation.go",
+          "line": 17,
+          "end_line": 141
+        }
+      ]
+    },
+    {
+      "id": "kafka",
+      "type": "messagebus",
+      "label": "Kafka 事件流",
+      "sublabel": "completed 事件 / 按应用分区",
+      "pos": [
+        680,
+        370
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "internal/gateway/infrastructure.go",
+          "line": 26,
+          "end_line": 35
+        },
+        {
+          "path": "internal/gateway/outbox.go",
+          "line": 110,
+          "end_line": 151
+        },
+        {
+          "path": "internal/gateway/runtime.go",
+          "line": 203,
+          "end_line": 235
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "ui-admin",
+      "from": "console",
+      "to": "admin",
+      "label": "管理 API",
+      "variant": "default"
+    },
+    {
+      "id": "admin-sql",
+      "from": "admin",
+      "to": "mysql",
+      "label": "保存 / 查询",
+      "variant": "default"
+    },
+    {
+      "id": "admin-publish",
+      "from": "admin",
+      "to": "etcd",
+      "label": "发布配置",
+      "variant": "dashed"
+    },
+    {
+      "id": "app-gateway",
+      "from": "app",
+      "to": "gateway",
+      "label": "/v1/*",
+      "variant": "emphasis"
+    },
+    {
+      "id": "gateway-provider",
+      "from": "gateway",
+      "to": "provider",
+      "label": "HTTP / SSE",
+      "variant": "emphasis"
+    },
+    {
+      "id": "gateway-ledger",
+      "from": "gateway",
+      "to": "mysql",
+      "label": "Prepare / Arm",
+      "variant": "default"
+    },
+    {
+      "id": "gateway-redis",
+      "from": "gateway",
+      "to": "redis",
+      "label": "限流 / 预留",
+      "variant": "security"
+    },
+    {
+      "id": "gateway-config",
+      "from": "gateway",
+      "to": "etcd",
+      "label": "读取配置 / 许可",
+      "variant": "dashed"
+    },
+    {
+      "id": "gateway-cache",
+      "from": "gateway",
+      "to": "cache",
+      "label": "启用时检索 / 写入",
+      "variant": "dashed"
+    },
+    {
+      "id": "gateway-events",
+      "from": "gateway",
+      "to": "kafka",
+      "label": "完成事件 ACK",
+      "variant": "emphasis"
+    },
+    {
+      "id": "kafka-worker",
+      "from": "kafka",
+      "to": "worker",
+      "label": "分区消费",
+      "variant": "dashed"
+    },
+    {
+      "id": "worker-ledger",
+      "from": "worker",
+      "to": "mysql",
+      "label": "账本 / 位点 / Relay",
+      "variant": "default"
+    },
+    {
+      "id": "worker-redis",
+      "from": "worker",
+      "to": "redis",
+      "label": "幂等结算",
+      "variant": "default"
+    },
+    {
+      "id": "worker-permit",
+      "from": "worker",
+      "to": "etcd",
+      "label": "续租许可",
+      "variant": "security"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "源码范围",
+      "items": [
+        "包含当前工作区未提交改动；源码证据固定到本地快照 597c622（2026-10-14 更新）。",
+        "生产运行分为 gateway、admin、worker 三种角色；开发模式使用内存依赖和 Mock。"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "一致性边界",
+      "items": [
+        "MySQL 保存权威账本；Redis 保存在线配额与幂等结算状态；etcd 提供配置及短期准入许可。",
+        "Prepare → Redis 预留 → Arm 成功后才调用上游；started 不经 Kafka 发布。",
+        "完成事件先尝试 Outbox，再等待 Kafka ACK；SQL 失败时仍尝试 Kafka 备用发布。",
+        "prepared 到期由 Worker 取消补偿；inflight 表示可能已调用，不按年龄自动退款或重跑。"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "可选能力与部署",
+      "items": [
+        "语义缓存需开启且请求可缓存；Lite 部署关闭 Milvus 与缓存 Redis。",
+        "Prometheus 指标与可选 OTLP 链路用于观测；迁移、初始化和恢复命令用于运维。",
+        "Gateway 每秒读取配置快照；配置超过 3 秒未刷新时鉴权拒绝。"
+      ]
+    }
+  ]
+}

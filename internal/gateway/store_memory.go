@@ -10,13 +10,17 @@ import (
 )
 
 type MemoryStore struct {
-	mu         sync.Mutex
-	config     Config
-	events     map[string]Event
-	audits     []Audit
-	instances  map[string]Instance
-	alerts     map[string]Alert
-	eventBytes int
+	mu             sync.Mutex
+	config         Config
+	events         map[string]Event
+	audits         []Audit
+	instances      map[string]Instance
+	alerts         map[string]Alert
+	eventBytes     int
+	attempts       map[string]memoryAttempt
+	reservedGlobal int64
+	reservedApps   map[string]int64
+	eventHashes    map[string]string
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -48,12 +52,34 @@ func (s *MemoryStore) Update(_ context.Context, actor, action string, fn func(*C
 func (s *MemoryStore) Apply(_ context.Context, e Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	old, ok := s.events[e.AttemptID]
-	if !ok || old.Revision < e.Revision {
-		raw, err := json.Marshal(e)
-		if err != nil {
-			return err
+	return s.applyLocked(e)
+}
+func (s *MemoryStore) applyLocked(e Event) error {
+	e.At = e.At.UTC()
+	raw, err := json.Marshal(e)
+	if err != nil {
+		return err
+	}
+	hash := Hash(string(raw))
+	if e.ID != "" {
+		if previous, exists := s.eventHashes[e.ID]; exists {
+			if previous != hash {
+				return ErrEventConflict
+			}
+			return nil
 		}
+		if len(s.eventHashes) >= 2*maxMemoryAttempts {
+			return ErrUnavailable
+		}
+	}
+	old, ok := s.events[e.AttemptID]
+	if ok && old.Revision == e.Revision {
+		previous, _ := json.Marshal(old)
+		if Hash(string(previous)) != hash {
+			return ErrEventConflict
+		}
+	}
+	if !ok || old.Revision < e.Revision {
 		oldBytes := 0
 		if ok {
 			b, _ := json.Marshal(old)
@@ -65,6 +91,19 @@ func (s *MemoryStore) Apply(_ context.Context, e Event) error {
 		}
 		s.eventBytes += len(raw) - oldBytes
 		s.events[e.AttemptID] = e
+		if attempt, ok := s.attempts[e.AttemptID]; ok && e.Kind == "completed" && attempt.Phase != "cancelled" {
+			s.reservedGlobal -= attempt.Remaining
+			s.reservedApps[e.AppID] -= attempt.Remaining
+			attempt.Phase = "completed"
+			attempt.Remaining = 0
+			s.attempts[e.AttemptID] = attempt
+		}
+	}
+	if e.ID != "" {
+		if s.eventHashes == nil {
+			s.eventHashes = map[string]string{}
+		}
+		s.eventHashes[e.ID] = hash
 	}
 	return nil
 }

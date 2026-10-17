@@ -1,0 +1,885 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "LLM Gateway · 请求执行与异步计量流程",
+    "locale": "zh-CN",
+    "output": ".archify/architecture-workflow-llm-gateway-20261014-215528/execution-flow.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "ssh://git@ssh.github.com:443/zjqylhy/llm_gateway.git",
+      "revision": "597c6225d0d571498a8f22f1725001f6ee2418ba",
+      "link_mode": "local-only"
+    }
+  },
+  "lanes": [
+    {
+      "id": "intake",
+      "label": "接入与路由"
+    },
+    {
+      "id": "inputerror",
+      "label": "接入拒绝"
+    },
+    {
+      "id": "cache",
+      "label": "可选缓存"
+    },
+    {
+      "id": "preparelane",
+      "label": "付费尝试准入"
+    },
+    {
+      "id": "calllane",
+      "label": "上游执行"
+    },
+    {
+      "id": "collectlane",
+      "label": "结果汇总"
+    },
+    {
+      "id": "publishlane",
+      "label": "完成发布"
+    },
+    {
+      "id": "outcomelane",
+      "label": "结果分支"
+    },
+    {
+      "id": "replylane",
+      "label": "客户端响应"
+    },
+    {
+      "id": "kafkalane",
+      "label": "事件消费与重发"
+    },
+    {
+      "id": "sqllane",
+      "label": "权威账本"
+    },
+    {
+      "id": "settlelane",
+      "label": "在线预算"
+    },
+    {
+      "id": "waterlane",
+      "label": "交付与水位"
+    },
+    {
+      "id": "offsetlane",
+      "label": "分区位点"
+    }
+  ],
+  "mainPath": [
+    "request",
+    "auth",
+    "policy",
+    "choose",
+    "cachecheck",
+    "prepare",
+    "reserve",
+    "arm",
+    "call",
+    "collect",
+    "publish",
+    "outcome",
+    "reply"
+  ],
+  "nodes": [
+    {
+      "id": "request",
+      "lane": "intake",
+      "col": 0,
+      "type": "external",
+      "label": "收到请求",
+      "sublabel": "生成 request_id",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 155,
+          "end_line": 158
+        }
+      ]
+    },
+    {
+      "id": "auth",
+      "lane": "intake",
+      "col": 1,
+      "type": "security",
+      "label": "鉴权与校验",
+      "sublabel": "Key / 参数 / 模型权限",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 159,
+          "end_line": 183
+        }
+      ]
+    },
+    {
+      "id": "policy",
+      "lane": "intake",
+      "col": 2,
+      "type": "security",
+      "label": "应用限流与安全",
+      "sublabel": "QPS / 规则 / 缓存绕过",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 213,
+          "end_line": 230
+        }
+      ]
+    },
+    {
+      "id": "choose",
+      "lane": "intake",
+      "col": 3,
+      "type": "backend",
+      "label": "生成候选列表",
+      "sublabel": "能力 / 策略 / 灰度",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 231,
+          "end_line": 235
+        },
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 356,
+          "end_line": 416
+        }
+      ]
+    },
+    {
+      "id": "cachecheck",
+      "lane": "cache",
+      "col": 3,
+      "type": "backend",
+      "label": "查询语义缓存",
+      "sublabel": "可缓存时先调用 Embedding",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 238,
+          "end_line": 270
+        }
+      ],
+      "tag": "可选且内部调用计费"
+    },
+    {
+      "id": "cached",
+      "lane": "cache",
+      "col": 4,
+      "type": "frontend",
+      "label": "返回缓存响应",
+      "sublabel": "推理 usage = 0",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 263,
+          "end_line": 268
+        },
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 810,
+          "end_line": 849
+        }
+      ]
+    },
+    {
+      "id": "prepare",
+      "lane": "preparelane",
+      "col": 3,
+      "type": "database",
+      "label": "Prepare",
+      "sublabel": "许可 / 容量 / 熔断",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 275,
+          "end_line": 285
+        },
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 505,
+          "end_line": 552
+        },
+        {
+          "path": "internal/gateway/metering_gate.go",
+          "line": 56,
+          "end_line": 86
+        }
+      ],
+      "tag": "拒绝前不调用上游",
+      "yOffset": -130
+    },
+    {
+      "id": "reserve",
+      "lane": "preparelane",
+      "col": 3,
+      "type": "database",
+      "label": "Redis 预留",
+      "sublabel": "Token / 月预算",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 553,
+          "end_line": 565
+        }
+      ],
+      "yOffset": 0
+    },
+    {
+      "id": "arm",
+      "lane": "preparelane",
+      "col": 3,
+      "type": "database",
+      "label": "Arm",
+      "sublabel": "SQL started + inflight CAS",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 566,
+          "end_line": 580
+        },
+        {
+          "path": "internal/gateway/attempt_lifecycle.go",
+          "line": 74,
+          "end_line": 101
+        }
+      ],
+      "yOffset": 130
+    },
+    {
+      "id": "call",
+      "lane": "calllane",
+      "col": 3,
+      "type": "external",
+      "label": "调用上游",
+      "sublabel": "JSON 或实时 SSE",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 635,
+          "end_line": 703
+        },
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 707,
+          "end_line": 754
+        }
+      ]
+    },
+    {
+      "id": "collect",
+      "lane": "collectlane",
+      "col": 3,
+      "type": "backend",
+      "label": "汇总执行结果",
+      "sublabel": "Usage / 质量 / 耗时",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 589,
+          "end_line": 634
+        },
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 764,
+          "end_line": 782
+        }
+      ]
+    },
+    {
+      "id": "publish",
+      "lane": "publishlane",
+      "col": 3,
+      "type": "messagebus",
+      "label": "发布完成事件",
+      "sublabel": "Outbox → Kafka ACK",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/outbox.go",
+          "line": 110,
+          "end_line": 151
+        },
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 616,
+          "end_line": 621
+        }
+      ]
+    },
+    {
+      "id": "outcome",
+      "lane": "outcomelane",
+      "col": 3,
+      "type": "backend",
+      "label": "判断调用结果",
+      "sublabel": "成功 / 失败 / 可切换",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 285,
+          "end_line": 336
+        }
+      ]
+    },
+    {
+      "id": "reply",
+      "lane": "replylane",
+      "col": 3,
+      "type": "frontend",
+      "label": "返回或结束流",
+      "sublabel": "成功后按条件回填缓存",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 287,
+          "end_line": 308
+        },
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 788,
+          "end_line": 797
+        }
+      ]
+    },
+    {
+      "id": "invalid",
+      "lane": "inputerror",
+      "col": 1,
+      "type": "security",
+      "label": "拒绝接入请求",
+      "sublabel": "401 / 400 / 403 / 404 / 413",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 159,
+          "end_line": 183
+        }
+      ]
+    },
+    {
+      "id": "blocked",
+      "lane": "inputerror",
+      "col": 2,
+      "type": "security",
+      "label": "拒绝治理请求",
+      "sublabel": "限额 429 / 安全 400",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 213,
+          "end_line": 226
+        }
+      ]
+    },
+    {
+      "id": "failed",
+      "lane": "outcomelane",
+      "col": 4,
+      "type": "security",
+      "label": "错误或中断流",
+      "sublabel": "耗尽候选 / ACK 失败等",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 310,
+          "end_line": 348
+        },
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 775,
+          "end_line": 794
+        }
+      ]
+    },
+    {
+      "id": "rejected",
+      "lane": "preparelane",
+      "col": 5,
+      "type": "security",
+      "label": "拒绝本次准入",
+      "sublabel": "治理不可用 / 预算不足",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 337,
+          "end_line": 348
+        },
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 534,
+          "end_line": 579
+        }
+      ],
+      "yOffset": -130
+    },
+    {
+      "id": "cancel",
+      "lane": "calllane",
+      "col": 4,
+      "type": "backend",
+      "label": "取消并补偿",
+      "sublabel": "SQL CAS → Redis → 释放",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/attempt_lifecycle.go",
+          "line": 104,
+          "end_line": 187
+        },
+        {
+          "path": "internal/gateway/attempt_compensation.go",
+          "line": 17,
+          "end_line": 105
+        },
+        {
+          "path": "internal/gateway/integration_test.go",
+          "line": 1005,
+          "end_line": 1024,
+          "label": "补偿与未知费用回归"
+        }
+      ],
+      "tag": "Arm 结果未知需核对"
+    },
+    {
+      "id": "retry",
+      "lane": "outcomelane",
+      "col": 2,
+      "type": "backend",
+      "label": "切换下一候选",
+      "sublabel": "首包前且可重试",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/engine.go",
+          "line": 275,
+          "end_line": 324
+        }
+      ],
+      "tag": "最多 3 次候选尝试"
+    },
+    {
+      "id": "kafkaconsume",
+      "lane": "kafkalane",
+      "col": 5,
+      "type": "messagebus",
+      "label": "消费 Kafka 事件",
+      "sublabel": "校验来源与分区 owner",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/partition_consumer.go",
+          "line": 240,
+          "end_line": 247
+        }
+      ]
+    },
+    {
+      "id": "sqlapply",
+      "lane": "sqllane",
+      "col": 5,
+      "type": "database",
+      "label": "写权威账本",
+      "sublabel": "事件 + SQL 位点事务",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/checkpoint.go",
+          "line": 327,
+          "end_line": 364
+        }
+      ]
+    },
+    {
+      "id": "settle",
+      "lane": "settlelane",
+      "col": 5,
+      "type": "database",
+      "label": "Redis 幂等结算",
+      "sublabel": "reported 结算 / estimated 持有",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/partition_consumer.go",
+          "line": 24,
+          "end_line": 55
+        },
+        {
+          "path": "internal/gateway/billing.go",
+          "line": 3,
+          "end_line": 16
+        }
+      ]
+    },
+    {
+      "id": "relay",
+      "lane": "kafkalane",
+      "col": 4,
+      "type": "backend",
+      "label": "Outbox Relay",
+      "sublabel": "补发已保存且未交付事件",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/outbox.go",
+          "line": 156,
+          "end_line": 181
+        }
+      ]
+    },
+    {
+      "id": "watermark",
+      "lane": "waterlane",
+      "col": 5,
+      "type": "database",
+      "label": "确认交付与水位",
+      "sublabel": "释放容量 / 连续结算水位",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/partition_consumer.go",
+          "line": 45,
+          "end_line": 55
+        },
+        {
+          "path": "internal/gateway/partition_consumer.go",
+          "line": 254,
+          "end_line": 263
+        }
+      ]
+    },
+    {
+      "id": "offset",
+      "lane": "offsetlane",
+      "col": 5,
+      "type": "messagebus",
+      "label": "批量提交位点",
+      "sublabel": "已连续完成结算才提交",
+      "width": 150,
+      "height": 74,
+      "sources": [
+        {
+          "path": "internal/gateway/partition_consumer.go",
+          "line": 264,
+          "end_line": 269
+        },
+        {
+          "path": "internal/gateway/metering_commit.go",
+          "line": 37,
+          "end_line": 76
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "request-auth",
+      "from": "request",
+      "to": "auth",
+      "role": "main",
+      "variant": "default"
+    },
+    {
+      "id": "auth-policy",
+      "from": "auth",
+      "to": "policy",
+      "label": "通过",
+      "role": "main",
+      "variant": "default"
+    },
+    {
+      "id": "auth-invalid",
+      "from": "auth",
+      "to": "invalid",
+      "label": "失败",
+      "role": "error",
+      "variant": "security"
+    },
+    {
+      "id": "policy-choose",
+      "from": "policy",
+      "to": "choose",
+      "label": "通过",
+      "role": "main",
+      "variant": "default"
+    },
+    {
+      "id": "policy-blocked",
+      "from": "policy",
+      "to": "blocked",
+      "label": "拒绝",
+      "role": "error",
+      "variant": "security"
+    },
+    {
+      "id": "choose-cache",
+      "from": "choose",
+      "to": "cachecheck",
+      "role": "main",
+      "variant": "default"
+    },
+    {
+      "id": "cache-hit",
+      "from": "cachecheck",
+      "to": "cached",
+      "label": "命中",
+      "role": "branch",
+      "variant": "dashed"
+    },
+    {
+      "id": "cache-prepare",
+      "from": "cachecheck",
+      "to": "prepare",
+      "label": "绕过 / 未命中",
+      "role": "main",
+      "variant": "default"
+    },
+    {
+      "id": "prepare-reserve",
+      "from": "prepare",
+      "to": "reserve",
+      "label": "成功",
+      "role": "main",
+      "variant": "default"
+    },
+    {
+      "id": "prepare-reject",
+      "from": "prepare",
+      "to": "rejected",
+      "label": "失败",
+      "role": "error",
+      "variant": "security"
+    },
+    {
+      "id": "reserve-arm",
+      "from": "reserve",
+      "to": "arm",
+      "label": "成功",
+      "role": "main",
+      "variant": "default"
+    },
+    {
+      "id": "reserve-cancel",
+      "from": "reserve",
+      "to": "cancel",
+      "label": "失败",
+      "role": "error",
+      "variant": "security",
+      "fromSide": "right",
+      "toSide": "top"
+    },
+    {
+      "id": "arm-call",
+      "from": "arm",
+      "to": "call",
+      "label": "成功",
+      "role": "main",
+      "variant": "default"
+    },
+    {
+      "id": "arm-cancel",
+      "from": "arm",
+      "to": "cancel",
+      "label": "失败",
+      "role": "error",
+      "variant": "security",
+      "fromSide": "right",
+      "toSide": "top"
+    },
+    {
+      "id": "cancel-reject",
+      "from": "cancel",
+      "to": "rejected",
+      "role": "main",
+      "variant": "default"
+    },
+    {
+      "id": "call-collect",
+      "from": "call",
+      "to": "collect",
+      "label": "收尾",
+      "role": "main",
+      "variant": "default"
+    },
+    {
+      "id": "collect-publish",
+      "from": "collect",
+      "to": "publish",
+      "role": "main",
+      "variant": "default"
+    },
+    {
+      "id": "publish-outcome",
+      "from": "publish",
+      "to": "outcome",
+      "label": "ACK",
+      "role": "main",
+      "variant": "default"
+    },
+    {
+      "id": "publish-failure",
+      "from": "publish",
+      "to": "failed",
+      "label": "无 ACK",
+      "role": "error",
+      "variant": "security"
+    },
+    {
+      "id": "outcome-reply",
+      "from": "outcome",
+      "to": "reply",
+      "label": "成功",
+      "role": "main",
+      "variant": "default"
+    },
+    {
+      "id": "outcome-retry",
+      "from": "outcome",
+      "to": "retry",
+      "label": "可切换",
+      "role": "branch",
+      "variant": "dashed"
+    },
+    {
+      "id": "outcome-failed",
+      "from": "outcome",
+      "to": "failed",
+      "label": "终止",
+      "role": "error",
+      "variant": "security"
+    },
+    {
+      "id": "retry-prepare",
+      "from": "retry",
+      "to": "prepare",
+      "label": "下一候选",
+      "role": "return",
+      "variant": "dashed",
+      "route": "return-left",
+      "fromSide": "left",
+      "toSide": "left"
+    },
+    {
+      "id": "publish-kafka",
+      "from": "publish",
+      "to": "kafkaconsume",
+      "label": "异步",
+      "role": "async",
+      "variant": "dashed"
+    },
+    {
+      "id": "kafka-sql",
+      "from": "kafkaconsume",
+      "to": "sqlapply",
+      "role": "main",
+      "variant": "default"
+    },
+    {
+      "id": "sql-redis",
+      "from": "sqlapply",
+      "to": "settle",
+      "role": "main",
+      "variant": "default"
+    },
+    {
+      "id": "settle-water",
+      "from": "settle",
+      "to": "watermark",
+      "role": "main",
+      "variant": "default"
+    },
+    {
+      "id": "water-offset",
+      "from": "watermark",
+      "to": "offset",
+      "role": "main",
+      "variant": "default"
+    },
+    {
+      "id": "relay-kafka",
+      "from": "relay",
+      "to": "kafkaconsume",
+      "label": "重发",
+      "role": "async",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "缓存与重试条件",
+      "items": [
+        "只在语义缓存开启、应用开启、请求可缓存且具备 Embedding 模型时查询；普通缓存错误可继续推理。",
+        "内部 Embedding 同样经过 Prepare、预留、Arm 与完成计量；缓存命中不产生主推理费用。",
+        "主推理最多尝试 3 个候选；已开始 SSE 输出后禁止切换，限额及治理错误立即结束。"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "付费与计量边界",
+      "items": [
+        "Reserve 或 Arm 失败走取消补偿；Arm 是否已提交未知时，不能把它直接视为回滚成功。",
+        "非流式成功响应前完成发布需获 Kafka ACK；SSE 可先输出 chunk，成功 [DONE] 必须等待 ACK。",
+        "SQL 保存失败仍尝试 Kafka；付费完成发布异常冻结后续准入。请求级统计事件失败不等同付费尝试冻结。",
+        "Worker 每 5 秒补偿到期 prepared / 待补偿记录；inflight 的未知费用保留，不能自动清零或重发。"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "账本与预算确认",
+      "items": [
+        "Worker 串行校验并应用事件：SQL 账本与位点 → Redis 结算 → Outbox delivered → 水位 → Kafka 位点。",
+        "估计用量形成 held 暴露，不释放可用预算；reported 或人工 reconciled 才形成确定结算。",
+        "Worker 后台执行未完成准入补偿、Outbox Relay、审计及许可续租；异常恢复通过独立命令处理。",
+        "源码快照更新为 597c622；新增回归先完成未授权尝试补偿，再核验 inflight 的未知费用。"
+      ]
+    }
+  ]
+}

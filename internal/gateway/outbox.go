@@ -53,7 +53,6 @@ type DurableBus struct {
 	OnFreeze       func(context.Context)
 	CheckFrozen    func(context.Context) error
 	slotsOnce      sync.Once
-	startedSlots   chan struct{}
 	completedSlots chan struct{}
 }
 
@@ -73,19 +72,8 @@ func (b *DurableBus) Ready(c context.Context) error {
 }
 
 func (b *DurableBus) save(c context.Context, e Event) error {
-	b.slotsOnce.Do(func() { b.startedSlots = make(chan struct{}, 8); b.completedSlots = make(chan struct{}, 8) })
+	b.slotsOnce.Do(func() { b.completedSlots = make(chan struct{}, 8) })
 	slots := b.completedSlots
-	if e.Kind == "started" {
-		slots = b.startedSlots
-		// 新接单不排队消耗 SQL 预算；已有费用使用独立槽位等待持久化。
-		select {
-		case slots <- struct{}{}:
-			defer func() { <-slots }()
-		default:
-			return errOutboxBusy
-		}
-		return b.Store.SaveOutbox(c, e, b.GlobalBytes, b.AppBytes)
-	}
 	select {
 	case slots <- struct{}{}:
 		defer func() { <-slots }()
@@ -120,14 +108,17 @@ func (b *DurableBus) freeze(c context.Context, reason string) {
 }
 
 func (b *DurableBus) Publish(c context.Context, e Event) error {
+	if e.Kind == "started" {
+		return ErrUnavailable
+	}
+	if c.Err() != nil {
+		return c.Err()
+	}
 	if _, err := eventBytes(e); err != nil && e.PayloadCipher != "" {
 		e.PayloadCipher = ""
 	}
 	if _, err := eventBytes(e); err != nil {
 		return err
-	}
-	if e.Kind == "started" && b.stopped.Load() {
-		return ErrUnavailable
 	}
 	save, done := context.WithTimeout(c, 2*time.Second)
 	start := time.Now()
@@ -136,23 +127,6 @@ func (b *DurableBus) Publish(c context.Context, e Event) error {
 	done()
 	if errors.Is(err, ErrEventConflict) {
 		b.freeze(c, "event_conflict")
-		return ErrUnavailable
-	}
-	if err != nil && e.Kind == "started" {
-		reason := "outbox_sql"
-		switch {
-		case errors.Is(err, ErrOutboxCapacity):
-			reason = "outbox_capacity"
-		case errors.Is(err, errOutboxBusy):
-			reason = "outbox_slots"
-		case errors.Is(err, errMeteringBarrier):
-			reason = "application_barrier"
-		}
-		b.Metrics.meteringRejected(reason)
-		if c.Err() == nil && !errors.Is(err, ErrOutboxCapacity) && !errors.Is(err, errOutboxBusy) && !errors.Is(err, errMeteringBarrier) {
-			slog.Warn("metering started persistence failed", "error", err)
-			b.freeze(c, "outbox_unavailable")
-		}
 		return ErrUnavailable
 	}
 	// completed 的备用发布有独立预算，SQL 失败不能短路健康的 Kafka。

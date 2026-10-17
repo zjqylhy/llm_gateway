@@ -61,3 +61,5 @@ GitHub Actions 配置包含 Linux race 测试、构建与 Docker 镜像构建。
 控制台应用调用监控支持最近 24 小时内任意区间，展示成功 QPS、按 HTTP 状态码和业务错误码拆分的失败 QPS、QPS 上限及趋势。需配置 `GW_PROMETHEUS_URL`；未接入或缺失采样时明确显示无数据。其他概览统计采用最近记录样本；容量和分位数使用 [Grafana 监控](deploy/observability/dashboard.json)。万级并发和延迟目标尚未完成容量验收。
 
 ![本地验收：降级后的成本与待核实记录](docs/images/console.jpg)
+
+当前计量生命周期与恢复约束见 [重构 spec](docs/metering-flow-refactor-spec.md) 和 [运行手册](docs/operations.md)。Prepare/Redis 预占/Arm 构成调用前边界，开始账本同步写 SQL，完成事件保留 SQL/Kafka 双通道；旧 admissions/slots 停写迁移成功后删除。分布式 Redis 与云长期容量仍为后续验证项。
