@@ -65,16 +65,26 @@ func TestAdminRBACCSRFAndPasswordInvalidation(t *testing.T) {
 	}
 }
 
-type unavailablePublisher struct{ Publisher }
+type unavailablePublisher struct {
+	Publisher
+	unavailable atomic.Bool
+}
 
-func (unavailablePublisher) PublishConfig(context.Context, Config) error {
-	return errors.New("injected publication outage")
+func (p *unavailablePublisher) PublishConfig(c context.Context, cfg Config) error {
+	if p.unavailable.Load() {
+		return errors.New("injected publication outage")
+	}
+	return p.Publisher.PublishConfig(c, cfg)
 }
 func TestKeyDisplayedOnceWhenPublicationPending(t *testing.T) {
-	e := testEngine(t, MockProvider)
+	var publisher *unavailablePublisher
+	e := testEngine(t, MockProvider, func(e *Engine) {
+		publisher = &unavailablePublisher{Publisher: e.Publisher}
+		e.Publisher = publisher
+	})
 	a := NewAdmin(e, false, "")
 	c, csrf := adminLogin(t, a, "admin")
-	e.Publisher = unavailablePublisher{e.Publisher}
+	publisher.unavailable.Store(true)
 	w := adminCall(a, c, csrf, "POST", "/admin/apps/app/keys", "")
 	var x struct {
 		APIKey    string `json:"api_key"`

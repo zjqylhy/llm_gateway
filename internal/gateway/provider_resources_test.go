@@ -77,7 +77,11 @@ func TestProviderCreateEditAndSecretPreservation(t *testing.T) {
 }
 
 func TestProviderPermissionsPublicationAndValidation(t *testing.T) {
-	e := testEngine(t, MockProvider)
+	var publisher *unavailablePublisher
+	e := testEngine(t, MockProvider, func(e *Engine) {
+		publisher = &unavailablePublisher{Publisher: e.Publisher}
+		e.Publisher = publisher
+	})
 	a := NewAdmin(e, false, "")
 	admin, csrf := adminLogin(t, a, "admin")
 	dev, devCSRF := adminLogin(t, a, "dev")
@@ -98,7 +102,7 @@ func TestProviderPermissionsPublicationAndValidation(t *testing.T) {
 			t.Fatal(w.Code)
 		}
 	}
-	e.Publisher = unavailablePublisher{e.Publisher}
+	publisher.unavailable.Store(true)
 	for _, req := range []struct{ method, path string }{{"POST", "/admin/providers"}, {"PUT", "/admin/providers/new"}} {
 		w := adminCall(a, admin, csrf, req.method, req.path, providerBody("new", "test-key"))
 		if w.Code != 202 || !strings.Contains(w.Body.String(), `"published":false`) {

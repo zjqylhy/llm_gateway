@@ -155,7 +155,7 @@ try {
         if ($LASTEXITCODE) { Write-Warning "Temporary cache Redis cleanup failed: $cacheRedisName" }
     }
     # 角色退出后再清理；测试函数结束时 worker 仍可能续发许可并重新创建前缀。
-    $deletedKeys = & docker exec $etcd etcdctl --endpoints=http://127.0.0.1:2379 del "/$run/" --prefix
+    $null = & docker exec $etcd etcdctl --endpoints=http://127.0.0.1:2379 del "/$run/" --prefix
     if ($LASTEXITCODE) { Write-Warning "Temporary etcd cleanup failed: $run" }
     if ($topicCreated) {
         # SIGKILL 的成员可能仍在 Kafka 会话有效期内，等待失效后删除专用组。

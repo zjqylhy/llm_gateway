@@ -169,7 +169,7 @@ func (s *SQLStore) migrateAttemptLifecycle(c context.Context) error {
 	if err := s.AuditCapacity(c); err != nil {
 		return err
 	}
-	if _, err := s.DB.ExecContext(c, `UPDATE gw_metering_control SET metering_protocol=2 WHERE id=1`); err != nil {
+	if _, err := s.DB.ExecContext(c, `UPDATE gw_metering_control SET metering_protocol=2 WHERE id=1 AND metering_protocol<2`); err != nil {
 		return err
 	}
 	if legacyTables {

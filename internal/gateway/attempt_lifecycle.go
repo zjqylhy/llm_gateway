@@ -16,7 +16,7 @@ type attemptLifecycle interface {
 	FinishCancellation(context.Context, Event) error
 }
 
-func admissionTx(c context.Context, tx *sql.Tx, app string) error {
+func (s *SQLStore) admissionTx(c context.Context, tx *sql.Tx, app string) error {
 	proof, ok := c.Value(admissionProofKey{}).(admissionProof)
 	if !ok || proof.Permit.Expires <= time.Now().UnixMilli() {
 		return errMeteringBarrier
@@ -26,7 +26,7 @@ func admissionTx(c context.Context, tx *sql.Tx, app string) error {
 	if err := tx.QueryRowContext(c, `SELECT state,generation,metering_protocol FROM gw_metering_control WHERE id=1 FOR SHARE`).Scan(&state, &gen, &protocol); err != nil {
 		return err
 	}
-	if protocol != 2 || state != "healthy" || gen != proof.Permit.Generation {
+	if protocol != s.meteringProtocol() || state != "healthy" || gen != proof.Permit.Generation {
 		return errMeteringBarrier
 	}
 	if err := tx.QueryRowContext(c, `SELECT state,generation FROM gw_metering_apps WHERE app_id=? FOR SHARE`, app).Scan(&state, &gen); err != nil {
@@ -50,14 +50,14 @@ func (s *SQLStore) PrepareAttempt(c context.Context, e Event, globalLimit, appLi
 		return err
 	}
 	defer tx.Rollback()
-	if err = admissionTx(c, tx, e.AppID); err != nil {
+	if err = s.admissionTx(c, tx, e.AppID); err != nil {
 		return err
 	}
-	global, app, err := outboxCapacity(c, tx, e.AppID, s.Metrics)
+	global, app, err := s.outboxCapacity(c, tx, e.AppID)
 	if err != nil {
 		return err
 	}
-	if maxEventBytes > globalLimit-global || maxEventBytes > appLimit-app {
+	if !s.backgroundCapacity() && (maxEventBytes > globalLimit-global || maxEventBytes > appLimit-app) {
 		return ErrOutboxCapacity
 	}
 	proof := c.Value(admissionProofKey{}).(admissionProof)
@@ -65,10 +65,13 @@ func (s *SQLStore) PrepareAttempt(c context.Context, e Event, globalLimit, appLi
 	if err != nil {
 		return err
 	}
-	if err = adjustCapacity(c, tx, e.AppID, maxEventBytes); err != nil {
+	if err = s.adjustCapacity(c, tx, e.AppID, maxEventBytes); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return errors.Join(err, errPrepareCommitUnknown)
+	}
+	return nil
 }
 
 func (s *SQLStore) ArmAttempt(c context.Context, e Event) (result error) {
@@ -79,7 +82,7 @@ func (s *SQLStore) ArmAttempt(c context.Context, e Event) (result error) {
 		return err
 	}
 	defer tx.Rollback()
-	if err = admissionTx(c, tx, e.AppID); err != nil {
+	if err = s.admissionTx(c, tx, e.AppID); err != nil {
 		return err
 	}
 	// 账本事件先于 attempt 加锁，与消费、修正保持统一顺序；CAS 失败全部回滚。
@@ -135,7 +138,7 @@ func (s *SQLStore) FinishCancellation(c context.Context, e Event) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, _, err = outboxCapacity(c, tx, e.AppID, s.Metrics); err != nil {
+	if _, _, err = s.outboxCapacity(c, tx, e.AppID); err != nil {
 		return err
 	}
 	if err = applyEventTx(c, tx, cancelEvent(e)); err != nil {
@@ -149,7 +152,7 @@ func (s *SQLStore) FinishCancellation(c context.Context, e Event) error {
 	if phase != "cancelled" || hash != eventDigest(e) {
 		return ErrFenced
 	}
-	if err = adjustCapacity(c, tx, e.AppID, -remaining); err != nil {
+	if err = s.adjustCapacity(c, tx, e.AppID, -remaining); err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(c, `UPDATE gw_attempts SET compensation_state='done',redis_cancel_confirmed=1,reserved_remaining_bytes=0,compensation_lease_until=NULL WHERE attempt_id=?`, e.AttemptID)

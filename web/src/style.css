@@ -186,12 +186,6 @@ header {
   color: #687890;
   font-size: 12px;
 }
-.live-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #22a585;
-}
 .filter-bar {
   display: flex;
   align-items: center;

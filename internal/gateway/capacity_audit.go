@@ -13,6 +13,22 @@ func (s *SQLStore) AuditCapacity(c context.Context) error {
 		return err
 	}
 	defer tx.Rollback()
+	if s.backgroundCapacity() {
+		for _, query := range []string{
+			`SELECT COUNT(*) FROM gw_attempts WHERE reserved_remaining_bytes<0 OR reserved_remaining_bytes>1048576 OR (compensation_state='done' AND reserved_remaining_bytes<>0)`,
+			`SELECT COUNT(*) FROM gw_metering_outbox WHERE charged_bytes<0 OR (delivered=1 AND (charged_bytes<>0 OR payload IS NOT NULL)) OR (delivered=0 AND (payload IS NULL OR charged_bytes<>OCTET_LENGTH(payload)))`,
+			`SELECT COUNT(*) FROM gw_attempts a JOIN gw_metering_outbox o ON a.attempt_id=o.attempt_id AND o.revision=2 WHERE a.purpose<>'request' AND a.reserved_remaining_bytes+o.charged_bytes>1048576`,
+		} {
+			var invalid int
+			if err = tx.QueryRowContext(c, query).Scan(&invalid); err != nil {
+				return err
+			}
+			if invalid != 0 {
+				return errors.New("invalid outbox payload or attempt reservation")
+			}
+		}
+		return tx.Commit()
+	}
 	expected := map[string]int64{"global": 0}
 	rows, err := tx.QueryContext(c, `SELECT app_id,SUM(bytes) FROM (SELECT app_id,charged_bytes AS bytes FROM gw_metering_outbox UNION ALL SELECT app_id,reserved_remaining_bytes AS bytes FROM gw_attempts) occupancy GROUP BY app_id LIMIT 10001`)
 	if err != nil {

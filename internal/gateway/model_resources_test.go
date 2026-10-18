@@ -170,7 +170,11 @@ func TestModelDeleteProtectsAllReferences(t *testing.T) {
 }
 
 func TestModelMutationPermissionsAndPublicationPending(t *testing.T) {
-	e := testEngine(t, MockProvider)
+	var publisher *unavailablePublisher
+	e := testEngine(t, MockProvider, func(e *Engine) {
+		publisher = &unavailablePublisher{Publisher: e.Publisher}
+		e.Publisher = publisher
+	})
 	a := NewAdmin(e, false, "")
 	admin, csrf := adminLogin(t, a, "admin")
 	dev, devCSRF := adminLogin(t, a, "dev")
@@ -191,7 +195,7 @@ func TestModelMutationPermissionsAndPublicationPending(t *testing.T) {
 	if w := adminCall(a, admin, csrf, "POST", "/admin/models", body); w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
-	e.Publisher = unavailablePublisher{e.Publisher}
+	publisher.unavailable.Store(true)
 	for _, req := range []struct {
 		method string
 		body   string

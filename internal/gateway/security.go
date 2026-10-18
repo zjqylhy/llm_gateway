@@ -12,7 +12,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"net"
 	"net/url"
-	"strings"
 )
 
 func ID(prefix string) string {
@@ -100,10 +99,3 @@ var reservedNetworks = func() []*net.IPNet {
 	}
 	return out
 }()
-
-func RedactError(s string) string {
-	if len(s) > 120 {
-		s = s[:120]
-	}
-	return strings.ReplaceAll(s, "\n", " ")
-}

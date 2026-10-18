@@ -56,6 +56,11 @@ type breaker struct {
 }
 
 func (e *Engine) Refresh(c context.Context) error {
+	if s, ok := e.Store.(*SQLStore); ok {
+		if err := s.validateCapacityMode(c); err != nil {
+			return err
+		}
+	}
 	cfg, err := e.Publisher.Current(c)
 	if err != nil {
 		return err
@@ -315,7 +320,7 @@ func (e *Engine) handle(w http.ResponseWriter, r *http.Request, kind string) {
 		if ae == ErrProviderLimit {
 			continue
 		}
-		if errors.Is(ae, ErrLimit) || errors.Is(ae, ErrUnavailable) {
+		if errors.Is(ae, ErrLimit) || errors.Is(ae, ErrUnavailable) || errors.Is(ae, ErrCapacityTimeout) {
 			finalStatus = rejectGuard(w, ae)
 			return
 		}
@@ -336,6 +341,10 @@ func (e *Engine) handle(w http.ResponseWriter, r *http.Request, kind string) {
 	APIError(w, 503, "upstream_unavailable", "all eligible upstream attempts failed")
 }
 func rejectGuard(w http.ResponseWriter, e error) string {
+	if errors.Is(e, ErrCapacityTimeout) {
+		APIError(w, 503, "outbox_capacity_timeout", "request expired while waiting for metering capacity")
+		return "failed"
+	}
 	if errors.Is(e, ErrMeteringCompletion) {
 		APIError(w, 503, "metering_unavailable", "model call may have incurred usage; verify request_id before retrying")
 		return "failed"
@@ -543,7 +552,9 @@ func (e *Engine) attempt(ctx context.Context, cfg Config, a App, m Model, r Requ
 		var release func()
 		ctx, release, err = e.Metering.prepareAdmission(ctx, event, limit)
 		if err != nil {
-			err = ErrUnavailable
+			if !errors.Is(err, ErrCapacityTimeout) {
+				err = ErrUnavailable
+			}
 			return
 		}
 		defer release()

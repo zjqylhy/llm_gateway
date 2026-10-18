@@ -97,17 +97,18 @@ func (b *recordingBus) Publish(_ context.Context, e Event) error {
 }
 func (b *recordingBus) Close() error { return nil }
 
-func durableTestEngine(t *testing.T) (*Engine, *testOutbox, *recordingBus, *atomic.Int32) {
+func durableTestEngine(t *testing.T, configure ...func(*Engine)) (*Engine, *testOutbox, *recordingBus, *atomic.Int32) {
 	calls := new(atomic.Int32)
-	e := testEngine(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); MockProvider(w, r) })
+	e := testEngine(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); MockProvider(w, r) }, configure...)
 	s, transport := newTestOutbox(), &recordingBus{}
 	e.Bus = &DurableBus{Store: s, Transport: transport, GlobalBytes: 512 << 20, AppBytes: 64 << 20}
 	return e, s, transport, calls
 }
 
 func TestArmFailureRejectsWithoutProviderOrStartedKafka(t *testing.T) {
-	e, _, transport, calls := durableTestEngine(t)
-	e.Store = failedArmStore{e.Store.(*MemoryStore)}
+	e, _, transport, calls := durableTestEngine(t, func(e *Engine) {
+		e.Store = failedArmStore{e.Store.(*MemoryStore)}
+	})
 	w := call(t, e, "hello", false)
 	if w.Code != 503 || calls.Load() != 0 {
 		t.Fatal("unpersisted started invoked provider", w.Code, calls.Load())

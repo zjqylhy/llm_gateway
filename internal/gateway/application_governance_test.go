@@ -185,10 +185,12 @@ func (s businessMeteringStore) applicationMeteringControls(_ context.Context, id
 }
 
 func TestApplicationMeteringRBACAndBusinessImpact(t *testing.T) {
-	e := testEngine(t, MockProvider)
 	now, passed := time.Now().UTC(), true
-	s := businessMeteringStore{e.Store.(*MemoryStore), "healthy", map[string]appMeteringControl{"app": {State: "healthy", CheckedAt: &now, ReportPassed: &passed, ReportAt: &now}, "other": {State: "frozen"}}}
-	e.Store = s
+	var s *businessMeteringStore
+	e := testEngine(t, MockProvider, func(e *Engine) {
+		s = &businessMeteringStore{e.Store.(*MemoryStore), "healthy", map[string]appMeteringControl{"app": {State: "healthy", CheckedAt: &now, ReportPassed: &passed, ReportAt: &now}, "other": {State: "frozen"}}}
+		e.Store = s
+	})
 	a := NewAdmin(e, false, "")
 	dev, csrf := adminLogin(t, a, "dev")
 	w := adminCall(a, dev, csrf, "GET", "/admin/app-metering", "")
@@ -205,26 +207,22 @@ func TestApplicationMeteringRBACAndBusinessImpact(t *testing.T) {
 		}
 	}
 	s.global = "frozen"
-	e.Store = s
 	w = adminCall(a, dev, csrf, "GET", "/admin/app-metering?app_id=app", "")
 	if !strings.Contains(w.Body.String(), "平台计量异常") || strings.Contains(w.Body.String(), "generation") || strings.Contains(w.Body.String(), "other") {
 		t.Fatal(w.Body.String())
 	}
 	s.global = "healthy"
 	s.controls["app"] = appMeteringControl{State: "quiescing"}
-	e.Store = s
 	w = adminCall(a, dev, csrf, "GET", "/admin/app-metering?app_id=app", "")
 	if !strings.Contains(w.Body.String(), "暂缓新调用") {
 		t.Fatal(w.Body.String())
 	}
 	delete(s.controls, "app")
-	e.Store = s
 	w = adminCall(a, dev, csrf, "GET", "/admin/app-metering?app_id=app", "")
 	if !strings.Contains(w.Body.String(), `"state":"unknown"`) {
 		t.Fatal("missing app marked healthy", w.Body.String())
 	}
 	s.global = "unavailable"
-	e.Store = s
 	w = adminCall(a, dev, csrf, "GET", "/admin/app-metering?app_id=app", "")
 	if !strings.Contains(w.Body.String(), "计量许可不可用") {
 		t.Fatal("permit outage impact missing", w.Body.String())

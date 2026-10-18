@@ -54,13 +54,48 @@ func (r *Runtime) readPermit(c context.Context) (meteringPermit, error) {
 
 // 登记早于 Redis 预占，应用屏障与登记共用同一行锁，涵盖尚未写 started 的准备阶段。
 func (r *Runtime) prepareAdmission(c context.Context, event Event, appLimit int64) (context.Context, func(), error) {
+	s := r.Engine.Store.(*SQLStore)
+	for {
+		ctx, release, err := r.prepareAdmissionOnce(c, event, appLimit)
+		if !errors.Is(err, ErrOutboxCapacity) || !s.CapacityWait || s.backgroundCapacity() {
+			return ctx, release, err
+		}
+		at := time.Now()
+		timer := time.NewTimer(capacityInterval)
+		select {
+		case <-c.Done():
+			timer.Stop()
+			r.Engine.Metrics.meteringStage("capacity_wait", "started", at, c.Err())
+			return c, nil, ErrCapacityTimeout
+		case <-timer.C:
+			r.Engine.Metrics.meteringStage("capacity_wait", "started", at, nil)
+		}
+	}
+}
+
+func (r *Runtime) prepareAdmissionOnce(c context.Context, event Event, appLimit int64) (context.Context, func(), error) {
+	prepared := false
+	if r.capacity != nil {
+		r.capacity.start()
+		if err := r.capacity.acquire(c, event, appLimit); err != nil {
+			return c, nil, err
+		}
+		defer func() {
+			if !prepared {
+				r.capacity.release(event.AttemptID)
+			}
+		}()
+	}
+	started := time.Now()
 	slot, end := context.WithTimeout(c, time.Second)
 	defer end()
 	select {
 	case r.admissionSlots <- struct{}{}:
 	case <-slot.Done():
+		r.Engine.Metrics.meteringStage("inflight_wait", "started", started, slot.Err())
 		return c, nil, ErrUnavailable
 	}
+	r.Engine.Metrics.meteringStage("inflight_wait", "started", started, nil)
 	release := func() { <-r.admissionSlots }
 	p, err := r.readPermit(c)
 	if err != nil {
@@ -78,6 +113,8 @@ func (r *Runtime) prepareAdmission(c context.Context, event Event, appLimit int6
 	ctx, done := context.WithTimeout(c, time.Second)
 	err = s.PrepareAttempt(ctx, event, r.Engine.Bus.(*DurableBus).GlobalBytes, appLimit)
 	done()
+	// COMMIT 不确定时不能按失败释放本地占用；后续快照只凭持久记录去重。
+	prepared = err == nil || errors.Is(err, errPrepareCommitUnknown)
 	if err != nil {
 		release()
 		r.Engine.Metrics.meteringRejected("prepare")
@@ -403,7 +440,14 @@ func (r *Runtime) nextAuditApp(c context.Context, cursor string) (string, string
 	}
 	var remaining int
 	var used int64
-	if err = s.DB.QueryRowContext(c, `SELECT COALESCE((SELECT used_bytes FROM gw_metering_capacity WHERE id='global'),0)`).Scan(&used); err != nil {
+	if s.backgroundCapacity() {
+		var snap capacitySnapshot
+		snap, err = s.sampleCapacity(c, nil)
+		used = snap.Global
+	} else {
+		err = s.DB.QueryRowContext(c, `SELECT COALESCE((SELECT used_bytes FROM gw_metering_capacity WHERE id='global'),0)`).Scan(&used)
+	}
+	if err != nil {
 		return "", cursor, err
 	}
 	r.Engine.Metrics.MeteringOutboxBytes.Set(float64(used))

@@ -84,6 +84,9 @@ func TestReliabilityProcess(t *testing.T) {
 		return
 	}
 	mux := http.NewServeMux()
+	if role == "gateway" && r.capacity != nil {
+		r.capacity.start()
+	}
 	mux.HandleFunc("GET /__acceptance/paused", func(w http.ResponseWriter, _ *http.Request) {
 		JSON(w, map[string]bool{"paused": boundaryPaused.Load()})
 	})
@@ -210,6 +213,7 @@ type reliabilityResult struct {
 	Body      string
 	ElapsedMS float64
 	FirstMS   float64
+	DoneMS    float64
 	Error     string
 }
 

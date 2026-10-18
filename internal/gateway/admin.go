@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"context"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -977,9 +976,6 @@ func (a *Admin) correct(w http.ResponseWriter, r *http.Request) {
 	JSON(w, fixed)
 }
 func uName(a *Admin, r *http.Request) string { u, _, _, _ := a.identity(r); return u.Name }
-func WithTimeout(c context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(c, 5*time.Second)
-}
 func (a *Admin) alerts(w http.ResponseWriter, r *http.Request) {
 	f, e := a.filter(r)
 	if e != nil {

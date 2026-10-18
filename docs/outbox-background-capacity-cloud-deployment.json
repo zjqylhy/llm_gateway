@@ -1,0 +1,173 @@
+{
+  "date": "2026-10-18",
+  "timezone": "Asia/Shanghai",
+  "status": "deployed_and_functionally_verified",
+  "source_revision": "1f814e4944b3e2f54a169f8c660b70d947c1ade3",
+  "image": "llm-gateway:outbox-background-20261018-1f814e4",
+  "image_id": "sha256:1d381a55c3c44d3c33f8f4bd411a5e7f007e2a73e59c47523ca75eb8d705d35e",
+  "package_sha256": "b85185d699ba172d38a41cbf8f6686477618cf48ba5da35418ece9996cc345e0",
+  "capacity_mode": "background",
+  "capacity_protocol": 1,
+  "metering_protocol": 3,
+  "rehearsal": {
+    "missing_ack_rejected": true,
+    "clone_financial_config_source_offsets_preserved": true,
+    "forward_protocol": 3,
+    "rollback_protocol": 2,
+    "forward_again_passed": true,
+    "rehearsal_seconds": 13.088
+  },
+  "preopen": {
+    "stopped_writers_verified": true,
+    "sql_redis_audit_before_and_after": true,
+    "financial_config_source_offsets_preserved": true,
+    "fresh_snapshot": true,
+    "frontend_hash_preserved": true,
+    "seconds_before_edge_start": 16.415
+  },
+  "backups": {
+    "off_host_sql_sha256_verified": true,
+    "sql_sha256": "cd1d2f1a7606d9ec6b3349e6cfca136a1d8cd6ecbfb047ba5d2c5c3c64473044",
+    "server_directory": "/opt/llm_gateway/releases/outbox-capacity-20261018-1f814e4/backup",
+    "old_image_and_compose_retained": true
+  },
+  "real_provider_smoke": {
+    "checked_at": "2026-10-17T22:58:25.821404+00:00",
+    "https_ca_verified": true,
+    "frontend_sha256": "0d4a5b16a07b75b448430774d0603a14c4527323fb28ad61254687e967ce8e3a",
+    "admin_login_verified": true,
+    "unauthenticated_models_rejected": true,
+    "authenticated_models_verified": true,
+    "config_version": 31,
+    "app_id": "app_3fc350d2a01c889ced7fbce16e0cc7f4",
+    "calls": [
+      {
+        "stream": false,
+        "request_id": "req_86c63f118c04150114974ffb8b9491eb",
+        "http": 200,
+        "duration_ms": 3169.08,
+        "usage": {
+          "prompt_tokens": 35,
+          "completion_tokens": 12,
+          "total_tokens": 47,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 10
+          },
+          "prompt_cache_hit_tokens": 0,
+          "prompt_cache_miss_tokens": 35
+        },
+        "visible_answer": "OK",
+        "sse_done": false
+      },
+      {
+        "stream": true,
+        "request_id": "req_861f5c34f0b81e1d48564a506e085d01",
+        "http": 200,
+        "duration_ms": 2921.19,
+        "usage": {
+          "prompt_tokens": 35,
+          "completion_tokens": 16,
+          "total_tokens": 51,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 14
+          },
+          "prompt_cache_hit_tokens": 0,
+          "prompt_cache_miss_tokens": 35
+        },
+        "visible_answer": "OK",
+        "sse_done": true
+      }
+    ],
+    "reported_attempts": 2,
+    "total_tokens": 98,
+    "cost_micro": 364,
+    "metering_healthy": true,
+    "permit_valid": true,
+    "undelivered_events": 0,
+    "settled_attempt_ids": [
+      "att_9b338b906284bfc605f38e2a7692440f",
+      "att_b5d964b3ac65b7b222343fe79aff2fdd"
+    ],
+    "business_config_unchanged": true
+  },
+  "postcheck": {
+    "offline_sql_redis_audit_passed": true,
+    "audited_quota_groups": 2,
+    "audited_redis_attempts": 678,
+    "pending": 0,
+    "before": {
+      "attempt_table_rows": 1410,
+      "tokens": 955596,
+      "cost_micro": 2659793
+    },
+    "after": {
+      "attempt_table_rows": 1414,
+      "tokens": 955694,
+      "cost_micro": 2660157
+    },
+    "added_billable_attempts": 2,
+    "added_request_summaries": 2,
+    "capacity_bytes": 0,
+    "undelivered_events": 0,
+    "config_version": 31,
+    "config_source_preserved": true,
+    "graceful_restart_and_fresh_snapshot_verified": true,
+    "seconds_before_edge_start": 14.998,
+    "states": {
+      "gateway": {
+        "image": "sha256:1d381a55c3c44d3c33f8f4bd411a5e7f007e2a73e59c47523ca75eb8d705d35e",
+        "running": true,
+        "oom": false,
+        "restarts": 0
+      },
+      "admin": {
+        "image": "sha256:1d381a55c3c44d3c33f8f4bd411a5e7f007e2a73e59c47523ca75eb8d705d35e",
+        "running": true,
+        "oom": false,
+        "restarts": 0
+      },
+      "worker": {
+        "image": "sha256:1d381a55c3c44d3c33f8f4bd411a5e7f007e2a73e59c47523ca75eb8d705d35e",
+        "running": true,
+        "oom": false,
+        "restarts": 0
+      }
+    },
+    "unchanged_infrastructure_containers": [
+      "mysql",
+      "redis",
+      "kafka",
+      "etcd",
+      "grafana",
+      "prometheus"
+    ]
+  },
+  "final_https_status": {
+    "checked_at": "2026-10-17T23:00:27.767900+00:00",
+    "https_ca_verified": true,
+    "frontend_sha256": "0d4a5b16a07b75b448430774d0603a14c4527323fb28ad61254687e967ce8e3a",
+    "admin_login_verified": true,
+    "unauthenticated_models_rejected": true,
+    "authenticated_models_verified": true,
+    "config_version": 31,
+    "app_id": "app_3fc350d2a01c889ced7fbce16e0cc7f4",
+    "calls": [],
+    "metering_healthy": true,
+    "permit_valid": true,
+    "undelivered_events": 0,
+    "real_model_called": false
+  },
+  "resource_sample": "llm-gateway-lite-gateway-1 | 7.539MiB / 256MiB | 0.40%\nllm-gateway-lite-worker-1 | 10.07MiB / 256MiB | 0.55%\nllm-gateway-lite-admin-1 | 5.762MiB / 256MiB | 0.24%\nllm-gateway-lite-grafana-1 | 301.2MiB / 512MiB | 0.35%\nllm-gateway-lite-prometheus-1 | 73.63MiB / 256MiB | 0.00%\nllm-gateway-lite-redis-1 | 10.24MiB / 256MiB | 0.42%\nllm-gateway-lite-mysql-1 | 378.4MiB / 768MiB | 1.43%\nllm-gateway-lite-kafka-1 | 551MiB / 1GiB | 0.97%\nllm-gateway-lite-etcd-1 | 38.8MiB / 256MiB | 0.71%\n",
+  "recorded_preparation_failure": {
+    "cause": "Windows archive omitted Linux executable bits",
+    "production_changed": false,
+    "fix": "verified binaries chmod 0755 before image build; clone rehearsal rerun passed"
+  },
+  "scope": "Two small real provider calls and offline full audit; no cloud throughput claim; capacity failure scenarios covered by local isolated integration tests"
+}

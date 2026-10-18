@@ -1,5 +1,3 @@
-export type InstanceStatus = "ready" | "stale" | "config_pending";
-
 export const instanceLabel = (state: string) =>
   ({ ready: "在线", stale: "心跳过期", config_pending: "配置未同步" })[state] ??
   "状态未知";
