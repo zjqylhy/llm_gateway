@@ -217,24 +217,22 @@ func OpenRuntime(ctx context.Context, dev bool) (out *Runtime, err error) {
 		sqlStore.Metrics = e.Metrics
 		e.Metrics.registerSQLPool(sqlStore.DB)
 		e.Metrics.MeteringOutboxLimit.Set(float64(globalBytes))
-		e.Bus = &DurableBus{Store: sqlStore, Transport: &KafkaBus{Writer: writer, Store: sqlStore}, GlobalBytes: globalBytes, AppBytes: appBytes, Metrics: e.Metrics, OnFreeze: func(c context.Context) {
+		e.Bus = &DurableBus{Store: sqlStore, Transport: &KafkaBus{Writer: writer, Store: sqlStore}, Metrics: e.Metrics, OnFreeze: func(c context.Context) {
 			_ = rc.Set(c, "gw:metering:frozen", "delivery_failure", 0).Err()
 			out.freezeEtcd(c)
 		}}
-		if sqlStore.backgroundCapacity() {
-			out.capacity = newCapacityGate(globalBytes, e.Metrics, sqlStore.sampleCapacity)
-			out.capacity.limits = func(app string) (int64, bool) {
-				state := e.state.Load()
-				if state == nil {
-					return 0, false
-				}
-				a, ok := state.cfg.Apps[app]
-				limit := appBytes
-				if a.OutboxBytes > 0 {
-					limit = a.OutboxBytes
-				}
-				return limit, ok && a.Active
+		out.capacity = newCapacityGate(globalBytes, e.Metrics, sqlStore.sampleCapacity)
+		out.capacity.limits = func(app string) (int64, bool) {
+			state := e.state.Load()
+			if state == nil {
+				return 0, false
 			}
+			a, ok := state.cfg.Apps[app]
+			limit := appBytes
+			if a.OutboxBytes > 0 {
+				limit = a.OutboxBytes
+			}
+			return limit, ok && a.Active
 		}
 		e.Bus.(*DurableBus).CheckFrozen = func(c context.Context) error {
 			n, err := rc.Exists(c, "gw:metering:frozen").Result()

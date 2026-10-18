@@ -1,5 +1,7 @@
 # 后台 Outbox 容量管理：云端部署验证
 
+> 2026-10-18 后续变更：运行实现统一后台容量，协议版本及升级步骤见 [唯一后台规格](outbox-single-capacity-spec.md)。本文保留此前设计或部署的历史事实。
+
 日期：2026-10-18（北京时间）。用户确认采用后台容量管理，并授权服务器部署验证及创建 PR。服务器已启用 `background`、`GW_OUTBOX_CAPACITY_WAIT=true`，计量协议为 3、容量协议为 1。机器可读证据见 [部署结果](outbox-background-capacity-cloud-deployment.json)；本地性能与故障覆盖见 [实验报告](outbox-background-capacity-report.md)。
 
 ## 版本与切换

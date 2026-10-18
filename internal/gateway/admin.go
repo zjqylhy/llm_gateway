@@ -937,7 +937,7 @@ func (a *Admin) correct(w http.ResponseWriter, r *http.Request) {
 			APIError(w, 503, "storage_unavailable", "durable correction requires SQL")
 			return
 		}
-		fixed, e = s.CorrectOutbox(r.Context(), uName(a, r), key, fixed, bus.GlobalBytes, bus.AppBytes)
+		fixed, e = s.CorrectOutbox(r.Context(), uName(a, r), key, fixed)
 		if e != nil {
 			if errors.Is(e, ErrEventConflict) {
 				APIError(w, 409, "idempotency_conflict", "key was used for another correction")

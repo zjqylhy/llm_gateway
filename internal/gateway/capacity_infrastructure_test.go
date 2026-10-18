@@ -93,7 +93,8 @@ func TestCapacityIntegration(t *testing.T) {
 	}
 	dir := os.Getenv("GW_RELIABILITY_DIRECTORY")
 	t.Run("SQL_snapshot_and_indexes", func(t *testing.T) { testCapacitySnapshotSQL(t, ctx, s, dir) })
-	t.Run("mode_switch_and_rollback", func(t *testing.T) { testCapacityModeSQL(t, ctx, s) })
+	t.Run("capacity_protocol_migration", func(t *testing.T) { testCapacityProtocolSQL(t, ctx, s) })
+	t.Run("outbox_save_and_replay", func(t *testing.T) { testUnifiedOutboxSQL(t, ctx, s) })
 	if t.Failed() {
 		return
 	}
@@ -213,7 +214,7 @@ func TestCapacityIntegration(t *testing.T) {
 		})
 		return time.Since(at).Seconds()
 	}
-	mode := os.Getenv("GW_CAPACITY_TEST_MODE")
+	const mode = "background"
 	seconds, _ := strconv.Atoi(os.Getenv("GW_CAPACITY_TEST_SECONDS"))
 	if seconds < 1 || seconds > 60 {
 		t.Fatal("invalid measurement duration")
@@ -551,7 +552,7 @@ func TestCapacityIntegration(t *testing.T) {
 		if ci == 2 {
 			runLoad(2, 20, "stream", true, false)
 			runLoad(2, 20, "slow", false, true)
-			if auxiliary && s.backgroundCapacity() {
+			if auxiliary {
 				t.Run("worker_restart_preserves_capacity", func(t *testing.T) {
 					testCapacityWorkerRestart(t, ctx, r, client, gateways[0], upstream, roles["worker"], dir, docker)
 				})

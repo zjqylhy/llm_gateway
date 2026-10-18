@@ -57,7 +57,7 @@ func testLifecycleMigration(t *testing.T, r *Runtime, c context.Context) {
 	if err := s.MeteringHealthy(c); err == nil {
 		t.Fatal("migration reopened admission without budget rebuild")
 	}
-	if err := s.DB.QueryRowContext(c, `SELECT metering_protocol FROM gw_metering_control WHERE id=1`).Scan(&protocol); err != nil || protocol != 2 {
+	if err := s.DB.QueryRowContext(c, `SELECT metering_protocol FROM gw_metering_control WHERE id=1`).Scan(&protocol); err != nil || protocol != meteringProtocol {
 		t.Fatal(protocol, err)
 	}
 	// 失败路径保留证据，成功迁移只保留新架构依赖。

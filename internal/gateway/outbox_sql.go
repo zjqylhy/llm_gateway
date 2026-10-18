@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strconv"
 	"time"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 func (s *SQLStore) FreezeMetering(c context.Context, reason string) error {
@@ -21,190 +23,95 @@ func (s *SQLStore) MeteringHealthy(c context.Context) error {
 	if err := s.DB.QueryRowContext(c, `SELECT state,metering_protocol FROM gw_metering_control WHERE id=1`).Scan(&state, &protocol); err != nil {
 		return err
 	}
-	if state != "healthy" || protocol != s.meteringProtocol() {
+	if state != "healthy" || protocol != meteringProtocol {
 		return ErrUnavailable
 	}
 	return nil
 }
 
-func outboxCapacity(c context.Context, tx *sql.Tx, app string, metrics *Metrics) (globalUsed, appUsed int64, result error) {
-	start := time.Now()
-	defer func() { metrics.meteringStage("outbox_capacity_lock", "other", start, result) }()
-	var values [2]int64
-	for i, id := range []string{"global", "app:" + app} {
-		// 已有容量行直接加锁，避免每个事件重复执行无变化 INSERT/UPDATE。
-		err := tx.QueryRowContext(c, `SELECT used_bytes FROM gw_metering_capacity WHERE id=? FOR UPDATE`, id).Scan(&values[i])
-		if errors.Is(err, sql.ErrNoRows) {
-			// 首次初始化取排他锁；不用 INSERT IGNORE 的共享锁升级路径。
-			if _, err = tx.ExecContext(c, `INSERT INTO gw_metering_capacity(id,used_bytes) VALUES(?,0) ON DUPLICATE KEY UPDATE id=id`, id); err != nil {
-				return 0, 0, err
-			}
-			err = tx.QueryRowContext(c, `SELECT used_bytes FROM gw_metering_capacity WHERE id=? FOR UPDATE`, id).Scan(&values[i])
-		}
-		if err != nil {
-			return 0, 0, err
-		}
-	}
-	return values[0], values[1], nil
-}
-
-func adjustCapacity(c context.Context, tx *sql.Tx, app string, delta int64) error {
-	if delta == 0 {
-		return nil
-	}
-	for _, id := range []string{"global", "app:" + app} {
-		result, err := tx.ExecContext(c, `UPDATE gw_metering_capacity SET used_bytes=used_bytes+? WHERE id=? AND used_bytes+?>=0`, delta, id, delta)
-		if err != nil {
-			return err
-		}
-		n, _ := result.RowsAffected()
-		if n != 1 && delta != 0 {
-			return errors.New("outbox capacity invariant violated")
-		}
-	}
-	return nil
-}
-
-func (s *SQLStore) saveOutbox(c context.Context, tx *sql.Tx, e Event, globalLimit, appLimit int64) error {
+// 保存只转换 attempt 预留与 payload 占用；所有容量准入已在请求入口完成。
+func (s *SQLStore) saveOutbox(c context.Context, tx *sql.Tx, e Event) error {
 	raw, err := eventBytes(e)
 	if err != nil {
 		return err
 	}
-	globalUsed, appUsed, err := s.outboxCapacity(c, tx, e.AppID)
-	if err != nil {
-		return err
-	}
-	var hash string
-	err = tx.QueryRowContext(c, `SELECT payload_hash FROM gw_metering_outbox WHERE event_id=? FOR UPDATE`, e.ID).Scan(&hash)
-	if err == nil {
-		if hash != Hash(string(raw)) {
-			return ErrEventConflict
+	hash := Hash(string(raw))
+	checkExisting := func(lock bool) (bool, error) {
+		query := `SELECT payload_hash FROM gw_metering_outbox WHERE event_id=?`
+		if lock {
+			query += ` FOR UPDATE`
 		}
-		return nil
+		var previous string
+		err := tx.QueryRowContext(c, query, e.ID).Scan(&previous)
+		if errors.Is(err, sql.ErrNoRows) {
+			if lock {
+				return false, nil
+			}
+			return ledgerDelivered(c, tx, e)
+		}
+		if err != nil {
+			return false, err
+		}
+		if previous != hash {
+			return false, ErrEventConflict
+		}
+		return true, nil
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if exists, err := checkExisting(true); exists || err != nil {
 		return err
 	}
-	if delivered, checkErr := ledgerDelivered(c, tx, e); delivered || checkErr != nil {
-		return checkErr
-	}
+	var app string
 	var remaining int64
-	var reservationApp string
-	err = tx.QueryRowContext(c, `SELECT app_id,reserved_remaining_bytes FROM gw_attempts WHERE attempt_id=? FOR UPDATE`, e.AttemptID).Scan(&reservationApp, &remaining)
-	hasReservation := err == nil && remaining > 0
+	err = tx.QueryRowContext(c, `SELECT app_id,reserved_remaining_bytes FROM gw_attempts WHERE attempt_id=? FOR UPDATE`, e.AttemptID).Scan(&app, &remaining)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if hasReservation && reservationApp != e.AppID {
+	hasAttempt := err == nil
+	if hasAttempt && app != e.AppID {
 		return ErrEventConflict
 	}
-	delta := int64(len(raw))
-	if e.Revision == 2 && hasReservation && remaining >= int64(len(raw)) {
-		remaining -= int64(len(raw))
-		delta = 0
-		if _, err = tx.ExecContext(c, `UPDATE gw_attempts SET reserved_remaining_bytes=? WHERE attempt_id=?`, remaining, e.AttemptID); err != nil {
+	// READ COMMITTED 下不存在的事件行不提供互斥；等待 attempt 后重新核验并发保存及交付。
+	if exists, err := checkExisting(false); exists || err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(c, `INSERT INTO gw_metering_outbox(event_id,attempt_id,app_id,revision,payload,payload_hash,charged_bytes,next_retry_at) VALUES(?,?,?,?,?,?,?,UTC_TIMESTAMP(6))`, e.ID, e.AttemptID, e.AppID, e.Revision, raw, hash, len(raw)); err != nil {
+		// 请求汇总没有 attempt 锁；唯一键冲突后核对内容，不能吞掉不同 payload。
+		var duplicate *mysql.MySQLError
+		if errors.As(err, &duplicate) && duplicate.Number == 1062 {
+			if exists, checkErr := checkExisting(false); exists || checkErr != nil {
+				return checkErr
+			}
+		}
+		return err
+	}
+	if e.Revision == 2 && remaining >= int64(len(raw)) {
+		if _, err = tx.ExecContext(c, `UPDATE gw_attempts SET reserved_remaining_bytes=reserved_remaining_bytes-? WHERE attempt_id=?`, len(raw), e.AttemptID); err != nil {
 			return err
 		}
 	}
-	if !s.backgroundCapacity() && delta > 0 && (delta > globalLimit-globalUsed || delta > appLimit-appUsed) {
-		return ErrOutboxCapacity
+	if hasAttempt && e.Revision == 2 && e.Purpose != "request" {
+		_, err = tx.ExecContext(c, `UPDATE gw_attempts SET execution_phase='completed' WHERE attempt_id=? AND execution_phase='inflight'`, e.AttemptID)
 	}
-	if err = s.adjustCapacity(c, tx, e.AppID, delta); err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(c, `INSERT INTO gw_metering_outbox(event_id,attempt_id,app_id,revision,payload,payload_hash,charged_bytes,next_retry_at) VALUES(?,?,?,?,?,?,?,UTC_TIMESTAMP(6))`, e.ID, e.AttemptID, e.AppID, e.Revision, raw, Hash(string(raw)), len(raw))
 	return err
 }
 
-func (s *SQLStore) SaveOutbox(c context.Context, e Event, globalLimit, appLimit int64) error {
+func (s *SQLStore) SaveOutbox(c context.Context, e Event) error {
 	if e.Kind != "completed" {
 		return ErrUnavailable
 	}
-	if e.Kind == "completed" && e.Revision == 2 && e.Purpose != "request" {
-		if handled, err := s.saveReservedCompletion(c, e); handled || err != nil {
-			return err
-		}
-	}
-
 	tx, err := s.beginMeteringTx(c, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if err = s.saveOutbox(c, tx, e, globalLimit, appLimit); err != nil {
+	if err = s.saveOutbox(c, tx, e); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-// completed 使用 Prepare 已计入全局及应用容量的预留；delta=0 时无需竞争容量行。
-// 仅此事务不取得容量锁，因此不会反向等待持有容量锁的消费或修正事务。
-func (s *SQLStore) saveReservedCompletion(c context.Context, e Event) (bool, error) {
-	raw, err := eventBytes(e)
-	if err != nil {
-		return true, err
-	}
-	tx, err := s.beginMeteringTx(c, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
-	if err != nil {
-		return true, err
-	}
-	defer tx.Rollback()
-	var hash string
-	err = tx.QueryRowContext(c, `SELECT payload_hash FROM gw_metering_outbox WHERE event_id=? FOR UPDATE`, e.ID).Scan(&hash)
-	if err == nil {
-		if hash != Hash(string(raw)) {
-			return true, ErrEventConflict
-		}
-		return true, tx.Commit()
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return true, err
-	}
-	if delivered, checkErr := ledgerDelivered(c, tx, e); delivered || checkErr != nil {
-		return true, checkErr
-	}
-	var app string
-	var remaining int64
-	err = tx.QueryRowContext(c, `SELECT app_id,reserved_remaining_bytes FROM gw_attempts WHERE attempt_id=? FOR UPDATE`, e.AttemptID).Scan(&app, &remaining)
-	if errors.Is(err, sql.ErrNoRows) || err == nil && remaining == 0 {
-		return false, nil
-	}
-	if err != nil {
-		return true, err
-	}
-	if app != e.AppID {
-		return true, ErrEventConflict
-	}
-	if remaining < int64(len(raw)) {
-		// 回退前释放所有锁，禁止持有 attempt 锁时再取得全局容量锁。
-		return false, nil
-	}
-	// 同事件的并发写入可能在取得 attempt 锁之前已完成，重新检查以保持幂等。
-	err = tx.QueryRowContext(c, `SELECT payload_hash FROM gw_metering_outbox WHERE event_id=?`, e.ID).Scan(&hash)
-	if err == nil {
-		if hash != Hash(string(raw)) {
-			return true, ErrEventConflict
-		}
-		return true, tx.Commit()
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return true, err
-	}
-	if _, err = tx.ExecContext(c, `UPDATE gw_attempts SET reserved_remaining_bytes=reserved_remaining_bytes-? WHERE attempt_id=?`, len(raw), e.AttemptID); err != nil {
-		return true, err
-	}
-	_, err = tx.ExecContext(c, `INSERT INTO gw_metering_outbox(event_id,attempt_id,app_id,revision,payload,payload_hash,charged_bytes,next_retry_at) VALUES(?,?,?,?,?,?,?,UTC_TIMESTAMP(6))`, e.ID, e.AttemptID, e.AppID, e.Revision, raw, Hash(string(raw)), len(raw))
-	if err != nil {
-		return true, err
-	}
-	if _, err = tx.ExecContext(c, `UPDATE gw_attempts SET execution_phase='completed' WHERE attempt_id=? AND execution_phase='inflight'`, e.AttemptID); err != nil {
-		return true, err
-	}
-	return true, tx.Commit()
-}
-
 // 修正版本、审计与补偿同事务提交；调用方重试同一操作不会再分配版本。
-func (s *SQLStore) CorrectOutbox(c context.Context, actor, key string, e Event, globalLimit, appLimit int64) (Event, error) {
+func (s *SQLStore) CorrectOutbox(c context.Context, actor, key string, e Event) (Event, error) {
 	tx, err := s.beginMeteringTx(c, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return Event{}, err
@@ -260,10 +167,7 @@ func (s *SQLStore) CorrectOutbox(c context.Context, actor, key string, e Event, 
 	if _, err = tx.ExecContext(c, `INSERT INTO gw_audit(id,actor,action,version,at) VALUES(?,?,?,?,?)`, ID("aud_"), actor, "usage.correct", cfg.Version, time.Now().UTC()); err != nil {
 		return Event{}, err
 	}
-	if n := cfg.Apps[e.AppID].OutboxBytes; n > 0 {
-		appLimit = n
-	}
-	if err = s.saveOutbox(c, tx, e, globalLimit, appLimit); err != nil {
+	if err = s.saveOutbox(c, tx, e); err != nil {
 		return Event{}, err
 	}
 	raw, err = eventBytes(e)
@@ -339,12 +243,8 @@ func (s *SQLStore) DeliveredOutbox(c context.Context, e Event) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, _, err = s.outboxCapacity(c, tx, e.AppID); err != nil {
-		return err
-	}
-	var charged int64
 	var hash string
-	err = tx.QueryRowContext(c, `SELECT charged_bytes,payload_hash FROM gw_metering_outbox WHERE event_id=? FOR UPDATE`, e.ID).Scan(&charged, &hash)
+	err = tx.QueryRowContext(c, `SELECT payload_hash FROM gw_metering_outbox WHERE event_id=? FOR UPDATE`, e.ID).Scan(&hash)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -364,9 +264,8 @@ func (s *SQLStore) DeliveredOutbox(c context.Context, e Event) error {
 		return err
 	}
 	if e.Kind == "completed" && e.Purpose != "request" {
-		var remaining int64
 		var app string
-		err = tx.QueryRowContext(c, `SELECT app_id,reserved_remaining_bytes FROM gw_attempts WHERE attempt_id=? FOR UPDATE`, e.AttemptID).Scan(&app, &remaining)
+		err = tx.QueryRowContext(c, `SELECT app_id FROM gw_attempts WHERE attempt_id=? FOR UPDATE`, e.AttemptID).Scan(&app)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
@@ -374,14 +273,10 @@ func (s *SQLStore) DeliveredOutbox(c context.Context, e Event) error {
 			if app != e.AppID {
 				return fmt.Errorf("%w: attempt application", ErrEventConflict)
 			}
-			charged += remaining
 			if _, err = tx.ExecContext(c, `UPDATE gw_attempts SET reserved_remaining_bytes=0 WHERE attempt_id=?`, e.AttemptID); err != nil {
 				return err
 			}
 		}
-	}
-	if err = s.adjustCapacity(c, tx, e.AppID, -charged); err != nil {
-		return err
 	}
 	return tx.Commit()
 }

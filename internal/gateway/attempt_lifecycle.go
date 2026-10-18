@@ -10,7 +10,7 @@ import (
 
 // Prepare 登记未获准调用的尝试；只有 Arm 明确提交才能进入上游。
 type attemptLifecycle interface {
-	PrepareAttempt(context.Context, Event, int64, int64) error
+	PrepareAttempt(context.Context, Event) error
 	ArmAttempt(context.Context, Event) error
 	CancelAttempt(context.Context, Event) error
 	FinishCancellation(context.Context, Event) error
@@ -26,7 +26,7 @@ func (s *SQLStore) admissionTx(c context.Context, tx *sql.Tx, app string) error 
 	if err := tx.QueryRowContext(c, `SELECT state,generation,metering_protocol FROM gw_metering_control WHERE id=1 FOR SHARE`).Scan(&state, &gen, &protocol); err != nil {
 		return err
 	}
-	if protocol != s.meteringProtocol() || state != "healthy" || gen != proof.Permit.Generation {
+	if protocol != meteringProtocol || state != "healthy" || gen != proof.Permit.Generation {
 		return errMeteringBarrier
 	}
 	if err := tx.QueryRowContext(c, `SELECT state,generation FROM gw_metering_apps WHERE app_id=? FOR SHARE`, app).Scan(&state, &gen); err != nil {
@@ -38,7 +38,7 @@ func (s *SQLStore) admissionTx(c context.Context, tx *sql.Tx, app string) error 
 	return nil
 }
 
-func (s *SQLStore) PrepareAttempt(c context.Context, e Event, globalLimit, appLimit int64) (result error) {
+func (s *SQLStore) PrepareAttempt(c context.Context, e Event) (result error) {
 	start := time.Now()
 	defer func() { s.Metrics.meteringStage("prepare", "started", start, result) }()
 	raw, err := eventBytes(e)
@@ -53,19 +53,9 @@ func (s *SQLStore) PrepareAttempt(c context.Context, e Event, globalLimit, appLi
 	if err = s.admissionTx(c, tx, e.AppID); err != nil {
 		return err
 	}
-	global, app, err := s.outboxCapacity(c, tx, e.AppID)
-	if err != nil {
-		return err
-	}
-	if !s.backgroundCapacity() && (maxEventBytes > globalLimit-global || maxEventBytes > appLimit-app) {
-		return ErrOutboxCapacity
-	}
 	proof := c.Value(admissionProofKey{}).(admissionProof)
 	_, err = tx.ExecContext(c, `INSERT INTO gw_attempts(attempt_id,request_id,app_id,department,model_id,status,purpose,revision,tokens,cost_micro,at,payload,execution_phase,billing_state,reserved_remaining_bytes,prepare_generation,app_generation,start_hash,start_payload,prepare_deadline) VALUES(?,?,?,?,?,?,?,0,0,0,?,?,'prepared','pending',?,?,?,?,?,TIMESTAMPADD(SECOND,30,UTC_TIMESTAMP(6)))`, e.AttemptID, e.RequestID, e.AppID, e.Department, e.Model.ID, "prepared", e.Purpose, e.At, string(raw), maxEventBytes, proof.Permit.Generation, proof.AppGeneration, Hash(string(raw)), string(raw))
 	if err != nil {
-		return err
-	}
-	if err = s.adjustCapacity(c, tx, e.AppID, maxEventBytes); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
@@ -138,22 +128,15 @@ func (s *SQLStore) FinishCancellation(c context.Context, e Event) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, _, err = s.outboxCapacity(c, tx, e.AppID); err != nil {
-		return err
-	}
 	if err = applyEventTx(c, tx, cancelEvent(e)); err != nil {
 		return err
 	}
 	var phase, hash string
-	var remaining int64
-	if err = tx.QueryRowContext(c, `SELECT execution_phase,start_hash,reserved_remaining_bytes FROM gw_attempts WHERE attempt_id=? FOR UPDATE`, e.AttemptID).Scan(&phase, &hash, &remaining); err != nil {
+	if err = tx.QueryRowContext(c, `SELECT execution_phase,start_hash FROM gw_attempts WHERE attempt_id=? FOR UPDATE`, e.AttemptID).Scan(&phase, &hash); err != nil {
 		return err
 	}
 	if phase != "cancelled" || hash != eventDigest(e) {
 		return ErrFenced
-	}
-	if err = s.adjustCapacity(c, tx, e.AppID, -remaining); err != nil {
-		return err
 	}
 	_, err = tx.ExecContext(c, `UPDATE gw_attempts SET compensation_state='done',redis_cancel_confirmed=1,reserved_remaining_bytes=0,compensation_lease_until=NULL WHERE attempt_id=?`, e.AttemptID)
 	if err != nil {
@@ -183,12 +166,11 @@ func compensateAttempt(c context.Context, store attemptLifecycle, g Guard, e Eve
 }
 
 type memoryAttempt struct {
-	Start     Event
-	Phase     string
-	Remaining int64
+	Start Event
+	Phase string
 }
 
-func (s *MemoryStore) PrepareAttempt(_ context.Context, e Event, globalLimit, appLimit int64) error {
+func (s *MemoryStore) PrepareAttempt(_ context.Context, e Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.attempts == nil {
@@ -200,17 +182,7 @@ func (s *MemoryStore) PrepareAttempt(_ context.Context, e Event, globalLimit, ap
 	if len(s.attempts) >= maxMemoryAttempts {
 		return ErrUnavailable
 	}
-	var global, app int64
-	global, app = s.reservedGlobal, s.reservedApps[e.AppID]
-	if globalLimit > 0 && maxEventBytes > globalLimit-global || appLimit > 0 && maxEventBytes > appLimit-app {
-		return ErrOutboxCapacity
-	}
-	s.attempts[e.AttemptID] = memoryAttempt{Start: e, Phase: "prepared", Remaining: maxEventBytes}
-	if s.reservedApps == nil {
-		s.reservedApps = map[string]int64{}
-	}
-	s.reservedGlobal += maxEventBytes
-	s.reservedApps[e.AppID] += maxEventBytes
+	s.attempts[e.AttemptID] = memoryAttempt{Start: e, Phase: "prepared"}
 	return nil
 }
 func (s *MemoryStore) ArmAttempt(_ context.Context, e Event) error {
@@ -254,14 +226,7 @@ func (s *MemoryStore) FinishCancellation(_ context.Context, e Event) error {
 	if !ok || attempt.Phase != "cancelled" {
 		return ErrFenced
 	}
-	if err := s.applyLocked(cancelEvent(e)); err != nil {
-		return err
-	}
-	s.reservedGlobal -= attempt.Remaining
-	s.reservedApps[e.AppID] -= attempt.Remaining
-	attempt.Remaining = 0
-	s.attempts[e.AttemptID] = attempt
-	return nil
+	return s.applyLocked(cancelEvent(e))
 }
 
 func decodeAttempt(raw []byte) (Event, error) {

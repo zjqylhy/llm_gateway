@@ -57,7 +57,7 @@ type breaker struct {
 
 func (e *Engine) Refresh(c context.Context) error {
 	if s, ok := e.Store.(*SQLStore); ok {
-		if err := s.validateCapacityMode(c); err != nil {
+		if err := s.validateCapacityProtocol(c); err != nil {
 			return err
 		}
 	}
@@ -545,12 +545,8 @@ func (e *Engine) attempt(ctx context.Context, cfg Config, a App, m Model, r Requ
 			err = ErrUnavailable
 			return
 		}
-		limit := e.Bus.(*DurableBus).AppBytes
-		if a.OutboxBytes > 0 {
-			limit = a.OutboxBytes
-		}
 		var release func()
-		ctx, release, err = e.Metering.prepareAdmission(ctx, event, limit)
+		ctx, release, err = e.Metering.prepareAdmission(ctx, event)
 		if err != nil {
 			if !errors.Is(err, ErrCapacityTimeout) {
 				err = ErrUnavailable
@@ -558,7 +554,7 @@ func (e *Engine) attempt(ctx context.Context, cfg Config, a App, m Model, r Requ
 			return
 		}
 		defer release()
-	} else if err = lifecycle.PrepareAttempt(ctx, event, 64<<20, 64<<20); err != nil {
+	} else if err = lifecycle.PrepareAttempt(ctx, event); err != nil {
 		return
 	}
 	ctx = context.WithValue(ctx, reservationHashKey{}, eventDigest(event))

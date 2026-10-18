@@ -727,18 +727,12 @@ func TestInfrastructureIntegration(t *testing.T) {
 		stopWorker()
 		defer startWorker()
 		base := Event{ID: "outbox-a:1", AttemptID: "outbox-a", RequestID: "outbox-request", AppID: "outbox-capacity", Kind: "started", Revision: 1, Purpose: "inference", At: time.Now().UTC(), Month: month(time.Now()), ReserveTokens: 100, ReserveMicro: 100}
-		if err := saveFixtureOutbox(ctx, s, base, 8<<20, 2<<20); err != nil {
+		if err := saveFixtureOutbox(ctx, s, base); err != nil {
 			t.Fatal(err)
 		}
 		var n int
 		if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_attempts WHERE attempt_id=?`, base.AttemptID).Scan(&n); err != nil || n != 1 {
 			t.Fatal("legacy start evidence missing", n, err)
-		}
-		another := base
-		another.ID = "outbox-a2:1"
-		another.AttemptID = "outbox-a2"
-		if err := saveFixtureOutbox(ctx, s, another, 8<<20, 2<<20); !errors.Is(err, ErrOutboxCapacity) {
-			t.Fatal("application capacity not enforced", err)
 		}
 		other := base
 		other.ID = "outbox-b:1"
@@ -747,7 +741,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 		if err := fixtureGuard.Reserve(ctx, App{ID: other.AppID}, Reservation{other.AttemptID, other.AppID, other.Month, 100, 100}); err != nil {
 			t.Fatal(err)
 		}
-		if err := saveFixtureOutbox(ctx, s, other, 8<<20, 2<<20); err != nil {
+		if err := saveFixtureOutbox(ctx, s, other); err != nil {
 			t.Fatal("one application blocked another", err)
 		}
 		completed := base
@@ -756,36 +750,24 @@ func TestInfrastructureIntegration(t *testing.T) {
 		completed.Revision = 2
 		completed.Usage = Usage{Input: 10, Output: 20, Total: 30}
 		completed.CostMicro = 40
-		// 真实持有容量行锁；已预留的完成事件仍须保存，不能被新接单竞争拖住。
-		lock, err := s.DB.BeginTx(ctx, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer lock.Rollback()
-		if _, err := lock.ExecContext(ctx, `UPDATE gw_metering_capacity SET used_bytes=used_bytes WHERE id='global'`); err != nil {
-			t.Fatal(err)
-		}
 		completionCtx, done := context.WithTimeout(ctx, time.Second)
-		err = s.SaveOutbox(completionCtx, completed, 8<<20, 2<<20)
+		err := s.SaveOutbox(completionCtx, completed)
 		done()
 		if err != nil {
-			t.Fatal("reserved completion waited for global capacity lock", err)
+			t.Fatal("reserved completion failed", err)
 		}
-		if err := lock.Rollback(); err != nil {
-			t.Fatal(err)
-		}
-		if err := saveFixtureOutbox(ctx, s, completed, 8<<20, 2<<20); err != nil {
+		if err := saveFixtureOutbox(ctx, s, completed); err != nil {
 			t.Fatal("duplicate completion consumed capacity", err)
 		}
 		wrongApp := completed
 		wrongApp.ID = "wrong-application:2"
 		wrongApp.AppID = other.AppID
-		if err := saveFixtureOutbox(ctx, s, wrongApp, 8<<20, 2<<20); !errors.Is(err, ErrEventConflict) {
+		if err := saveFixtureOutbox(ctx, s, wrongApp); !errors.Is(err, ErrEventConflict) {
 			t.Fatal("completion used another application's reservation", err)
 		}
 		conflict := completed
 		conflict.CostMicro++
-		if err := saveFixtureOutbox(ctx, s, conflict, 8<<20, 2<<20); !errors.Is(err, ErrEventConflict) {
+		if err := saveFixtureOutbox(ctx, s, conflict); !errors.Is(err, ErrEventConflict) {
 			t.Fatal("outbox conflict ignored", err)
 		}
 		if err := fixtureGuard.Reserve(ctx, App{ID: base.AppID}, Reservation{base.AttemptID, base.AppID, base.Month, 100, 100}); err != nil {
@@ -815,11 +797,11 @@ func TestInfrastructureIntegration(t *testing.T) {
 		if err := s.Apply(ctx, conflict); !errors.Is(err, ErrEventConflict) {
 			t.Fatal("ledger conflict ignored", err)
 		}
-		if err := s.DB.QueryRowContext(ctx, `SELECT used_bytes FROM gw_metering_capacity WHERE id='app:outbox-capacity'`).Scan(&n); err != nil || n != 0 {
+		if err := s.DB.QueryRowContext(ctx, `SELECT (SELECT COALESCE(SUM(charged_bytes),0) FROM gw_metering_outbox WHERE app_id='outbox-capacity')+(SELECT COALESCE(SUM(reserved_remaining_bytes),0) FROM gw_attempts WHERE app_id='outbox-capacity')`).Scan(&n); err != nil || n != 0 {
 			t.Fatal("capacity leaked", n, err)
 		}
 		// 未完成 other 仍保留完整 completed 空间，不把 started 消费当成已结算。
-		if err := s.DB.QueryRowContext(ctx, `SELECT used_bytes FROM gw_metering_capacity WHERE id='app:outbox-other'`).Scan(&n); err != nil || n != maxEventBytes {
+		if err := s.DB.QueryRowContext(ctx, `SELECT (SELECT COALESCE(SUM(charged_bytes),0) FROM gw_metering_outbox WHERE app_id='outbox-other')+(SELECT COALESCE(SUM(reserved_remaining_bytes),0) FROM gw_attempts WHERE app_id='outbox-other')`).Scan(&n); err != nil || n != maxEventBytes {
 			t.Fatal("pending completion space released", n, err)
 		}
 	})
@@ -827,7 +809,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 		drain()
 		stopWorker()
 		original := e.Bus.(*DurableBus)
-		bus := &DurableBus{Store: s, Transport: failedBus{original.Transport, true}, GlobalBytes: 512 << 20, AppBytes: 64 << 20}
+		bus := &DurableBus{Store: s, Transport: failedBus{original.Transport, true}}
 		started := Event{ID: "relay-attempt:1", AttemptID: "relay-attempt", RequestID: "relay-request", AppID: "relay-app", Kind: "started", Revision: 1, Purpose: "inference", At: time.Now().UTC(), Month: month(time.Now()), ReserveTokens: 100, ReserveMicro: 100}
 		if err := fixtureGuard.Reserve(ctx, App{ID: started.AppID}, Reservation{started.AttemptID, started.AppID, started.Month, 100, 100}); err != nil {
 			t.Fatal(err)
@@ -862,7 +844,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 			t.Fatal("relay duplicated cost", counts)
 		}
 		var charged int64
-		if err := s.DB.QueryRowContext(ctx, `SELECT used_bytes FROM gw_metering_capacity WHERE id=?`, "app:"+started.AppID).Scan(&charged); err != nil || charged != 0 {
+		if err := s.DB.QueryRowContext(ctx, `SELECT (SELECT COALESCE(SUM(charged_bytes),0) FROM gw_metering_outbox WHERE app_id=?)+(SELECT COALESCE(SUM(reserved_remaining_bytes),0) FROM gw_attempts WHERE app_id=?)`, started.AppID, started.AppID).Scan(&charged); err != nil || charged != 0 {
 			t.Fatal("relay capacity leaked", charged, err)
 		}
 		// 仅测试资源恢复；故障已完整核验，不修改现有部署的控制状态。
@@ -881,18 +863,18 @@ func TestInfrastructureIntegration(t *testing.T) {
 		fixed.CostMicro = 70
 		fixed.Status = "reconciled"
 		fixed.Quality = "reconciled"
-		a, err := s.CorrectOutbox(ctx, "acceptance", "same-operation", fixed, 512<<20, 64<<20)
+		a, err := s.CorrectOutbox(ctx, "acceptance", "same-operation", fixed)
 		if err != nil {
 			t.Fatal(err)
 		}
-		b, err := s.CorrectOutbox(ctx, "acceptance", "same-operation", fixed, 512<<20, 64<<20)
+		b, err := s.CorrectOutbox(ctx, "acceptance", "same-operation", fixed)
 		if err != nil || a.ID != b.ID || a.Revision != b.Revision {
 			t.Fatal("correction allocated twice", a, b, err)
 		}
 		fixed.CostMicro++ // 实际幂等输入以 usage 为准；下行用不同 usage 验证冲突。
 		fixed.Usage.Input++
 		fixed.Usage.Total++
-		if _, err := s.CorrectOutbox(ctx, "acceptance", "same-operation", fixed, 512<<20, 64<<20); !errors.Is(err, ErrEventConflict) {
+		if _, err := s.CorrectOutbox(ctx, "acceptance", "same-operation", fixed); !errors.Is(err, ErrEventConflict) {
 			t.Fatal("correction key reused", err)
 		}
 		if err := e.Bus.(*DurableBus).RelayOnce(ctx); err != nil {
@@ -906,7 +888,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 	})
 	runCase("completed_without_outbox_releases_reserved_capacity", func(t *testing.T) {
 		original := e.Bus.(*DurableBus)
-		bus := &DurableBus{Store: failedCompletionOutbox{s}, Transport: original.Transport, GlobalBytes: 512 << 20, AppBytes: 64 << 20}
+		bus := &DurableBus{Store: failedCompletionOutbox{s}, Transport: original.Transport}
 		started := Event{ID: "kafka-only:1", AttemptID: "kafka-only", RequestID: "kafka-only-request", AppID: "kafka-only-app", Kind: "started", Revision: 1, Purpose: "inference", At: time.Now().UTC(), Month: month(time.Now()), ReserveTokens: 100, ReserveMicro: 100}
 		if err := fixtureGuard.Reserve(ctx, App{ID: started.AppID}, Reservation{started.AttemptID, started.AppID, started.Month, 100, 100}); err != nil {
 			t.Fatal(err)
@@ -931,7 +913,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 		if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_metering_outbox WHERE event_id=?`, completed.ID).Scan(&n); err != nil || n != 0 {
 			t.Fatal("unnecessary outbox backfill", n, err)
 		}
-		if err := s.DB.QueryRowContext(ctx, `SELECT used_bytes FROM gw_metering_capacity WHERE id=?`, "app:"+started.AppID).Scan(&n); err != nil || n != 0 {
+		if err := s.DB.QueryRowContext(ctx, `SELECT (SELECT COALESCE(SUM(charged_bytes),0) FROM gw_metering_outbox WHERE app_id=?)+(SELECT COALESCE(SUM(reserved_remaining_bytes),0) FROM gw_attempts WHERE app_id=?)`, started.AppID, started.AppID).Scan(&n); err != nil || n != 0 {
 			t.Fatal("Kafka-only completion leaked reservation", n, err)
 		}
 		// 只重置隔离 fixture 的故障标记，实际恢复通过 metering-resume 核验。
@@ -939,7 +921,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	runCase("outbox_concurrent_capacity_serialization", func(t *testing.T) {
+	runCase("outbox_concurrent_reservation_and_idempotency", func(t *testing.T) {
 		const n = 64
 		events := make([]Event, n)
 		failures := make(chan error, n)
@@ -954,7 +936,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 					failures <- err
 					return
 				}
-				failures <- saveFixtureOutbox(ctx, s, event, 512<<20, 128<<20)
+				failures <- saveFixtureOutbox(ctx, s, event)
 			}(events[i])
 		}
 		tasks.Wait()
@@ -970,7 +952,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 		duplicate.Kind, duplicate.Revision, duplicate.Status, duplicate.Quality = "completed", 2, "cancelled", "reported"
 		duplicateErrors := make(chan error, 16)
 		for i := 0; i < 16; i++ {
-			go func() { duplicateErrors <- saveFixtureOutbox(ctx, s, duplicate, 512<<20, 128<<20) }()
+			go func() { duplicateErrors <- saveFixtureOutbox(ctx, s, duplicate) }()
 		}
 		for i := 0; i < 16; i++ {
 			if err := <-duplicateErrors; err != nil {
@@ -995,7 +977,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 		}
 		drain()
 		var used int64
-		if err := s.DB.QueryRowContext(ctx, `SELECT used_bytes FROM gw_metering_capacity WHERE id='app:outbox-concurrent'`).Scan(&used); err != nil || used != 0 {
+		if err := s.DB.QueryRowContext(ctx, `SELECT (SELECT COALESCE(SUM(charged_bytes),0) FROM gw_metering_outbox WHERE app_id='outbox-concurrent')+(SELECT COALESCE(SUM(reserved_remaining_bytes),0) FROM gw_attempts WHERE app_id='outbox-concurrent')`).Scan(&used); err != nil || used != 0 {
 			t.Fatal("capacity accounting leaked under concurrency", used, err)
 		}
 		if counts := reconcile("outbox-concurrent"); counts != (Counters{}) {
@@ -1066,7 +1048,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 		fixed.Quality = "reconciled"
 		fixed.Usage = Usage{}
 		fixed.CostMicro = 0
-		if _, err = s.CorrectOutbox(ctx, "acceptance", "resolve-known-fixture", fixed, 512<<20, 64<<20); err != nil {
+		if _, err = s.CorrectOutbox(ctx, "acceptance", "resolve-known-fixture", fixed); err != nil {
 			t.Fatal(err)
 		}
 		if err = e.Bus.(*DurableBus).RelayOnce(ctx); err != nil {
@@ -1101,7 +1083,7 @@ func TestInfrastructureIntegration(t *testing.T) {
 		completed.Usage = Usage{Input: 10, Output: 20, Total: 30}
 		completed.CostMicro = 40
 		for _, event := range []Event{started, completed} {
-			if err := saveFixtureOutbox(ctx, s, event, 512<<20, 64<<20); err != nil {
+			if err := saveFixtureOutbox(ctx, s, event); err != nil {
 				t.Fatal(err)
 			}
 		}
