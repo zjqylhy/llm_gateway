@@ -241,12 +241,12 @@ const summary = {
   cases,
   scope: {
     upstream: 'controlled mock, no external model API calls',
-    capacity_semantics: 'locked mode uses transactional counters; background mode permits transient multi-instance overshoot',
+    capacity_semantics: 'background permits transient multi-instance overshoot; historical comparison inputs may include retired transactional counters',
     latency: 'client success percentiles are empirical order statistics; rejected, dropped and failed calls are counted separately',
     overhead: 'attempt time minus upstream read/forward time; excludes request-summary publication and is not direct-vs-gateway A/B',
     telemetry: 'before/after per-process counter deltas; includes resource-sampling/drain boundary work; stage means have different denominators and must not be summed',
     occupancy: 'saved HTTP windows, including HTTP tails, sampled about every 200 ms; excludes subsequent drain; failed tests may not have saved all windows; over-limit durations are sampled estimates',
-    sql_statements: 'capacity-lock operation counters are available; complete SQL statement and commit totals are not collected',
+    sql_statements: 'historical inputs may include retired capacity-lock metrics; complete SQL statement and commit totals are not collected',
     limits: 'shared host and middleware; finite controlled loads do not establish production capacity or SLO',
   },
 };

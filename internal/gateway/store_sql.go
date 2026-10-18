@@ -13,10 +13,8 @@ import (
 )
 
 type SQLStore struct {
-	DB           *sql.DB
-	Metrics      *Metrics
-	CapacityMode string
-	CapacityWait bool
+	DB      *sql.DB
+	Metrics *Metrics
 }
 
 func gatewayMySQLConfig(dsn string) (*mysql.Config, error) {
@@ -45,10 +43,6 @@ func gatewayMySQLConfig(dsn string) (*mysql.Config, error) {
 	return cfg, nil
 }
 func NewSQLStore(c context.Context, dsn string) (*SQLStore, error) {
-	mode, wait, e := capacityOptions()
-	if e != nil {
-		return nil, e
-	}
 	open, idle, e := mysqlPoolOptions()
 	if e != nil {
 		return nil, e
@@ -68,7 +62,7 @@ func NewSQLStore(c context.Context, dsn string) (*SQLStore, error) {
 		db.Close()
 		return nil, e
 	}
-	s := &SQLStore{DB: db, CapacityMode: mode, CapacityWait: wait}
+	s := &SQLStore{DB: db}
 	return s, nil
 }
 
@@ -87,7 +81,6 @@ func (s *SQLStore) Migrate(c context.Context) error {
 		`CREATE TABLE IF NOT EXISTS gw_metering_stream (id INT PRIMARY KEY, cluster_id VARCHAR(128) NOT NULL, topic VARCHAR(249) NOT NULL, group_id VARCHAR(249) NOT NULL, stream_id VARCHAR(64) NOT NULL, partitions INT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS gw_metering_checkpoint (partition_id INT PRIMARY KEY, base_offset BIGINT NOT NULL, next_offset BIGINT NOT NULL, anchor_offset BIGINT NOT NULL, anchor_hash CHAR(64) NOT NULL, owner_epoch BIGINT NOT NULL, kafka_generation INT NOT NULL, owner_id VARCHAR(256) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS gw_metering_recovery (id CHAR(64) PRIMARY KEY, manifest MEDIUMBLOB NOT NULL, phase VARCHAR(32) NOT NULL, updated_at DATETIME(6) NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS gw_metering_capacity (id VARCHAR(80) PRIMARY KEY, used_bytes BIGINT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS gw_usage_corrections (operation_id CHAR(64) PRIMARY KEY, input_hash CHAR(64) NOT NULL, payload MEDIUMBLOB NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS gw_metering_outbox (event_id VARCHAR(128) PRIMARY KEY, attempt_id VARCHAR(64) NOT NULL, app_id VARCHAR(64) NOT NULL, revision BIGINT NOT NULL, payload MEDIUMBLOB NULL, payload_hash CHAR(64) NOT NULL, charged_bytes BIGINT NOT NULL, published BOOLEAN NOT NULL DEFAULT 0, delivered BOOLEAN NOT NULL DEFAULT 0, claim_epoch BIGINT NOT NULL DEFAULT 0, retry_count INT NOT NULL DEFAULT 0, lease_until DATETIME(6) NULL, next_retry_at DATETIME(6) NOT NULL, INDEX(published,delivered,next_retry_at), INDEX(attempt_id))`,
 	}
@@ -102,7 +95,7 @@ func (s *SQLStore) Migrate(c context.Context) error {
 	if err := s.migrateAttemptLifecycle(c); err != nil {
 		return err
 	}
-	if err := s.migrateCapacityMode(c); err != nil {
+	if err := s.migrateCapacityProtocol(c); err != nil {
 		return err
 	}
 	b, _ := json.Marshal(EmptyConfig())

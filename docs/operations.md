@@ -2,19 +2,21 @@
 
 ## 后台 Outbox 容量管理
 
-默认 `GW_OUTBOX_CAPACITY_MODE=locked`、`GW_OUTBOX_CAPACITY_WAIT=false`，保留同步容量计数和满额拒绝。`locked` 加 `WAIT=true` 在事务外等待后重试原子准入；`background` 必须配合 `WAIT=true`，按后台快照和本地临时预留进行可取消等待，属于允许多实例短暂超额的软上限。配置及测试矩阵见 [实验规格](outbox-background-capacity-spec.md)。现有服务器已于 2026-10-18 按用户授权迁移并启用 background，真实调用与离线核账通过，见 [部署记录](outbox-background-capacity-cloud-deployment.md)；其他已有部署仍须显式停写迁移。
+生产准入统一使用后台快照和本地临时预留，容量不足时可取消等待，允许多实例短暂超额，属于软上限。没有模式或等待开关。全局及默认应用上限仍通过 `GW_OUTBOX_GLOBAL_BYTES`、`GW_OUTBOX_APP_BYTES` 配置，应用可覆盖自身上限。变更规格见 [唯一后台容量实现](outbox-single-capacity-spec.md)。
 
 后台模式每实例约每 200 ms 对实际正数预留/Outbox 占用做一致性读，并回查未覆盖的本地 attempt ID；单轮 SQL 预算 500 ms，快照从采样开始计时，超过 1 秒不再准入。等待不占用数据库连接或付费在途槽位，仍占用有限的 HTTP 槽位。JSON/SSE 沿用 60/120 秒请求总期限；容量等待超时返回 `outbox_capacity_timeout`。已获准调用的完成保存、补偿和交付释放继续执行，不等待容量。
 
-`gw_capacity_protocol` 保存容量模式和版本 1。后台模式的计量协议为 3，锁定模式为 2；启动及配置刷新检查模式，旧网关的协议 2 Prepare/Arm 无法进入协议 3。运行角色不执行 DDL。切换前先停止新准入，让完成/补偿/消费排空，再停止所有写入角色并等待至少 5 秒心跳退出；确认没有 prepared/inflight、待补偿和未交付记录后，以目标模式及 `GW_METERING_MIGRATION_ACK=writers-stopped` 执行 migrate，再统一启动。未知 inflight 必须核实，不能为切换而清零。新空部署可直接迁移到目标模式；回退 locked 时重建空容量计数。
+`gw_capacity_protocol` 只保存容量版本 2，计量协议固定为 3。已有部署升级需先停止新准入，让完成/补偿/消费排空，再停止所有写入角色并等待至少 5 秒心跳退出；确认没有 prepared/inflight、待补偿、剩余预留和未交付记录后，以 `GW_METERING_MIGRATION_ACK=writers-stopped` 执行 migrate，再统一启动。未知 inflight 必须核实，不能为升级而清零。旧计数非零会阻止删除，须先对账排空；迁移成功删除旧容量表与模式字段。容量版本 0 表示 DDL 未完成，保持停写重跑 migrate；不能启动服务或直接换回旧二进制。
 
-后台模式不维护 `gw_metering_capacity`；监控和离线重建读取 attempt.reserved_remaining_bytes 与 outbox.charged_bytes。`gateway_outbox_capacity_sample_timestamp_seconds` 表示采样开始时刻，`gateway_outbox_capacity_local_bytes` 是尚未覆盖的本地预留；另有等待者、正数来源行数、成功快照次数、全局及最大单应用超额指标。多个网关观察的是同一份数据库总量，不能求和；`readyz=200` 也不代表容量充足。
+此前服务器部署记录使用容量版本 1，见 [历史部署记录](outbox-background-capacity-cloud-deployment.md)；本次代码更新需按上述步骤另行升级，旧部署成功不代表已部署本次版本。
 
-隔离压测命令为 `pwsh -File scripts/verify-capacity.ps1`，快速功能冒烟加 `-Quick -Seconds 3`。脚本固定主机与容器二进制，在六个容量档位间轮换三种模式，为每个组合创建独立 schema/topic/配置前缀，模式之间清空本轮专用 Redis，保存原始 JSON、Prometheus、角色资源和 SQL EXPLAIN。结束后仅清理随机测试项目，不读取或修改用户 `.env`。
+运行时不再存在 `gw_metering_capacity`；监控和离线重建读取 attempt.reserved_remaining_bytes 与 outbox.charged_bytes。`gateway_outbox_capacity_sample_timestamp_seconds` 表示采样开始时刻，`gateway_outbox_capacity_local_bytes` 是尚未覆盖的本地预留；另有等待者、正数来源行数、成功快照次数、全局及最大单应用超额指标。多个网关观察的是同一份数据库总量，不能求和；`readyz=200` 也不代表容量充足。
 
-中断后用 `-ResumeFrom data/acceptance/<原run>` 补跑未通过组合；复用并核对两份二进制哈希，保留原失败证据。`-CaseIndices 2` 可限定容量档位，`-CaseIndices 2 -Auxiliary` 单独检查 SSE/250 ms 上游和后台模式的 worker 重启。辅助运行用 `-ConfirmQPS <固定QPS>` 做 5 秒预热及三次 60 秒确认，`-SustainedQPS <已确认QPS>` 单独复核 300 秒；不混入原 QPS 矩阵。新驱动每档等待计量许可恢复并单列等待时间，细分档也预热；旧驱动的恢复期样本保留。Windows 压测期间仅临时保持线程唤醒，结束时恢复，不修改电源计划。通过 `node scripts/summarize-capacity.mjs <原目录>,<补跑目录> <结果.json>` 合并同二进制、同参数的结果；出现超时或最终核账失败的组合不能发布可接受 QPS。
+隔离压测命令为 `pwsh -File scripts/verify-capacity.ps1`，快速功能冒烟加 `-Quick -Seconds 3`。脚本固定主机与容器二进制，执行六个容量档位，为每个档位创建独立 schema/topic/配置前缀，档位之间清空本轮专用 Redis，保存原始 JSON、Prometheus、角色资源和 SQL EXPLAIN。结束后仅清理随机测试项目，不读取或修改用户 `.env`。
 
-`-BinarySource data/acceptance/<已验证的v2run>` 只复用并校验两份二进制，仍执行本次选中的所有组合，可用于不同固定档位之间保持代码一致；它不跳过已通过案例，不能与 ResumeFrom 同用。首次构建串行并临时降低编译器的内存目标，测试运行前恢复原环境。驱动最长观察排空 120 秒，但性能通过条件仍为 5 秒；HTTP 结果先保存，排空未结束时为 `awaiting_drain`、耗时为 null。首次无 headroom 时间表示 SQL 快照已不足再容纳 1 MiB，不含尚未覆盖的本地预留，精度受约 200 ms 采样影响。
+中断后用 `-ResumeFrom data/acceptance/<原run>` 补跑未通过组合；复用并核对两份二进制哈希，保留原失败证据。`-CaseIndices 2` 可限定容量档位，`-CaseIndices 2 -Auxiliary` 单独检查 SSE/250 ms 上游和 worker 重启。辅助运行用 `-ConfirmQPS <固定QPS>` 做 5 秒预热及三次 60 秒确认，`-SustainedQPS <已确认QPS>` 单独复核 300 秒；不混入原 QPS 矩阵。新驱动每档等待计量许可恢复并单列等待时间，细分档也预热；旧驱动的恢复期样本保留。Windows 压测期间仅临时保持线程唤醒，结束时恢复，不修改电源计划。通过 `node scripts/summarize-capacity.mjs <原目录>,<补跑目录> <结果.json>` 合并同二进制、同参数的结果；出现超时或最终核账失败的组合不能发布可接受 QPS。
+
+`-BinarySource data/acceptance/<已验证的v3run>` 只接受唯一后台实现的版本 3 驱动，复用并校验两份二进制，仍执行本次选中的所有组合，可用于不同固定档位之间保持代码一致；它不跳过已通过案例，不能与 ResumeFrom 同用。首次构建串行并临时降低编译器的内存目标，测试运行前恢复原环境。驱动最长观察排空 120 秒，但性能通过条件仍为 5 秒；HTTP 结果先保存，排空未结束时为 `awaiting_drain`、耗时为 null。首次无 headroom 时间表示 SQL 快照已不足再容纳 1 MiB，不含尚未覆盖的本地预留，精度受约 200 ms 采样影响。
 
 ## 配置、密钥与会话
 

@@ -142,71 +142,89 @@ func testCapacitySnapshotSQL(t *testing.T, ctx context.Context, s *SQLStore, dir
 	}
 }
 
-func testCapacityModeSQL(t *testing.T, ctx context.Context, s *SQLStore) {
-	if err := s.validateCapacityMode(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if !s.backgroundCapacity() {
-		// 模拟尚无容量模式元数据、但有已交付历史的旧部署。
-		if _, err := s.DB.ExecContext(ctx, `INSERT INTO gw_metering_outbox(event_id,attempt_id,app_id,revision,payload,payload_hash,charged_bytes,delivered,next_retry_at) VALUES('capacity-legacy-history','legacy','fixture',2,NULL,'fixture',0,1,UTC_TIMESTAMP(6))`); err != nil {
-			t.Fatal(err)
-		}
-		defer s.DB.ExecContext(ctx, `DELETE FROM gw_metering_outbox WHERE event_id='capacity-legacy-history'`)
-		if _, err := s.DB.ExecContext(ctx, `DELETE FROM gw_capacity_protocol WHERE id=1`); err != nil {
-			t.Fatal(err)
-		}
-		t.Setenv("GW_METERING_MIGRATION_ACK", "")
-		background := &SQLStore{DB: s.DB, CapacityMode: "background", CapacityWait: true}
-		if err := background.migrateCapacityMode(ctx); err == nil {
-			t.Fatal("legacy history switched without stopped-writers confirmation")
-		}
-		t.Setenv("GW_METERING_MIGRATION_ACK", "writers-stopped")
-		if err := background.migrateCapacityMode(ctx); err != nil {
-			t.Fatal(err)
-		}
-		if err := s.migrateCapacityMode(ctx); err != nil {
+// 隔离数据库模拟 v1 元数据和 DDL 中断，不改业务历史。
+func testCapacityProtocolSQL(t *testing.T, ctx context.Context, s *SQLStore) {
+	exec := func(query string) {
+		t.Helper()
+		if _, err := s.DB.ExecContext(ctx, query); err != nil {
 			t.Fatal(err)
 		}
 	}
-	other := &SQLStore{DB: s.DB, CapacityMode: "background", CapacityWait: true}
-	if s.backgroundCapacity() {
-		other.CapacityMode = "locked"
-		other.CapacityWait = false
+	reject := func(reason string) {
+		t.Helper()
+		if err := s.migrateCapacityProtocol(ctx); err == nil {
+			t.Fatal(reason)
+		}
 	}
-	if err := other.validateCapacityMode(ctx); err == nil {
-		t.Fatal("mixed capacity mode accepted")
+	validate := func() {
+		t.Helper()
+		if err := s.validateCapacityProtocol(ctx); err != nil {
+			t.Fatal(err)
+		}
 	}
+	validate()
+	exec(`ALTER TABLE gw_capacity_protocol ADD COLUMN mode VARCHAR(16) NOT NULL DEFAULT 'background'`)
+	exec(`UPDATE gw_capacity_protocol SET version=1,mode='locked'`)
+	exec(`UPDATE gw_metering_control SET metering_protocol=2 WHERE id=1`)
+	exec(`CREATE TABLE gw_metering_capacity(id VARCHAR(80) PRIMARY KEY,used_bytes BIGINT NOT NULL)`)
+	exec(`INSERT INTO gw_metering_capacity VALUES('global',0)`)
+	exec(`INSERT INTO gw_metering_outbox(event_id,attempt_id,app_id,revision,payload,payload_hash,charged_bytes,delivered,next_retry_at) VALUES('capacity-legacy-history','legacy','fixture',2,NULL,'fixture',0,1,UTC_TIMESTAMP(6))`)
+	defer s.DB.ExecContext(ctx, `DELETE FROM gw_metering_outbox WHERE event_id='capacity-legacy-history'`)
+	if err := s.validateCapacityProtocol(ctx); err == nil {
+		t.Fatal("old version accepted")
+	}
+	t.Setenv("GW_METERING_MIGRATION_ACK", "")
+	reject("history migrated without stopped-writers confirmation")
+	exec(`DELETE FROM gw_capacity_protocol WHERE id=1`)
+	reject("missing marker bypassed history confirmation")
+	exec(`INSERT INTO gw_capacity_protocol(id,mode,version) VALUES(1,'locked',1)`)
 	t.Setenv("GW_METERING_MIGRATION_ACK", "writers-stopped")
-	if _, err := s.DB.ExecContext(ctx, `INSERT INTO gw_instances(id,version,seen) VALUES('capacity-live-fixture',0,UTC_TIMESTAMP(6))`); err != nil {
-		t.Fatal(err)
-	}
+	exec(`INSERT INTO gw_instances(id,version,seen) VALUES('capacity-live-fixture',0,UTC_TIMESTAMP(6))`)
 	defer s.DB.ExecContext(ctx, `DELETE FROM gw_instances WHERE id='capacity-live-fixture'`)
-	if err := other.migrateCapacityMode(ctx); err == nil {
-		t.Fatal("mode switched while a writer was live")
+	reject("live writers accepted")
+	exec(`DELETE FROM gw_instances WHERE id='capacity-live-fixture'`)
+	exec(`INSERT INTO gw_metering_outbox(event_id,attempt_id,app_id,revision,payload,payload_hash,charged_bytes,next_retry_at) VALUES('capacity-upgrade-block','upgrade','fixture',2,'x','fixture',1,UTC_TIMESTAMP(6))`)
+	defer s.DB.ExecContext(ctx, `DELETE FROM gw_metering_outbox WHERE event_id='capacity-upgrade-block'`)
+	reject("undelivered state discarded")
+	exec(`DELETE FROM gw_metering_outbox WHERE event_id='capacity-upgrade-block'`)
+	exec(`UPDATE gw_metering_capacity SET used_bytes=1`)
+	reject("unreconciled legacy counters discarded")
+	exec(`UPDATE gw_metering_capacity SET used_bytes=0`)
+	exec(`UPDATE gw_capacity_protocol SET version=99`)
+	reject("future capacity version accepted")
+	exec(`UPDATE gw_capacity_protocol SET version=1`)
+	if err := s.migrateCapacityProtocol(ctx); err != nil {
+		t.Fatal("legacy upgrade", err)
 	}
-	if _, err := s.DB.ExecContext(ctx, `DELETE FROM gw_instances WHERE id='capacity-live-fixture'`); err != nil {
-		t.Fatal(err)
+	validate()
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='gw_metering_capacity'`).Scan(&n); err != nil || n != 0 {
+		t.Fatal("legacy table retained", n, err)
 	}
-	if _, err := s.DB.ExecContext(ctx, `INSERT INTO gw_metering_outbox(event_id,attempt_id,app_id,revision,payload,payload_hash,charged_bytes,next_retry_at) VALUES('capacity-mode-block','mode','fixture',2,'x','fixture',1,UTC_TIMESTAMP(6))`); err != nil {
-		t.Fatal(err)
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='gw_capacity_protocol' AND column_name='mode'`).Scan(&n); err != nil || n != 0 {
+		t.Fatal("legacy mode retained", n, err)
 	}
-	defer s.DB.ExecContext(ctx, `DELETE FROM gw_metering_outbox WHERE event_id='capacity-mode-block'`)
-	if err := other.migrateCapacityMode(ctx); err == nil {
-		t.Fatal("capacity switched with unconsumed state")
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_metering_outbox WHERE event_id='capacity-legacy-history' AND payload_hash='fixture' AND delivered=1`).Scan(&n); err != nil || n != 1 {
+		t.Fatal("history changed", n, err)
 	}
-	if _, err := s.DB.ExecContext(ctx, `DELETE FROM gw_metering_outbox WHERE event_id='capacity-mode-block'`); err != nil {
-		t.Fatal(err)
+	// 模拟标记已提交、DDL 尚未完成及 DDL 已完成但最终版本未发布两种崩溃点。
+	for _, beforeDDL := range []bool{true, false} {
+		exec(`UPDATE gw_capacity_protocol SET version=0`)
+		if beforeDDL {
+			exec(`ALTER TABLE gw_capacity_protocol ADD COLUMN mode VARCHAR(16) NOT NULL DEFAULT 'background'`)
+			exec(`CREATE TABLE gw_metering_capacity(id VARCHAR(80) PRIMARY KEY,used_bytes BIGINT NOT NULL)`)
+		}
+		if err := s.validateCapacityProtocol(ctx); err == nil {
+			t.Fatal("incomplete DDL accepted")
+		}
+		if err := s.migrateCapacityProtocol(ctx); err != nil {
+			t.Fatal("interrupted upgrade", err)
+		}
+		validate()
 	}
-	if err := other.migrateCapacityMode(ctx); err != nil {
-		t.Fatal("drained mode switch failed", err)
+	t.Setenv("GW_METERING_MIGRATION_ACK", "")
+	if err := s.migrateCapacityProtocol(ctx); err != nil {
+		t.Fatal("idempotent migration", err)
 	}
-	if err := s.validateCapacityMode(ctx); err == nil {
-		t.Fatal("old writer accepted new mode")
-	}
-	if err := s.migrateCapacityMode(ctx); err != nil {
-		t.Fatal("capacity rollback failed", err)
-	}
-	if err := s.validateCapacityMode(ctx); err != nil {
-		t.Fatal(err)
-	}
+	validate()
 }

@@ -15,7 +15,6 @@ import (
 const maxEventBytes = 1 << 20
 
 var ErrEventConflict = errors.New("event identity has conflicting content")
-var ErrOutboxCapacity = errors.New("outbox capacity exceeded")
 var errOutboxBusy = errors.New("outbox SQL admission busy")
 
 func outboxBytesEnv(name string, fallback int64) (int64, error) {
@@ -36,7 +35,7 @@ type OutboxDelivery struct {
 }
 
 type OutboxStore interface {
-	SaveOutbox(context.Context, Event, int64, int64) error
+	SaveOutbox(context.Context, Event) error
 	PublishedOutbox(context.Context, Event, int64, bool) error
 	ClaimOutbox(context.Context) ([]OutboxDelivery, error)
 	FreezeMetering(context.Context, string) error
@@ -46,8 +45,6 @@ type OutboxStore interface {
 type DurableBus struct {
 	Store          OutboxStore
 	Transport      Bus
-	GlobalBytes    int64
-	AppBytes       int64
 	Metrics        *Metrics
 	stopped        atomic.Bool
 	OnFreeze       func(context.Context)
@@ -80,7 +77,7 @@ func (b *DurableBus) save(c context.Context, e Event) error {
 	case <-c.Done():
 		return errOutboxBusy
 	}
-	return b.Store.SaveOutbox(c, e, b.GlobalBytes, b.AppBytes)
+	return b.Store.SaveOutbox(c, e)
 }
 
 func eventBytes(e Event) ([]byte, error) {
@@ -135,7 +132,7 @@ func (b *DurableBus) Publish(c context.Context, e Event) error {
 	pubErr := b.Transport.Publish(send, e)
 	b.Metrics.meteringStage("kafka_ack", meteringEventKind(e), start, pubErr)
 	cancel()
-	if c.Err() == nil && e.Purpose != "request" && (pubErr != nil || err != nil && !errors.Is(err, ErrOutboxCapacity) && !errors.Is(err, errOutboxBusy)) {
+	if c.Err() == nil && e.Purpose != "request" && (pubErr != nil || err != nil && !errors.Is(err, errOutboxBusy)) {
 		slog.Warn("metering delivery failed", "kind", e.Kind, "save_error", err, "publish_error", pubErr)
 		b.freeze(c, "metering_delivery_failure")
 	}

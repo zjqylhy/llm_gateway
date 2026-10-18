@@ -53,39 +53,17 @@ func (r *Runtime) readPermit(c context.Context) (meteringPermit, error) {
 }
 
 // 登记早于 Redis 预占，应用屏障与登记共用同一行锁，涵盖尚未写 started 的准备阶段。
-func (r *Runtime) prepareAdmission(c context.Context, event Event, appLimit int64) (context.Context, func(), error) {
-	s := r.Engine.Store.(*SQLStore)
-	for {
-		ctx, release, err := r.prepareAdmissionOnce(c, event, appLimit)
-		if !errors.Is(err, ErrOutboxCapacity) || !s.CapacityWait || s.backgroundCapacity() {
-			return ctx, release, err
-		}
-		at := time.Now()
-		timer := time.NewTimer(capacityInterval)
-		select {
-		case <-c.Done():
-			timer.Stop()
-			r.Engine.Metrics.meteringStage("capacity_wait", "started", at, c.Err())
-			return c, nil, ErrCapacityTimeout
-		case <-timer.C:
-			r.Engine.Metrics.meteringStage("capacity_wait", "started", at, nil)
-		}
-	}
-}
-
-func (r *Runtime) prepareAdmissionOnce(c context.Context, event Event, appLimit int64) (context.Context, func(), error) {
+func (r *Runtime) prepareAdmission(c context.Context, event Event) (context.Context, func(), error) {
 	prepared := false
-	if r.capacity != nil {
-		r.capacity.start()
-		if err := r.capacity.acquire(c, event, appLimit); err != nil {
-			return c, nil, err
-		}
-		defer func() {
-			if !prepared {
-				r.capacity.release(event.AttemptID)
-			}
-		}()
+	r.capacity.start()
+	if err := r.capacity.acquire(c, event, 0); err != nil {
+		return c, nil, err
 	}
+	defer func() {
+		if !prepared {
+			r.capacity.release(event.AttemptID)
+		}
+	}()
 	started := time.Now()
 	slot, end := context.WithTimeout(c, time.Second)
 	defer end()
@@ -111,7 +89,7 @@ func (r *Runtime) prepareAdmissionOnce(c context.Context, event Event, appLimit 
 	proof := admissionProof{Permit: p, AppGeneration: appGeneration}
 	c = context.WithValue(c, admissionProofKey{}, proof)
 	ctx, done := context.WithTimeout(c, time.Second)
-	err = s.PrepareAttempt(ctx, event, r.Engine.Bus.(*DurableBus).GlobalBytes, appLimit)
+	err = s.PrepareAttempt(ctx, event)
 	done()
 	// COMMIT 不确定时不能按失败释放本地占用；后续快照只凭持久记录去重。
 	prepared = err == nil || errors.Is(err, errPrepareCommitUnknown)
@@ -439,18 +417,11 @@ func (r *Runtime) nextAuditApp(c context.Context, cursor string) (string, string
 		}
 	}
 	var remaining int
-	var used int64
-	if s.backgroundCapacity() {
-		var snap capacitySnapshot
-		snap, err = s.sampleCapacity(c, nil)
-		used = snap.Global
-	} else {
-		err = s.DB.QueryRowContext(c, `SELECT COALESCE((SELECT used_bytes FROM gw_metering_capacity WHERE id='global'),0)`).Scan(&used)
-	}
+	snap, err := s.sampleCapacity(c, nil)
 	if err != nil {
 		return "", cursor, err
 	}
-	r.Engine.Metrics.MeteringOutboxBytes.Set(float64(used))
+	r.Engine.Metrics.MeteringOutboxBytes.Set(float64(snap.Global))
 	if err = s.DB.QueryRowContext(c, `SELECT COUNT(*) FROM gw_metering_apps WHERE checked_at IS NULL OR checked_at<UTC_TIMESTAMP(6)-INTERVAL 60 SECOND`).Scan(&remaining); err != nil {
 		return "", cursor, err
 	}

@@ -175,22 +175,6 @@ func TestCapacityGateRetainsNewAndUnobservedTickets(t *testing.T) {
 	}
 }
 
-func TestCapacityModeOptions(t *testing.T) {
-	for _, tc := range []struct {
-		mode, wait string
-		valid      bool
-	}{{"locked", "false", true}, {"locked", "true", true}, {"background", "", true}, {"background", "false", false}, {"other", "", false}, {"locked", "bad", false}} {
-		t.Run(tc.mode+tc.wait, func(t *testing.T) {
-			t.Setenv("GW_OUTBOX_CAPACITY_MODE", tc.mode)
-			t.Setenv("GW_OUTBOX_CAPACITY_WAIT", tc.wait)
-			_, _, err := capacityOptions()
-			if (err == nil) != tc.valid {
-				t.Fatal(err)
-			}
-		})
-	}
-}
-
 func TestCapacityFailedSampleDoesNotPublishPartialCoverage(t *testing.T) {
 	called := make(chan struct{}, 1)
 	g := newCapacityGate(8<<20, nil, func(ctx context.Context, tickets map[string]capacityTicket) (capacitySnapshot, error) {
