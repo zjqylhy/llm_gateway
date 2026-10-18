@@ -96,7 +96,7 @@ func testCapacityBackpressure(t *testing.T, ctx context.Context, r *Runtime, cli
 	}
 	cancel()
 	elapsed := time.Since(at)
-	if s.CapacityWait && (requestErr == nil || elapsed < 200*time.Millisecond) {
+	if requestErr == nil || elapsed < 200*time.Millisecond {
 		t.Fatalf("full capacity did not wait for cancellation: elapsed=%v error=%v", elapsed, requestErr)
 	}
 	if after := before(); after != calls {
@@ -126,7 +126,7 @@ func testCapacityBackpressure(t *testing.T, ctx context.Context, r *Runtime, cli
 	if resumed.Status != 200 || resumed.Error != "" {
 		t.Fatalf("request did not resume after release: %+v", resumed)
 	}
-	raw, _ = json.MarshalIndent(map[string]any{"full_capacity_blocks": s.CapacityWait, "blocked_wait_ms": float64(elapsed.Microseconds()) / 1000, "cancelled_request_did_not_call_provider": true, "worker_release_restores_admission": true}, "", "  ")
+	raw, _ = json.MarshalIndent(map[string]any{"full_capacity_blocks": true, "blocked_wait_ms": float64(elapsed.Microseconds()) / 1000, "cancelled_request_did_not_call_provider": true, "worker_release_restores_admission": true}, "", "  ")
 	if err = os.WriteFile(filepath.Join(dir, "capacity-backpressure.json"), raw, 0600); err != nil {
 		t.Fatal(err)
 	}

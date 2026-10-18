@@ -1,5 +1,4 @@
 param(
-    [ValidateSet('all','locked-reject','locked-wait','background-wait')][string]$Mode = 'all',
     [ValidateRange(1,60)][int]$Seconds = 20,
     [switch]$Quick,
     [ValidateRange(0,5)][int[]]$CaseIndices = @(0,1,2,3,4,5),
@@ -77,12 +76,12 @@ try {
     $buildEnv = @{}
     foreach($name in @('GOOS','GOARCH','CGO_ENABLED','GOMEMLIMIT','GOGC','GOMAXPROCS')) { $buildEnv[$name] = [Environment]::GetEnvironmentVariable($name,'Process') }
     $hostRunner=Join-Path $runDir 'gateway-host.test.exe'
-    $driverVersion=2
+    $driverVersion=3
     if($reference) {
         $original=Get-Content -Raw -LiteralPath (Join-Path $reference 'manifest.json') | ConvertFrom-Json
-        $driverVersion=$(if($original.benchmark_driver_version){$original.benchmark_driver_version}else{1})
+        $driverVersion=$original.benchmark_driver_version
+        if($driverVersion -ne 3) { throw 'Only single-background driver version 3 may be reused' }
         if($ResumeFrom -and ($original.quick -ne [bool]$Quick -or $original.seconds -ne $Seconds -or $original.auxiliary)) { throw 'Resume must preserve load parameters and use a QPS matrix source' }
-        if($BinarySource -and $driverVersion -ne 2) { throw 'BinarySource requires benchmark driver version 2' }
         foreach($file in @('gateway.test','gateway-host.test.exe')) { Copy-Item -LiteralPath (Join-Path $reference $file) -Destination (Join-Path $runDir $file) }
         if((Get-FileHash (Join-Path $runDir 'gateway.test')).Hash -ne $original.binary_sha256 -or (Get-FileHash $hostRunner).Hash -ne $original.host_binary_sha256) { throw 'Resume binary hash mismatch' }
     } else { try {
@@ -101,15 +100,13 @@ try {
     $created=$true
     & docker @compose up -d --wait mysql redis kafka etcd
     if($LASTEXITCODE) { throw 'Capacity dependencies failed to start' }
-    $modes = @('locked-reject','locked-wait','background-wait')
-    if($Mode -ne 'all') { $modes=@($Mode) }
-    $drainObservation=$(if($reference -and $original.drain_observation_limit_seconds){$original.drain_observation_limit_seconds}elseif($driverVersion -eq 1){40}else{120})
+    $modes = @('background')
+    $drainObservation=120
     $summary = [ordered]@{run=$run; benchmark_driver_version=$driverVersion; drain_observation_limit_seconds=$drainObservation; quick=[bool]$Quick; auxiliary=[bool]$Auxiliary; sustained_qps=$SustainedQPS; confirm_qps=$ConfirmQPS; seconds=$Seconds; started_utc=[DateTime]::UtcNow.ToString('o'); binary_sha256=(Get-FileHash (Join-Path $runDir 'gateway.test') -Algorithm SHA256).Hash; host_binary_sha256=(Get-FileHash $hostRunner -Algorithm SHA256).Hash; modes=$modes; case_indices=$CaseIndices; resume_from=$(if($ResumeFrom){$original.run}else{$null}); binary_source=$(if($BinarySource){$original.run}else{$null})}
     $summary | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding utf8
     if($Quick){$CaseIndices=@(0)}
     foreach($caseIndex in $CaseIndices) {
-      for($modeIndex=0;$modeIndex -lt $modes.Count;$modeIndex++) {
-        $item=$modes[($modeIndex+$caseIndex)%$modes.Count]
+        $item='background'
         if($ResumeFrom) {
             $priorLog=Join-Path $reference "case-$caseIndex/$item/test.log"
             if((Test-Path -LiteralPath $priorLog) -and (Select-String -LiteralPath $priorLog -Pattern '^PASS\s*$' -Quiet)) { continue }
@@ -125,7 +122,7 @@ try {
         if($LASTEXITCODE) { throw 'Create capacity schema failed' }
         & docker @compose exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --topic $caseRun --partitions 3 --replication-factor 1 --config retention.ms=7200000
         if($LASTEXITCODE) { throw 'Create capacity topic failed' }
-        # 每个模式单独 schema/topic/etcd 前缀；应用键沿用 cap-*，模式间重置本次专用 Redis。
+        # 每个容量档位独立 schema/topic/etcd 前缀；档位间重置本次专用 Redis。
         if($caseRuns.Count -gt 1) {
             & docker @compose exec -T redis sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli FLUSHDB' | Out-Null
             if($LASTEXITCODE) { throw 'Reset dedicated capacity Redis failed' }
@@ -133,8 +130,6 @@ try {
         $testEnv=@{}
         foreach($name in $values.Keys) { $testEnv[$name]=$values[$name] }
         $testEnv['GW_INFRA_RUN_ID']=$caseRun; $testEnv['GW_KAFKA_TOPIC']=$caseRun; $testEnv['GW_KAFKA_GROUP']=$caseRun; $testEnv['GW_ETCD_PREFIX']="/$caseRun"
-        $testEnv['GW_OUTBOX_CAPACITY_MODE']=$item.Split('-')[0]; $testEnv['GW_OUTBOX_CAPACITY_WAIT']=$(if($item.EndsWith('-wait')){'true'}else{'false'})
-        $testEnv['GW_CAPACITY_TEST_MODE']=$item
         $testEnv['GW_CAPACITY_CASE_INDEX']="$caseIndex"
         $testEnv['GW_MYSQL_DSN']="gateway:$($values['GW_LOCAL_DB_PASSWORD'])@tcp(127.0.0.1:$($ports['MYSQL']))/$caseRun`?parseTime=true&charset=utf8mb4"
         $testEnv['GW_REDIS_URL']="redis://:$($values['GW_LOCAL_REDIS_PASSWORD'])@127.0.0.1:$($ports['REDIS'])/0"
@@ -151,7 +146,7 @@ try {
             if(-not $saved.ContainsKey($name)) { $saved[$name]=[Environment]::GetEnvironmentVariable($name,'Process') }
             [Environment]::SetEnvironmentVariable($name,$testEnv[$name],'Process')
         }
-        Write-Host "容量对照：$caseRun；结果：$dir"
+        Write-Host "后台容量验收：$caseRun；结果：$dir"
         $testArgs=@('-test.run=^TestCapacityIntegration$','-test.count=1','-test.v','-test.timeout=95m')
         & $hostRunner @testArgs 2>&1 | Tee-Object -FilePath (Join-Path $dir 'test.log')
         if($LASTEXITCODE) {
@@ -164,7 +159,6 @@ try {
                 & docker rm -v $id | Out-Null
             }
         }
-      }
     }
     if($failedCases.Count) { throw "Capacity acceptance failed for $($failedCases.Count) combinations" }
 } finally {

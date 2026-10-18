@@ -10,17 +10,15 @@ import (
 )
 
 type MemoryStore struct {
-	mu             sync.Mutex
-	config         Config
-	events         map[string]Event
-	audits         []Audit
-	instances      map[string]Instance
-	alerts         map[string]Alert
-	eventBytes     int
-	attempts       map[string]memoryAttempt
-	reservedGlobal int64
-	reservedApps   map[string]int64
-	eventHashes    map[string]string
+	mu          sync.Mutex
+	config      Config
+	events      map[string]Event
+	audits      []Audit
+	instances   map[string]Instance
+	alerts      map[string]Alert
+	eventBytes  int
+	attempts    map[string]memoryAttempt
+	eventHashes map[string]string
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -92,10 +90,7 @@ func (s *MemoryStore) applyLocked(e Event) error {
 		s.eventBytes += len(raw) - oldBytes
 		s.events[e.AttemptID] = e
 		if attempt, ok := s.attempts[e.AttemptID]; ok && e.Kind == "completed" && attempt.Phase != "cancelled" {
-			s.reservedGlobal -= attempt.Remaining
-			s.reservedApps[e.AppID] -= attempt.Remaining
 			attempt.Phase = "completed"
-			attempt.Remaining = 0
 			s.attempts[e.AttemptID] = attempt
 		}
 	}

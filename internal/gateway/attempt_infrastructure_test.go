@@ -30,7 +30,7 @@ func testAttemptLifecycleInfrastructure(t *testing.T, r *Runtime, c context.Cont
 		id := ID("lifecycle_")
 		e := Event{ID: id + ":1", AttemptID: id, RequestID: "lifecycle", AppID: app, Kind: "started", Revision: 1, Purpose: "inference", Quality: "pending", ReserveTokens: 100, ReserveMicro: 100, Month: month(time.Now()), At: time.Now().UTC()}
 		ctx = context.WithValue(ctx, reservationHashKey{}, eventDigest(e))
-		if err := s.PrepareAttempt(ctx, e, 512<<20, 64<<20); err != nil {
+		if err := s.PrepareAttempt(ctx, e); err != nil {
 			t.Fatal("Prepare", err)
 		}
 		return ctx, e
@@ -94,7 +94,7 @@ func testAttemptLifecycleInfrastructure(t *testing.T, r *Runtime, c context.Cont
 			}
 			// Fixture never called a vendor; verified zero completion is legitimate only here.
 			completion := cancelEvent(e)
-			if err := s.SaveOutbox(ctx, completion, 512<<20, 64<<20); err != nil {
+			if err := s.SaveOutbox(ctx, completion); err != nil {
 				t.Fatal(err)
 			}
 			if err := s.Apply(ctx, completion); err != nil {
@@ -139,7 +139,7 @@ func testAttemptLifecycleInfrastructure(t *testing.T, r *Runtime, c context.Cont
 		t.Fatal(err)
 	}
 	completion := cancelEvent(e)
-	if err := s.SaveOutbox(ctx, completion, 512<<20, 64<<20); err != nil {
+	if err := s.SaveOutbox(ctx, completion); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Apply(ctx, completion); err != nil {
@@ -157,7 +157,7 @@ func testAttemptLifecycleInfrastructure(t *testing.T, r *Runtime, c context.Cont
 	if count, err := s.GCOutbox(c, time.Hour); err != nil || count != 1 {
 		t.Fatal("GC", count, err)
 	}
-	if err := s.SaveOutbox(ctx, completion, 512<<20, 64<<20); err != nil {
+	if err := s.SaveOutbox(ctx, completion); err != nil {
 		t.Fatal("late save after GC", err)
 	}
 	var count int
@@ -165,7 +165,7 @@ func testAttemptLifecycleInfrastructure(t *testing.T, r *Runtime, c context.Cont
 		t.Fatal("GC duplicate rebuilt occupancy", count, err)
 	}
 	completion.CostMicro++
-	if err := s.SaveOutbox(ctx, completion, 512<<20, 64<<20); !errors.Is(err, ErrEventConflict) {
+	if err := s.SaveOutbox(ctx, completion); !errors.Is(err, ErrEventConflict) {
 		t.Fatal("GC removed conflict proof", err)
 	}
 	if err := s.AuditCapacity(c); err != nil {

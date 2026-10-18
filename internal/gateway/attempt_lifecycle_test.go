@@ -13,7 +13,7 @@ func TestArmAndCancellationHaveOneWinner(t *testing.T) {
 		ctx := context.Background()
 		store := NewMemoryStore()
 		e := Event{ID: "attempt:1", AttemptID: "attempt", RequestID: "request", AppID: "app", Month: "2026-10", Kind: "started", Revision: 1, Quality: "pending", At: time.Now().UTC()}
-		if err := store.PrepareAttempt(ctx, e, 2*maxEventBytes, 2*maxEventBytes); err != nil {
+		if err := store.PrepareAttempt(ctx, e); err != nil {
 			t.Fatal(err)
 		}
 		var arm, cancel error
@@ -45,9 +45,6 @@ func TestArmAndCancellationHaveOneWinner(t *testing.T) {
 			}
 			if err := store.FinishCancellation(ctx, e); err != nil {
 				t.Fatal("cancel retry", err)
-			}
-			if store.attempts[e.AttemptID].Remaining != 0 {
-				t.Fatal("reservation leaked")
 			}
 		}
 	}

@@ -25,7 +25,7 @@ type testOutbox struct {
 func newTestOutbox() *testOutbox {
 	return &testOutbox{events: map[string]Event{}, published: map[string]bool{}}
 }
-func (s *testOutbox) SaveOutbox(_ context.Context, e Event, _, _ int64) error {
+func (s *testOutbox) SaveOutbox(_ context.Context, e Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.saveError != nil {
@@ -79,11 +79,11 @@ type recordingBus struct {
 // 只存在于测试代码，模拟 completed 的 outbox 写入失败而 Kafka 可用。
 type failedCompletionOutbox struct{ *SQLStore }
 
-func (s failedCompletionOutbox) SaveOutbox(c context.Context, e Event, global, app int64) error {
+func (s failedCompletionOutbox) SaveOutbox(c context.Context, e Event) error {
 	if e.Kind == "completed" && e.Purpose == "inference" {
 		return errors.New("injected outbox failure")
 	}
-	return s.SQLStore.SaveOutbox(c, e, global, app)
+	return s.SQLStore.SaveOutbox(c, e)
 }
 
 func (b *recordingBus) Publish(_ context.Context, e Event) error {
@@ -101,7 +101,7 @@ func durableTestEngine(t *testing.T, configure ...func(*Engine)) (*Engine, *test
 	calls := new(atomic.Int32)
 	e := testEngine(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); MockProvider(w, r) }, configure...)
 	s, transport := newTestOutbox(), &recordingBus{}
-	e.Bus = &DurableBus{Store: s, Transport: transport, GlobalBytes: 512 << 20, AppBytes: 64 << 20}
+	e.Bus = &DurableBus{Store: s, Transport: transport}
 	return e, s, transport, calls
 }
 
@@ -214,7 +214,7 @@ func TestOutboxBothCompletionPathsFailPreservesReservation(t *testing.T) {
 
 func TestOutboxConflictNeverPublishesAndFreezes(t *testing.T) {
 	s, transport := newTestOutbox(), &recordingBus{}
-	b := &DurableBus{Store: s, Transport: transport, GlobalBytes: 512 << 20, AppBytes: 64 << 20}
+	b := &DurableBus{Store: s, Transport: transport}
 	e := Event{ID: "e", AttemptID: "a", RequestID: "r", AppID: "app", Kind: "completed", Revision: 2}
 	if err := b.Publish(context.Background(), e); err != nil {
 		t.Fatal(err)
@@ -227,7 +227,7 @@ func TestOutboxConflictNeverPublishesAndFreezes(t *testing.T) {
 
 func TestOutboxOversizedSamplePreservesMetering(t *testing.T) {
 	s, transport := newTestOutbox(), &recordingBus{}
-	b := &DurableBus{Store: s, Transport: transport, GlobalBytes: 512 << 20, AppBytes: 64 << 20}
+	b := &DurableBus{Store: s, Transport: transport}
 	event := Event{ID: "sample:2", AttemptID: "sample", RequestID: "request", AppID: "app", Kind: "completed", Revision: 2, Usage: Usage{Input: 10, Output: 20, Total: 30}, CostMicro: 40, PayloadCipher: strings.Repeat("x", maxEventBytes)}
 	if err := b.Publish(context.Background(), event); err != nil {
 		t.Fatal(err)
@@ -269,7 +269,7 @@ func TestFrozenQuotaRejectsAdmissionButAllowsSettlementReplay(t *testing.T) {
 
 func TestCancelledCallerDoesNotFreezeHealthyMetering(t *testing.T) {
 	s, transport := newTestOutbox(), &recordingBus{}
-	b := &DurableBus{Store: s, Transport: transport, GlobalBytes: 512 << 20, AppBytes: 64 << 20}
+	b := &DurableBus{Store: s, Transport: transport}
 	s.saveError = func(Event) error { return context.Canceled }
 	c, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -289,7 +289,7 @@ func TestCancelledCallerDoesNotFreezeHealthyMetering(t *testing.T) {
 func TestApplicationBarrierDoesNotFreezeGlobalMetering(t *testing.T) {
 	s, transport := newTestOutbox(), &recordingBus{}
 	s.saveError = func(Event) error { return errMeteringBarrier }
-	b := &DurableBus{Store: s, Transport: transport, GlobalBytes: 512 << 20, AppBytes: 64 << 20}
+	b := &DurableBus{Store: s, Transport: transport}
 	e := Event{ID: "barrier:1", AttemptID: "barrier", RequestID: "request", AppID: "app", Kind: "started", Revision: 1}
 	if err := b.Publish(context.Background(), e); err == nil {
 		t.Fatal("barrier admitted paid attempt")
@@ -302,7 +302,7 @@ func TestApplicationBarrierDoesNotFreezeGlobalMetering(t *testing.T) {
 // 新 started 从 Arm 持久化，不能通过发布接口重新启用旧协议。
 func TestStartedPublicationIsRejectedWithoutBlockingCompletion(t *testing.T) {
 	store, transport := newTestOutbox(), &recordingBus{}
-	bus := &DurableBus{Store: store, Transport: transport, GlobalBytes: 512 << 20, AppBytes: 64 << 20}
+	bus := &DurableBus{Store: store, Transport: transport}
 	start := Event{ID: "one:1", AttemptID: "one", RequestID: "request", AppID: "app", Kind: "started", Revision: 1}
 	if err := bus.Publish(context.Background(), start); !errors.Is(err, ErrUnavailable) {
 		t.Fatal(err)
@@ -323,11 +323,11 @@ func publishLegacyFixture(ctx context.Context, bus *DurableBus, event Event) err
 	var saveErr error
 	switch store := bus.Store.(type) {
 	case *SQLStore:
-		saveErr = saveFixtureOutbox(ctx, store, event, bus.GlobalBytes, bus.AppBytes)
+		saveErr = saveFixtureOutbox(ctx, store, event)
 	case failedCompletionOutbox:
-		saveErr = saveFixtureOutbox(ctx, store.SQLStore, event, bus.GlobalBytes, bus.AppBytes)
+		saveErr = saveFixtureOutbox(ctx, store.SQLStore, event)
 	default:
-		saveErr = bus.Store.SaveOutbox(ctx, event, bus.GlobalBytes, bus.AppBytes)
+		saveErr = bus.Store.SaveOutbox(ctx, event)
 	}
 	if err := saveErr; err != nil {
 		return err
@@ -339,9 +339,9 @@ func publishLegacyFixture(ctx context.Context, bus *DurableBus, event Event) err
 }
 
 // 只为旧 Kafka 格式的验收 fixture 构造旧 Outbox；生产保存接口仅接受 completed。
-func saveFixtureOutbox(c context.Context, s *SQLStore, e Event, globalLimit, appLimit int64) error {
+func saveFixtureOutbox(c context.Context, s *SQLStore, e Event) error {
 	if e.Kind != "started" {
-		return s.SaveOutbox(c, e, globalLimit, appLimit)
+		return s.SaveOutbox(c, e)
 	}
 	raw, err := eventBytes(e)
 	if err != nil {
@@ -355,10 +355,6 @@ func saveFixtureOutbox(c context.Context, s *SQLStore, e Event, globalLimit, app
 	if err = checkAppBarrier(c, tx, e.AppID, false); err != nil {
 		return err
 	}
-	global, app, err := outboxCapacity(c, tx, e.AppID, s.Metrics)
-	if err != nil {
-		return err
-	}
 	var hash string
 	err = tx.QueryRowContext(c, `SELECT payload_hash FROM gw_metering_outbox WHERE event_id=?`, e.ID).Scan(&hash)
 	if err == nil {
@@ -370,17 +366,10 @@ func saveFixtureOutbox(c context.Context, s *SQLStore, e Event, globalLimit, app
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	delta := int64(len(raw)) + maxEventBytes
-	if delta > globalLimit-global || delta > appLimit-app {
-		return ErrOutboxCapacity
-	}
 	if err = applyEventTx(c, tx, e); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(c, `UPDATE gw_attempts SET reserved_remaining_bytes=?,start_payload=?,start_hash=? WHERE attempt_id=?`, maxEventBytes, string(raw), Hash(string(raw)), e.AttemptID); err != nil {
-		return err
-	}
-	if err = adjustCapacity(c, tx, e.AppID, delta); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(c, `INSERT INTO gw_metering_outbox(event_id,attempt_id,app_id,revision,payload,payload_hash,charged_bytes,next_retry_at) VALUES(?,?,?,?,?,?,?,UTC_TIMESTAMP(6))`, e.ID, e.AttemptID, e.AppID, e.Revision, raw, Hash(string(raw)), len(raw)); err != nil {

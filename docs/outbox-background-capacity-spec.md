@@ -2,6 +2,8 @@
 
 日期：2026-10-17；交付更新：2026-10-18。状态：用户已确认需求及细化后的技术方案，实现与验证完成，已按后续授权完成云端功能验证，提交 PR 审阅。结果见 [实验报告](outbox-background-capacity-report.md)、[机器可读数据](outbox-background-capacity-results.json) 和 [云端部署记录](outbox-background-capacity-cloud-deployment.md)。
 
+> 2026-10-18 后续决定：运行代码统一后台方式，删除锁定方式及切换开关，详见 [新规格](outbox-single-capacity-spec.md)。本文的多模式对照及回退描述是此前实验记录。
+
 ## 需求与范围
 
 将逐请求争抢全局容量行的方案改为后台维护容量快照；容量不足时挂起当前请求 goroutine，释放容量后继续。比较改造前后延迟、成功吞吐，以及不同容量上限对应的可接受 QPS。
